@@ -69,10 +69,6 @@ static int linput(FILE * fp, char *s, int max);
 #include <unistd.h>
 #endif
 #include <ctype.h>
-#if (defined(__linux) && defined(HAVE_EXECINFO_H))
-#include <execinfo.h>
-#define USES_BACKTRACE
-#endif
 /* END specific definitions */
 
 static void __cdecl htsshow_init(t_hts_callbackarg * carg);
@@ -199,8 +195,24 @@ static void vt_home(void) {
 
 static int use_show;
 static httrackp *global_opt = NULL;
+enum {
+  SIGNAL_ACTION_NONE = 0,
+  SIGNAL_ACTION_FINISH,
+  SIGNAL_ACTION_LEAVE,
+  SIGNAL_ACTION_BACK
+};
+static volatile sig_atomic_t pending_signal_action = SIGNAL_ACTION_NONE;
+static volatile sig_atomic_t pending_signal_code = 0;
+/* Signal callbacks can only defer work while the engine callbacks are
+   running. Before start (and after end), there is no safe polling point. */
+static volatile sig_atomic_t signal_engine_active = 0;
 
 static void signal_handlers(void);
+static void process_pending_signal(httrackp *opt);
+static void sig_term(int code);
+#ifndef _WIN32
+static void sig_doback(int blind);
+#endif
 
 int main(int argc, char **argv) {
   int ret = 0;
@@ -287,6 +299,7 @@ static void __cdecl htsshow_init(t_hts_callbackarg * carg) {
 static void __cdecl htsshow_uninit(t_hts_callbackarg * carg) {
 }
 static int __cdecl htsshow_start(t_hts_callbackarg * carg, httrackp * opt) {
+  signal_engine_active = 1;
   use_show = 0;
   if (opt->verbosedisplay == 2) {
     use_show = 1;
@@ -298,6 +311,9 @@ static int __cdecl htsshow_chopt(t_hts_callbackarg * carg, httrackp * opt) {
   return htsshow_start(carg, opt);
 }
 static int __cdecl htsshow_end(t_hts_callbackarg * carg, httrackp * opt) {
+  /* Catch a signal delivered after the final loop callback. */
+  signal_engine_active = 0;
+  process_pending_signal(opt);
   return 1;
 }
 static int __cdecl htsshow_preprocesshtml(t_hts_callbackarg * carg,
@@ -338,6 +354,8 @@ static int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_b
   LLint stat_bytes = -1;
   LLint stat_bytes_recv = -1;
   int irate = -1;
+
+  process_pending_signal(opt);
 
   if (stats) {
     stat_written = stats->stat_files;
@@ -761,16 +779,54 @@ static int linput(FILE * fp, char *s, int max) {
 //
 static void sig_ignore(int code) {      // ignorer signal
 }
+static void process_pending_signal(httrackp *opt) {
+  const sig_atomic_t action = pending_signal_action;
+  const int code = (int) pending_signal_code;
+
+  if (action == SIGNAL_ACTION_NONE) {
+    return;
+  }
+  if (action == SIGNAL_ACTION_FINISH) {
+    signal(code, sig_term);
+    if (opt != NULL) {
+      opt->state.exit_xh = 1;
+    }
+    fprintf(stderr, "\nExit requested to engine (signal %d)\n", code);
+  } else if (action == SIGNAL_ACTION_LEAVE) {
+    signal(code, sig_term);
+    printf("\n** Finishing pending transfers.. press again ^C to quit.\n");
+    if (opt != NULL) {
+      hts_log_print(opt, LOG_ERROR, "Exit requested by shell or user");
+      opt->state.stop = 1;
+    }
+  }
+#ifndef _WIN32
+  else if (action == SIGNAL_ACTION_BACK) {
+    if (opt != NULL && !opt->background_on_suspend) {
+      signal(SIGTSTP, SIG_DFL);
+      printf("\nInterrupting the program.\n");
+      fflush(stdout);
+      kill(getpid(), SIGTSTP);
+    } else {
+      signal(code, sig_ignore);
+      sig_doback(0);
+    }
+  }
+#endif
+  pending_signal_action = SIGNAL_ACTION_NONE;
+}
 static void sig_term(int code) {        // quitter brutalement
-  fprintf(stderr, "\nProgram terminated (signal %d)\n", code);
-  exit(0);
+  _exit(128 + (code & 0x7f));
 }
 static void sig_finish(int code) {      // finir et quitter
-  signal(code, sig_term);       // quitter si encore
-  if (global_opt != NULL) {
-    global_opt->state.exit_xh = 1;
+  if (!signal_engine_active) {
+    sig_term(code);
   }
-  fprintf(stderr, "\nExit requested to engine (signal %d)\n", code);
+  if (pending_signal_action != SIGNAL_ACTION_NONE) {
+    sig_term(code);
+  }
+  pending_signal_code = code;
+  pending_signal_action = SIGNAL_ACTION_FINISH;
 }
 
 #ifdef _WIN32
@@ -797,16 +853,17 @@ static void sig_ask(int code) { // demander
 #else
 static void sig_doback(int blind);
 static void sig_back(int code) {        // ignorer et mettre en backing 
-  if (global_opt != NULL && !global_opt->background_on_suspend) {
-    signal(SIGTSTP, SIG_DFL);   // ^Z
-    printf("\nInterrupting the program.\n");
-    fflush(stdout);
-    kill(getpid(), SIGTSTP);
-  } else {
-    // Background the process.
-    signal(code, sig_ignore);
-    sig_doback(0);
+  if (!signal_engine_active) {
+    /* There is no engine callback to perform deferred work yet. Suspend
+       directly; SIGSTOP cannot be caught and needs no unsafe stdio. */
+    kill(getpid(), SIGSTOP);
+    return;
   }
+  if (pending_signal_action != SIGNAL_ACTION_NONE) {
+    sig_term(code);
+  }
+  pending_signal_code = code;
+  pending_signal_action = SIGNAL_ACTION_BACK;
 }
 
 #if 0
@@ -879,74 +936,33 @@ static void sig_doback(int blind) {     // mettre en backing
 #undef FD_ERR
 #define FD_ERR 2
 
-static void print_backtrace(void) {
-#ifdef USES_BACKTRACE
-  void *stack[256];
-  const int size = backtrace(stack, sizeof(stack)/sizeof(stack[0]));
-  if (size != 0) {
-    backtrace_symbols_fd(stack, size, FD_ERR);
-  }
-#else
-  const char msg[] = "No stack trace available on this OS :(\n";
-  if (write(FD_ERR, msg, sizeof(msg) - 1) != sizeof(msg) - 1) {
-    /* sorry GCC */
-  }
-#endif
-}
-
-static size_t print_num(char *buffer, int num) {
-  size_t i, j;
-  if (num < 0) {
-    *(buffer++) = '-';
-    num = -num;
-  }
-  for(i = 0 ; num != 0 || i == 0 ; i++, num /= 10) {
-    buffer[i] = '0' + ( num % 10 );
-  }
-  for(j = 0 ; j < i ; j++) {
-    const char c = buffer[i - j - 1];
-    buffer[i - j - 1] = buffer[j];
-    buffer[j] = c;
-  }
-  buffer[i] = '\0';
-  return i;
-}
-
 static void sig_fatal(int code) {
-  const char msg[] = "\nCaught signal ";
-  const char msgreport[] =
-    "\nPlease report the problem at http://forum.httrack.com\n";
-  char buffer[256];
-  size_t size;
+  static const char msg[] = "\nFatal signal received; terminating.\n";
 
+  if (write(FD_ERR, msg, sizeof(msg) - 1) != sizeof(msg) - 1) {
+    /* Best effort only; no non-signal-safe fallback is available here. */
+  }
+  /* Restore the default disposition and re-raise so callers retain the
+     conventional signal status and systems configured for core dumps still
+     get one. Neither stdio nor backtrace() is safe in this handler. */
   signal(code, SIG_DFL);
-  signal(SIGABRT, SIG_DFL);
-
-  memcpy(buffer, msg, sizeof(msg) - 1);
-  size = sizeof(msg) - 1;
-  size += print_num(&buffer[size], code);
-  buffer[size++] = '\n';
-  (void) (write(FD_ERR, buffer, size) == size);
-  print_backtrace();
-  (void) (write(FD_ERR, msgreport, sizeof(msgreport) - 1)
-    == sizeof(msgreport) - 1);
-  abort();
+  if (raise(code) == 0) {
+    return;
+  }
+  _exit(128 + (code & 0x7f));
 }
 
 #undef FD_ERR
 
 static void sig_leave(int code) {
-  if (global_opt != NULL && global_opt->state._hts_in_mirror) {
-    signal(code, sig_term);     // quitter si encore
-    printf("\n** Finishing pending transfers.. press again ^C to quit.\n");
-    if (global_opt != NULL) {
-      // ask for stop
-      hts_log_print(global_opt, LOG_ERROR, "Exit requested by shell or user");
-      global_opt->state.stop = 1;
-    }
-  } else {
+  if (!signal_engine_active) {
     sig_term(code);
   }
+  if (pending_signal_action != SIGNAL_ACTION_NONE) {
+    sig_term(code);
+  }
+  pending_signal_code = code;
+  pending_signal_action = SIGNAL_ACTION_LEAVE;
 }
 
 static void signal_handlers(void) {
