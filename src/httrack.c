@@ -312,8 +312,8 @@ static int __cdecl htsshow_chopt(t_hts_callbackarg * carg, httrackp * opt) {
 }
 static int __cdecl htsshow_end(t_hts_callbackarg * carg, httrackp * opt) {
   /* Catch a signal delivered after the final loop callback. */
-  process_pending_signal(opt);
   signal_engine_active = 0;
+  process_pending_signal(opt);
   return 1;
 }
 static int __cdecl htsshow_preprocesshtml(t_hts_callbackarg * carg,
@@ -946,7 +946,9 @@ static void sig_fatal(int code) {
      conventional signal status and systems configured for core dumps still
      get one. Neither stdio nor backtrace() is safe in this handler. */
   signal(code, SIG_DFL);
-  raise(code);
+  if (raise(code) == 0) {
+    return;
+  }
   _exit(128 + (code & 0x7f));
 }
 
