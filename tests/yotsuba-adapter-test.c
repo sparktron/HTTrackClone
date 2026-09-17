@@ -262,12 +262,22 @@ static int catalog_counts(hts_catalog *catalog, int64_t source_id,
 }
 
 static int run_discovery_test(void) {
-  static const fake_plan plans[] = {
+  static const fake_plan initial[] = {
     {"https://a.4cdn.org/boards.json", NULL, HTS_METADATA_TRANSPORT_OK,
-     200, "boards-discovery.json", "discover-boards", 0U},
+     200, "boards-discovery-two.json", "discover-boards-1", 0U},
+    {"https://a.4cdn.org/gone/threads.json", NULL,
+     HTS_METADATA_TRANSPORT_OK, 200, "threads-empty.json",
+     "discover-gone", 0U},
     {"https://a.4cdn.org/plain/threads.json", NULL,
      HTS_METADATA_TRANSPORT_OK, 200, "threads-empty.json",
-     "discover-threads", 0U}
+     "discover-plain", 0U}
+  };
+  static const fake_plan refreshed[] = {
+    {"https://a.4cdn.org/boards.json", "discover-boards-1",
+     HTS_METADATA_TRANSPORT_OK, 200, "boards-discovery.json",
+     "discover-boards-2", 0U},
+    {"https://a.4cdn.org/plain/threads.json", "discover-plain",
+     HTS_METADATA_TRANSPORT_OK, 304, NULL, "discover-plain", 0U}
   };
   char path[128];
   hts_catalog *catalog;
@@ -307,7 +317,17 @@ static int run_discovery_test(void) {
   transport_context.clock = &clock_context;
   transport.context = &transport_context;
   transport.perform = fake_perform;
-  set_plans(&transport_context, plans, sizeof(plans) / sizeof(plans[0]));
+  set_plans(&transport_context, initial,
+            sizeof(initial) / sizeof(initial[0]));
+  CHECK(hts_yotsuba_sync(adapter, &transport, &clock, NULL, NULL, &result) ==
+        HTS_METADATA_SUCCESS);
+  CHECK(!transport_context.failed && !transport_context.media_request);
+  CHECK(transport_context.plan_index == transport_context.plan_count);
+  CHECK(result.boards_processed == 2U && result.threads_discovered == 0U);
+  clock_context.now_ms += 60000U;
+  transport_context.have_request_time = 0;
+  set_plans(&transport_context, refreshed,
+            sizeof(refreshed) / sizeof(refreshed[0]));
   CHECK(hts_yotsuba_sync(adapter, &transport, &clock, NULL, NULL, &result) ==
         HTS_METADATA_SUCCESS);
   CHECK(!transport_context.failed && !transport_context.media_request);
@@ -316,7 +336,7 @@ static int run_discovery_test(void) {
   (void) memset(&board_list, 0, sizeof(board_list));
   CHECK(hts_catalog_list(catalog, HTS_CATALOG_ENTITY_BOARD, source_id,
                          collect_entries, &board_list) == HTS_CATALOG_OK);
-  CHECK(board_list.count == 1U);
+  CHECK(board_list.count == 2U);
   hts_yotsuba_adapter_destroy(adapter);
   hts_catalog_close(catalog);
   (void) unlink(path);
@@ -336,12 +356,20 @@ static int run_tests(void) {
     {"https://a.4cdn.org/safe/thread/200.json", NULL,
      HTS_METADATA_TRANSPORT_OK, 200, "thread-200.json", "x200", 0U}
   };
+  static const fake_plan unchanged_active_inventory[] = {
+    {"https://a.4cdn.org/boards.json", "b1", HTS_METADATA_TRANSPORT_OK,
+     304, NULL, "b1", 0U},
+    {"https://a.4cdn.org/safe/threads.json", "t1",
+     HTS_METADATA_TRANSPORT_OK, 304, NULL, "t1", 0U},
+    {"https://a.4cdn.org/safe/archive.json", "a1",
+     HTS_METADATA_TRANSPORT_OK, 200, "archive-empty.json", "a1b", 0U}
+  };
   static const fake_plan incremental[] = {
     {"https://a.4cdn.org/boards.json", "b1", HTS_METADATA_TRANSPORT_OK,
      304, NULL, "b1", 0U},
     {"https://a.4cdn.org/safe/threads.json", "t1",
      HTS_METADATA_TRANSPORT_OK, 200, "threads-incremental.json", "t2", 0U},
-    {"https://a.4cdn.org/safe/archive.json", "a1",
+    {"https://a.4cdn.org/safe/archive.json", "a1b",
      HTS_METADATA_TRANSPORT_OK, 200, "archive-100.json", "a2", 0U},
     {"https://a.4cdn.org/safe/thread/100.json", "x100",
      HTS_METADATA_TRANSPORT_OK, 304, NULL, "x100", 0U},
@@ -359,6 +387,18 @@ static int run_tests(void) {
      HTS_METADATA_TRANSPORT_OK, 200, "threads-steady.json", "t3", 0U},
     {"https://a.4cdn.org/safe/archive.json", "a2",
      HTS_METADATA_TRANSPORT_OK, 200, "archive-empty.json", "a3", 0U}
+  };
+  static const fake_plan reappeared[] = {
+    {"https://a.4cdn.org/boards.json", "b1", HTS_METADATA_TRANSPORT_OK,
+     304, NULL, "b1", 0U},
+    {"https://a.4cdn.org/safe/threads.json", "t5",
+     HTS_METADATA_TRANSPORT_OK, 200, "threads-initial.json", "t6", 0U},
+    {"https://a.4cdn.org/safe/archive.json", "a5",
+     HTS_METADATA_TRANSPORT_OK, 200, "archive-empty.json", "a6", 0U},
+    {"https://a.4cdn.org/safe/thread/100.json", "x100",
+     HTS_METADATA_TRANSPORT_OK, 304, NULL, "x100", 0U},
+    {"https://a.4cdn.org/safe/thread/200.json", "x200",
+     HTS_METADATA_TRANSPORT_OK, 304, NULL, "x200", 0U}
   };
   static const fake_plan missing_twice[] = {
     {"https://a.4cdn.org/boards.json", "b1", HTS_METADATA_TRANSPORT_OK,
@@ -440,6 +480,9 @@ static int run_tests(void) {
   options.missing_confirmations = 2U;
   hts_yotsuba_default_policy(&options.policy);
   options.policy.jitter_percent = 0U;
+  options.base_url = "https://example.com";
+  CHECK(!hts_yotsuba_adapter_create(catalog, &options, &adapter));
+  options.base_url = HTS_YOTSUBA_API_ORIGIN "/";
   CHECK(hts_yotsuba_adapter_create(catalog, &options, &adapter));
   contract = hts_yotsuba_adapter_contract(adapter);
   CHECK(contract != NULL);
@@ -501,6 +544,20 @@ static int run_tests(void) {
   CHECK(ordered.count == 4U && ordered.positions[0] == 0 &&
         ordered.positions[1] == 1 && ordered.positions[2] == 2 &&
         ordered.positions[3] == 3);
+
+  clock_context.now_ms += 60000U;
+  transport_context.have_request_time = 0;
+  set_plans(&transport_context, unchanged_active_inventory,
+            sizeof(unchanged_active_inventory) /
+              sizeof(unchanged_active_inventory[0]));
+  CHECK(hts_yotsuba_sync(adapter, &transport, &clock, collect_report, &reports,
+                         &result) == HTS_METADATA_SUCCESS);
+  (void) memset(&resource, 0, sizeof(resource));
+  CHECK(hts_catalog_get_resource_state(catalog, source_id, "yotsuba-thread",
+                                       "safe/100", capture_resource,
+                                       &resource) == HTS_CATALOG_OK);
+  CHECK(resource.seen && strcmp(resource.state, "active") == 0 &&
+        resource.missing_count == 0U);
 
   hts_yotsuba_adapter_destroy(adapter);
   clock_context.now_ms += 60000U;
@@ -566,6 +623,24 @@ static int run_tests(void) {
                          &result) == HTS_METADATA_SUCCESS);
   CHECK(catalog_counts(catalog, source_id, &collections, &posts, &media));
   CHECK(collections == 3U && posts == 6U && media == 8U);
+
+  clock_context.now_ms += 60000U;
+  transport_context.have_request_time = 0;
+  set_plans(&transport_context, reappeared,
+            sizeof(reappeared) / sizeof(reappeared[0]));
+  category = hts_yotsuba_sync(adapter, &transport, &clock, collect_report,
+                              &reports, &result);
+  if (category != HTS_METADATA_SUCCESS)
+    (void) fprintf(stderr, "reappeared category=%d plan=%lu failed=%d\n",
+                   (int) category, (unsigned long) transport_context.plan_index,
+                   transport_context.failed);
+  CHECK(category == HTS_METADATA_SUCCESS);
+  CHECK(transport_context.plan_index == transport_context.plan_count);
+  (void) memset(&resource, 0, sizeof(resource));
+  CHECK(hts_catalog_get_resource_state(catalog, source_id, "yotsuba-thread",
+                                       "safe/100", capture_resource,
+                                       &resource) == HTS_CATALOG_OK);
+  CHECK(strcmp(resource.state, "active") == 0 && resource.missing_count == 0U);
 
   clock_context.now_ms += 60000U;
   transport_context.have_request_time = 0;

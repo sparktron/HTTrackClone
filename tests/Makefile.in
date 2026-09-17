@@ -484,6 +484,7 @@ EXTRA_DIST = $(TESTS) crawl-test.sh run-all-tests.sh check-network.sh \
 	fixtures/catalog/rollback.json fixtures/catalog/malformed.json \
 	yotsuba-live-smoke.py fixtures/yotsuba/boards.json \
 	fixtures/yotsuba/boards-discovery.json \
+	fixtures/yotsuba/boards-discovery-two.json \
 	fixtures/yotsuba/threads-initial.json \
 	fixtures/yotsuba/threads-empty.json \
 	fixtures/yotsuba/threads-incremental.json \

@@ -38,6 +38,7 @@ EXTRA_DIST += \
 	yotsuba-live-smoke.py \
 	fixtures/yotsuba/boards.json \
 	fixtures/yotsuba/boards-discovery.json \
+	fixtures/yotsuba/boards-discovery-two.json \
 	fixtures/yotsuba/threads-initial.json \
 	fixtures/yotsuba/threads-empty.json \
 	fixtures/yotsuba/threads-incremental.json \
