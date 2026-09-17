@@ -54,7 +54,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            autoconf automake libtool zlib1g-dev libssl-dev
+            autoconf automake libtool zlib1g-dev libssl-dev \
+            libcurl4-openssl-dev libsqlite3-dev libicu-dev
 
       - name: Configure
         env:
@@ -87,7 +88,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            autoconf automake libtool zlib1g-dev libssl-dev
+            autoconf automake libtool zlib1g-dev libssl-dev \
+            libcurl4-openssl-dev libsqlite3-dev libicu-dev
 
       - name: Configure
         env:
@@ -125,7 +127,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            autoconf automake libtool zlib1g-dev libssl-dev
+            autoconf automake libtool zlib1g-dev libssl-dev \
+            libcurl4-openssl-dev libsqlite3-dev libicu-dev
 
       - name: Configure
         run: ./configure CFLAGS="-O2 -g"
@@ -148,7 +151,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            autoconf automake libtool zlib1g-dev libssl-dev clang-tools
+            autoconf automake libtool zlib1g-dev libssl-dev clang-tools \
+            libcurl4-openssl-dev libsqlite3-dev libicu-dev
 
       - name: Configure
         run: scan-build ./configure
@@ -179,7 +183,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            autoconf automake libtool zlib1g-dev libssl-dev
+            autoconf automake libtool zlib1g-dev libssl-dev \
+            libcurl4-openssl-dev libsqlite3-dev libicu-dev
 
       # Cheap, and needs no build: fails if source was vendored into the tree
       # without a matching row in THIRD-PARTY-NOTICES.md.
