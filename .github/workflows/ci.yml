@@ -70,7 +70,7 @@ jobs:
         run: make -j"$(nproc)" CFLAGS="-O2 -g -Wall -Wextra $HARD_WARNINGS $SOFT_WARNINGS"
 
       - name: Test
-        run: make check ONLINE_UNIT_TESTS=no
+        run: make check ONLINE_UNIT_TESTS=fixture
 
       - name: Show test log on failure
         if: failure()
@@ -109,7 +109,13 @@ jobs:
           # here. Keep AddressSanitizer's memory-error checks enabled.
           ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:halt_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: make check ONLINE_UNIT_TESTS=no
+        run: make check ONLINE_UNIT_TESTS=fixture
+
+      - name: Fuzzer smoke test
+        env:
+          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: make -C fuzz smoke
 
       - name: Show test log on failure
         if: failure()

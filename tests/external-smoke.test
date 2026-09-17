@@ -1,0 +1,14 @@
+#!/bin/sh
+
+# Optional real-network smoke test. It is intentionally excluded from TESTS.
+# Run with: make -C tests check-external ONLINE_UNIT_TESTS=yes
+
+set -eu
+
+test "${ONLINE_UNIT_TESTS:-no}" = yes || {
+  echo "external smoke skipped (set ONLINE_UNIT_TESTS=yes to enable)"
+  exit 77
+}
+
+exec bash "${srcdir:-.}/crawl-test.sh" --errors 0 --files 5 \
+  httrack http://ut.httrack.com/simple/basic.html

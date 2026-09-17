@@ -1,11 +1,12 @@
-#!/bin/bash
-#
+#!/bin/sh
+set -eu
 
-bash check-network.sh ||  ! echo "skipping online unit tests" || exit 77
-
-if test "$HTTPS_SUPPORT" == "no"; then
-	echo "no https support compiled, skipping"
-	exit 77
+if test "${HTTPS_SUPPORT:-yes}" = no; then
+  echo "HTTPS support is disabled"
+  exit 77
 fi
 
-bash crawl-test.sh --errors 0 --files 5 httrack https://ut.httrack.com/simple/basic.html
+. "${srcdir:-.}/fixture-test.sh"
+fixture_start
+fixture_crawl "$FIXTURE_HTTPS_URL/simple/basic.html" --insecure
+fixture_assert_file "$FIXTURE_HTTPS_DIR/simple/basic.html"
