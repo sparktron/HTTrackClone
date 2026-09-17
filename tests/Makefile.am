@@ -3,6 +3,11 @@
 # emits a broken per-word rule for each.
 TESTS = @TESTS_LIST@
 
+if BUILD_IMAGEBOARD_CATALOG
+TESTS += catalog-test.test metadata-runtime-test.test yotsuba-adapter.test \
+	catalog-cli.test
+endif
+
 # Committed binary fixture read by 01_zlib-cache-golden.test. List it
 # explicitly: automake does not expand wildcards in EXTRA_DIST, so a glob would
 # silently drop it from the dist tarball and break "make distcheck".
@@ -31,12 +36,32 @@ EXTRA_DIST = $(TESTS) renamefail.c unlinkfail.c threadattrfail.c nobacktrace.c a
 	62_lang-untranslated.counts \
 	62_lang-linebreaks.counts
 
+EXTRA_DIST += catalog-test.c catalog-test.test metadata-runtime-test.c \
+	metadata-runtime-test.test yotsuba-adapter-test.c \
+	yotsuba-adapter.test yotsuba-live-smoke.py catalog-cli-fixture.c \
+	catalog-cli-test.py catalog-cli.test fixtures/catalog/page1.json \
+	fixtures/catalog/page2.json fixtures/catalog/incremental.json \
+	fixtures/catalog/rollback.json fixtures/catalog/malformed.json \
+	fixtures/yotsuba/boards.json fixtures/yotsuba/boards-discovery.json \
+	fixtures/yotsuba/threads-initial.json fixtures/yotsuba/threads-empty.json \
+	fixtures/yotsuba/threads-incremental.json fixtures/yotsuba/threads-steady.json \
+	fixtures/yotsuba/threads-404.json fixtures/yotsuba/archive-empty.json \
+	fixtures/yotsuba/archive-100.json fixtures/yotsuba/thread-100.json \
+	fixtures/yotsuba/thread-200.json fixtures/yotsuba/thread-300.json \
+	fixtures/yotsuba/malformed.json
+
 TESTS_ENVIRONMENT =
 TESTS_ENVIRONMENT += PATH=$(top_builddir)/src$(PATH_SEPARATOR)$$PATH
 # note: libtool should handle that
 ### TESTS_ENVIRONMENT += $(SHLIBPATH_VAR)="$(top_builddir)/src/$(LT_CV_OBJDIR)$${$(SHLIBPATH_VAR):+$(PATH_SEPARATOR)}$$$(SHLIBPATH_VAR)"
 TESTS_ENVIRONMENT += ONLINE_UNIT_TESTS=$(ONLINE_UNIT_TESTS)
 TESTS_ENVIRONMENT += HTTPS_SUPPORT=$(HTTPS_SUPPORT)
+TESTS_ENVIRONMENT += CATALOG_CC="$(CC)"
+TESTS_ENVIRONMENT += CATALOG_CPPFLAGS="$(CPPFLAGS)"
+TESTS_ENVIRONMENT += CATALOG_CFLAGS="$(CFLAGS)"
+TESTS_ENVIRONMENT += CATALOG_SQLITE_LIBS="$(SQLITE_LIBS)"
+TESTS_ENVIRONMENT += CATALOG_TOP_SRCDIR="$(abs_top_srcdir)"
+TESTS_ENVIRONMENT += CATALOG_TOP_BUILDDIR="$(abs_top_builddir)"
 TESTS_ENVIRONMENT += BROTLI_ENABLED=$(BROTLI_ENABLED)
 TESTS_ENVIRONMENT += ZSTD_ENABLED=$(ZSTD_ENABLED)
 TESTS_ENVIRONMENT += V6_SUPPORT=$(V6_SUPPORT)
@@ -206,4 +231,9 @@ TEST_EXTENSIONS = .test
 # cancelled step keeps neither its log nor its artifacts, so today a hang tells
 # us nothing at all. HTTRACK_TEST_TIMEOUT overrides the budget; 0 disables it.
 TEST_LOG_COMPILER = $(BASH_SHELL) $(srcdir)/test-timeout.sh
-CLEANFILES = check-network_sh.cache 62_lang-untranslated.counts.new
+CLEANFILES = check-network_sh.cache 62_lang-untranslated.counts.new \
+	yotsuba-adapter-test-bin catalog-cli-fixture-bin
+
+.PHONY: check-yotsuba-live
+check-yotsuba-live:
+	python3 $(srcdir)/yotsuba-live-smoke.py

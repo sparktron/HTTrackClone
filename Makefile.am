@@ -6,6 +6,10 @@ ACLOCAL_AMFLAGS = -I m4
 EXTRA_DIST = INSTALL.Linux \
 		gpl-fr.txt license.txt greetings.txt history.txt \
 		httrack-doc.html lang.def README.md PACKAGING.md tools/mkdeb.sh \
+		docs/adr/0001-imageboard-catalog-foundation.md \
+		docs/adr/0002-adapter-metadata-transport.md \
+		docs/adr/0003-yotsuba-read-only-adapter.md \
+		docs/adr/0004-catalog-cli-selection-workflow.md \
 		tools/macos-app.sh tools/macos-bundle.sh tools/macos-release.sh \
 		tools/httrack-launcher.c \
 		tools/Info.plist.in tools/HTTrack.icns \

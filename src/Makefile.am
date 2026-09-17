@@ -19,6 +19,10 @@ DevIncludes_DATA = \
 pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = libhttrack.pc
 
+if BUILD_IMAGEBOARD_CATALOG
+DevIncludes_DATA += htscatalog.h htsmetadata.h htsyotsuba.h htscatalogpath.h
+endif
+
 AM_CPPFLAGS = \
 	-DHTS_INTERNAL_BUILD \
 	@DEFAULT_CFLAGS@ \
@@ -102,9 +106,21 @@ libhttrack_la_SOURCES =  htscore.c htsparse.c htsback.c htscache.c \
 	winprofile-keys.h \
 	md5.h coucal/murmurhash3.h \
 	minizip/crypt.h minizip/ioapi.h minizip/mztools.h minizip/unzip.h minizip/zip.h
-libhttrack_la_LIBADD = $(THREADS_LIBS) $(ZLIB_LIBS) $(BROTLI_LIBS) $(ZSTD_LIBS) $(OPENSSL_LIBS) $(DL_LIBS) $(SOCKET_LIBS) $(ICONV_LIBS)
+
+if BUILD_IMAGEBOARD_CATALOG
+libhttrack_la_SOURCES += htscatalog.c htscatalog.h htsmetadata.c htsmetadata.h \
+	htsyotsuba.c htsyotsuba.h htscatalogpath.c htscatalogpath.h
+endif
+
+libhttrack_la_LIBADD = $(THREADS_LIBS) $(ZLIB_LIBS) $(BROTLI_LIBS) $(ZSTD_LIBS) $(OPENSSL_LIBS) $(DL_LIBS) $(SOCKET_LIBS) $(ICONV_LIBS) $(SQLITE_LIBS) $(ICU_LIBS)
 libhttrack_la_CFLAGS = $(AM_CFLAGS) -DLIBHTTRACK_EXPORTS -DZLIB_CONST
 libhttrack_la_LDFLAGS = $(AM_LDFLAGS) -version-info $(VERSION_INFO)
+
+if BUILD_IMAGEBOARD_CATALOG
+bin_PROGRAMS += httrack-catalog
+httrack_catalog_SOURCES = httrack-catalog.c
+httrack_catalog_LDADD = libhttrack.la $(SQLITE_LIBS) $(CURL_LIBS) $(ICU_LIBS)
+endif
 
 EXTRA_DIST = httrack.h htsstats.h webhttrack.in \
 		version.rc \
