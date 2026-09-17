@@ -1,10 +1,7 @@
-#!/bin/bash
-#
-
-bash check-network.sh ||  ! echo "skipping online unit tests" || exit 77
-
-# http://code.google.com/p/httrack/issues/detail?id=42&can=1
-# we expect 2 errors only because other links are too longs (to be modified if suitable)
-bash crawl-test.sh --errors 2 --files 1 \
-	--found ut.httrack.com/overflow/longquerywithaccents.html \
-	httrack http://ut.httrack.com/overflow/longquerywithaccents.php
+#!/bin/sh
+set -eu
+. "${srcdir:-.}/fixture-test.sh"
+fixture_start
+fixture_crawl "$FIXTURE_HTTP_URL/overflow/longquerywithaccents.php"
+fixture_assert_file "$FIXTURE_HTTP_DIR/overflow/longquerywithaccents.html"
+test -d "$FIXTURE_CRAWL_DIR/$FIXTURE_HTTP_DIR/overflow" || fixture_fail "missing long-URL output"

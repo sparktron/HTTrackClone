@@ -271,6 +271,10 @@ extern int ZEXPORT unzRepair(const char* file, const char* fileOut, const char* 
     fclose(fpZip);
     fclose(fpOut);
 
+    if (err != Z_OK) {
+      (void)remove(fileOut);
+    }
+
     /* Wipe temporary file */
     (void)remove(fileOutTmp);
 

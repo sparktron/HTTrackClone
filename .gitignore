@@ -20,9 +20,29 @@ Makefile
 /src/htsserver
 /src/proxytrack
 /src/webhttrack
+/src/httrack-catalog
+
+# locally generated Autotools inputs
+/aclocal.m4
+/m4/libtool.m4
+/m4/ltoptions.m4
+/m4/ltsugar.m4
+/m4/ltversion.m4
+/m4/lt~obsolete.m4
+
+# fuzz build and crash artifacts
+/fuzz/fuzz_cache
+/fuzz/fuzz_parser
+/fuzz/fuzz_url_filename
+/fuzz/fuzz_zip
+/crash-*
+/fuzz/crash-*
 
 # test artifacts
 /tests/test-suite.log
+/tests/*.log
+/tests/catalog-cli-fixture-bin
+/tests/yotsuba-adapter-test-bin
 /tests/*.trs
 /tests/check-network_sh.cache
 

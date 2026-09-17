@@ -3,7 +3,7 @@
 /* Check for dlopen in c */
 #undef DLLIB
 
-/* Define if pointers to integers require aligned access */
+/* Define when integer pointers must be naturally aligned. */
 #undef HAVE_ALIGNED_ACCESS_REQUIRED
 
 /* Define to 1 if you have the <dlfcn.h> header file. */
@@ -72,6 +72,9 @@
 
 /* Check for OpenSSL */
 #undef HTS_USEOPENSSL
+
+/* Build the imageboard SQLite catalog */
+#undef HTS_USE_SQLITE_CATALOG
 
 /* Check for libiconv */
 #undef LIBICONV

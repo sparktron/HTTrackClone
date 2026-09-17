@@ -1,6 +1,8 @@
-#!/bin/bash
-#
-
-bash check-network.sh ||  ! echo "skipping online unit tests" || exit 77
-
-bash crawl-test.sh --errors 0 --files 5 httrack http://ut.httrack.com/simple/basic.html
+#!/bin/sh
+set -eu
+. "${srcdir:-.}/fixture-test.sh"
+fixture_start
+fixture_crawl "$FIXTURE_HTTP_URL/simple/basic.html"
+fixture_assert_file "$FIXTURE_HTTP_DIR/simple/basic.html"
+fixture_assert_file "$FIXTURE_HTTP_DIR/simple/next.html"
+fixture_assert_file "$FIXTURE_HTTP_DIR/simple/site.css"
