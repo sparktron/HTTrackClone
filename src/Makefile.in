@@ -154,7 +154,7 @@ libhtsjava_la_OBJECTS = $(am_libhtsjava_la_OBJECTS)
 AM_V_lt = $(am__v_lt_@AM_V@)
 am__v_lt_ = $(am__v_lt_@AM_DEFAULT_V@)
 am__v_lt_0 = --silent
-am__v_lt_1 = 
+am__v_lt_1 =
 libhtsjava_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
 	$(libhtsjava_la_LDFLAGS) $(LDFLAGS) -o $@
@@ -256,11 +256,11 @@ am__v_P_1 = :
 AM_V_GEN = $(am__v_GEN_@AM_V@)
 am__v_GEN_ = $(am__v_GEN_@AM_DEFAULT_V@)
 am__v_GEN_0 = @echo "  GEN     " $@;
-am__v_GEN_1 = 
+am__v_GEN_1 =
 AM_V_at = $(am__v_at_@AM_V@)
 am__v_at_ = $(am__v_at_@AM_DEFAULT_V@)
 am__v_at_0 = @
-am__v_at_1 = 
+am__v_at_1 =
 DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
@@ -324,7 +324,7 @@ LTCOMPILE = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
 AM_V_CC = $(am__v_CC_@AM_V@)
 am__v_CC_ = $(am__v_CC_@AM_DEFAULT_V@)
 am__v_CC_0 = @echo "  CC      " $@;
-am__v_CC_1 = 
+am__v_CC_1 =
 CCLD = $(CC)
 LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
@@ -332,7 +332,7 @@ LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
 AM_V_CCLD = $(am__v_CCLD_@AM_V@)
 am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
-am__v_CCLD_1 = 
+am__v_CCLD_1 =
 SOURCES = $(libhtsjava_la_SOURCES) $(libhttrack_la_SOURCES) \
 	$(htsserver_SOURCES) httrack.c $(httrack_catalog_SOURCES) \
 	$(proxytrack_SOURCES)
@@ -717,7 +717,7 @@ clean-libLTLIBRARIES:
 	  rm -f $${locs}; \
 	}
 
-libhtsjava.la: $(libhtsjava_la_OBJECTS) $(libhtsjava_la_DEPENDENCIES) $(EXTRA_libhtsjava_la_DEPENDENCIES) 
+libhtsjava.la: $(libhtsjava_la_OBJECTS) $(libhtsjava_la_DEPENDENCIES) $(EXTRA_libhtsjava_la_DEPENDENCIES)
 	$(AM_V_CCLD)$(libhtsjava_la_LINK) -rpath $(libdir) $(libhtsjava_la_OBJECTS) $(libhtsjava_la_LIBADD) $(LIBS)
 coucal/$(am__dirstamp):
 	@$(MKDIR_P) coucal
@@ -742,14 +742,14 @@ minizip/libhttrack_la-unzip.lo: minizip/$(am__dirstamp) \
 minizip/libhttrack_la-zip.lo: minizip/$(am__dirstamp) \
 	minizip/$(DEPDIR)/$(am__dirstamp)
 
-libhttrack.la: $(libhttrack_la_OBJECTS) $(libhttrack_la_DEPENDENCIES) $(EXTRA_libhttrack_la_DEPENDENCIES) 
+libhttrack.la: $(libhttrack_la_OBJECTS) $(libhttrack_la_DEPENDENCIES) $(EXTRA_libhttrack_la_DEPENDENCIES)
 	$(AM_V_CCLD)$(libhttrack_la_LINK) -rpath $(libdir) $(libhttrack_la_OBJECTS) $(libhttrack_la_LIBADD) $(LIBS)
 
-htsserver$(EXEEXT): $(htsserver_OBJECTS) $(htsserver_DEPENDENCIES) $(EXTRA_htsserver_DEPENDENCIES) 
+htsserver$(EXEEXT): $(htsserver_OBJECTS) $(htsserver_DEPENDENCIES) $(EXTRA_htsserver_DEPENDENCIES)
 	@rm -f htsserver$(EXEEXT)
 	$(AM_V_CCLD)$(htsserver_LINK) $(htsserver_OBJECTS) $(htsserver_LDADD) $(LIBS)
 
-httrack$(EXEEXT): $(httrack_OBJECTS) $(httrack_DEPENDENCIES) $(EXTRA_httrack_DEPENDENCIES) 
+httrack$(EXEEXT): $(httrack_OBJECTS) $(httrack_DEPENDENCIES) $(EXTRA_httrack_DEPENDENCIES)
 	@rm -f httrack$(EXEEXT)
 	$(AM_V_CCLD)$(httrack_LINK) $(httrack_OBJECTS) $(httrack_LDADD) $(LIBS)
 
@@ -779,7 +779,7 @@ minizip/proxytrack-unzip.$(OBJEXT): minizip/$(am__dirstamp) \
 minizip/proxytrack-zip.$(OBJEXT): minizip/$(am__dirstamp) \
 	minizip/$(DEPDIR)/$(am__dirstamp)
 
-proxytrack$(EXEEXT): $(proxytrack_OBJECTS) $(proxytrack_DEPENDENCIES) $(EXTRA_proxytrack_DEPENDENCIES) 
+proxytrack$(EXEEXT): $(proxytrack_OBJECTS) $(proxytrack_DEPENDENCIES) $(EXTRA_proxytrack_DEPENDENCIES)
 	@rm -f proxytrack$(EXEEXT)
 	$(AM_V_CCLD)$(proxytrack_LINK) $(proxytrack_OBJECTS) $(proxytrack_LDADD) $(LIBS)
 install-whttrackrunSCRIPTS: $(whttrackrun_SCRIPTS)

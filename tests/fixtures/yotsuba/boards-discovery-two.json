@@ -1,0 +1,6 @@
+{
+  "boards": [
+    {"board": "plain", "title": "Synthetic No-Archive Board", "ws_board": 1},
+    {"board": "gone", "title": "Synthetic Removed Board", "ws_board": 1}
+  ]
+}

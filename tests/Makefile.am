@@ -1,5 +1,4 @@
 EXTRA_DIST = $(TESTS) crawl-test.sh run-all-tests.sh check-network.sh \
-	fixture-server.py fixture-test.sh external-smoke.test \
 	catalog-test.c catalog-test.test metadata-runtime-test.c \
 	metadata-runtime-test.test yotsuba-adapter-test.c \
 	yotsuba-adapter.test yotsuba-live-smoke.py catalog-cli-fixture.c \
@@ -31,11 +30,6 @@ endif
 CLEANFILES = check-network_sh.cache yotsuba-adapter-test-bin \
 	catalog-cli-fixture-bin
 
-.PHONY: check-external
-check-external:
-	ONLINE_UNIT_TESTS=yes PATH=$(top_builddir)/src$(PATH_SEPARATOR)$$PATH \
-		$(SHELL) $(srcdir)/external-smoke.test
-
 .PHONY: check-yotsuba-live
 check-yotsuba-live:
 	python3 $(srcdir)/yotsuba-live-smoke.py
@@ -44,6 +38,7 @@ EXTRA_DIST += \
 	yotsuba-live-smoke.py \
 	fixtures/yotsuba/boards.json \
 	fixtures/yotsuba/boards-discovery.json \
+	fixtures/yotsuba/boards-discovery-two.json \
 	fixtures/yotsuba/threads-initial.json \
 	fixtures/yotsuba/threads-empty.json \
 	fixtures/yotsuba/threads-incremental.json \

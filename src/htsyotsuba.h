@@ -25,6 +25,7 @@ typedef struct hts_yotsuba_options {
   unsigned int missing_confirmations;
   hts_metadata_policy policy;
   hts_metadata_cancel cancel;
+  const char *base_url;
 } hts_yotsuba_options;
 
 typedef struct hts_yotsuba_sync_result {

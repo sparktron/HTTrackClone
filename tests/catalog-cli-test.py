@@ -49,6 +49,13 @@ def main() -> int:
             "schema_version": 4,
         }
 
+        invalid_origin, _ = run(
+            "source", "add", "--adapter", "yotsuba", "--url",
+            "https://example.com", "--board", "safe", ok=False,
+        )
+        assert invalid_origin.stdout == ""
+        assert "official API origin" in invalid_origin.stderr
+
         _, added = run(
             "source", "add", "--adapter", "yotsuba", "--board", "safe",
             "--name", "Fixture source",
@@ -118,6 +125,12 @@ def main() -> int:
             assert len(page["collections"]) == expected
             pages.extend(item["id"] for item in page["collections"])
         assert len(pages) == len(set(pages)) == 128
+
+        _, limited = run(
+            "selection", "create", "limited", "--source", "1",
+            "--from-search", "--limit", "50",
+        )
+        assert limited["collection_count"] == 50
 
         invalid, _ = run(
             "search", "collections", "--min-width", "100", "--max-width",

@@ -89,6 +89,8 @@ struct hts_yotsuba_adapter {
   char expected_state[65];
   uint64_t scan_marker_ms;
   int archive_supported;
+  int boards_refreshed;
+  int active_inventory_not_modified;
   y_known_resource *known_resources;
   size_t known_resource_count;
   y_known_post *known_posts;
@@ -912,6 +914,9 @@ int hts_yotsuba_adapter_create(
   hts_metadata_policy defaults;
   if (catalog == NULL || options == NULL || out_adapter == NULL ||
       options->source_id <= 0 ||
+      (options->base_url != NULL &&
+       strcmp(options->base_url, HTS_YOTSUBA_API_ORIGIN) != 0 &&
+       strcmp(options->base_url, HTS_YOTSUBA_API_ORIGIN "/") != 0) ||
       (!options->discover_boards && options->board_count == 0U) ||
       options->board_count > YOTSUBA_MAX_BOARDS ||
       (options->board_count != 0U && options->boards == NULL)) return 0;
@@ -920,6 +925,7 @@ int hts_yotsuba_adapter_create(
   if (adapter == NULL) return 0;
   adapter->catalog = catalog;
   adapter->options = *options;
+  adapter->options.base_url = HTS_YOTSUBA_API_ORIGIN;
   if (adapter->options.missing_confirmations == 0U)
     adapter->options.missing_confirmations = 2U;
   if (adapter->options.missing_confirmations < 2U ||
@@ -1109,10 +1115,12 @@ static hts_metadata_category y_parse_boards(
                     archives == 1 ? "true" : "false");
     (void) snprintf(metadata, sizeof(metadata),
                     "{\"source\":\"4chan\",\"canonical_url\":\"%s\","
-                    "\"work_safe\":%s,\"archives\":%s}",
+                    "\"work_safe\":%s,\"archives\":%s,"
+                    "\"scan_marker\":%llu}",
                     HTS_YOTSUBA_API_ORIGIN,
                     work_safe == 1 ? "true" : "false",
-                    archives == 1 ? "true" : "false");
+                    archives == 1 ? "true" : "false",
+                    (unsigned long long) adapter->scan_marker_ms);
     (void) snprintf(seen, sizeof(seen), "%llu",
                     (unsigned long long) adapter->scan_marker_ms);
     record = &storage->boards[output_count].record;
@@ -1143,6 +1151,7 @@ static hts_metadata_category y_parse_boards(
     result = HTS_METADATA_PERMANENT_CONFIGURATION_ERROR;
     goto done;
   }
+  adapter->boards_refreshed = 1;
   result = HTS_METADATA_SUCCESS;
 
 done:
@@ -1156,9 +1165,17 @@ static int y_board_copy(void *opaque, const hts_catalog_entry *entry) {
   y_board_info *next;
   y_board_info *item;
   size_t capacity;
+  char marker[64];
   context = (y_board_copy_context *) opaque;
   if (entry == NULL || entry->remote_id == NULL ||
       !y_configured(context->adapter, entry->remote_id)) return 0;
+  if (context->adapter->options.discover_boards &&
+      context->adapter->boards_refreshed) {
+    (void) snprintf(marker, sizeof(marker), "\"scan_marker\":%llu",
+                    (unsigned long long) context->adapter->scan_marker_ms);
+    if (entry->metadata_json == NULL ||
+        strstr(entry->metadata_json, marker) == NULL) return 0;
+  }
   if (context->count == context->capacity) {
     capacity = context->capacity == 0U ? 16U : context->capacity * 2U;
     next = (y_board_info *) realloc(context->items,
@@ -1248,7 +1265,7 @@ static hts_metadata_category y_run_request(
   request.operation = operation;
   request.resource_kind = resource_kind;
   request.resource_id = resource_id;
-  request.source.base_url = HTS_YOTSUBA_API_ORIGIN;
+  request.source.base_url = adapter->options.base_url;
   request.source.configured_board = board;
   request.policy = adapter->options.policy;
   request.cancel = adapter->options.cancel;
@@ -1338,6 +1355,7 @@ hts_metadata_category hts_yotsuba_sync(
                                    &runtime)) return result->category;
   boards = NULL;
   board_count = 0U;
+  adapter->boards_refreshed = 0;
   adapter->scan_marker_ms = clock->now_ms(clock->context);
   category = y_run_request(adapter, runtime, HTS_METADATA_DISCOVER_BOARDS,
                            "yotsuba-boards", "boards", NULL, &sync_result);
@@ -1355,6 +1373,7 @@ hts_metadata_category hts_yotsuba_sync(
     int length;
     adapter->scan_marker_ms = clock->now_ms(clock->context);
     adapter->archive_supported = boards[board_index].archives;
+    adapter->active_inventory_not_modified = 0;
     if (!y_load_resources(adapter, boards[board_index].board)) {
       category = HTS_METADATA_PERMANENT_CONFIGURATION_ERROR;
       goto complete;
@@ -1370,6 +1389,8 @@ hts_metadata_category hts_yotsuba_sync(
                              "yotsuba-thread-list", resource_id,
                              boards[board_index].board, &sync_result);
     result->requests_made += sync_result.requests_made;
+    adapter->active_inventory_not_modified =
+        category == HTS_METADATA_NOT_MODIFIED;
     if (category != HTS_METADATA_SUCCESS &&
         category != HTS_METADATA_NOT_MODIFIED) goto complete;
     if (!y_load_resources(adapter, boards[board_index].board)) {
@@ -1924,25 +1945,24 @@ static int y_add_missing(hts_yotsuba_adapter *adapter,
   resource->remote_version = NULL;
   resource->synchronized_version = NULL;
   resource->lifecycle_state = y_owned_text(storage, state);
-  resource->synchronized_state = NULL;
+  resource->synchronized_state = y_owned_text(storage, state);
   resource->missing_count = missing;
   resource->last_seen_ms = -1;
   resource->last_checked_ms = (int64_t) adapter->scan_marker_ms;
   if (resource->resource_kind == NULL || resource->resource_id == NULL ||
-      resource->parent_remote_id == NULL || resource->lifecycle_state == NULL)
+      resource->parent_remote_id == NULL || resource->lifecycle_state == NULL ||
+      resource->synchronized_state == NULL)
     return 0;
   change = &storage->changes[(*change_count)++];
   change->target = HTS_METADATA_LIFECYCLE_COLLECTION;
   change->kind = y_owned_text(storage, "thread");
   change->remote_id = y_owned_text(storage, known->resource_id);
   change->state = y_owned_text(storage, state);
-  change->media_availability_state =
-      strcmp(state, "expired") == 0
-        ? y_owned_text(storage, "expired") : NULL;
+  change->media_availability_state = y_owned_text(
+      storage, strcmp(state, "expired") == 0
+                   ? "expired" : "temporarily_unavailable");
   return change->kind != NULL && change->remote_id != NULL &&
-         change->state != NULL &&
-         (strcmp(state, "expired") != 0 ||
-          change->media_availability_state != NULL);
+         change->state != NULL && change->media_availability_state != NULL;
 }
 
 static hts_metadata_category y_parse_threads(
@@ -2126,7 +2146,8 @@ static hts_metadata_category y_parse_archive(
   for (i = 0U; i < adapter->known_resource_count; i++) {
     const y_known_resource *known;
     known = &adapter->known_resources[i];
-    if ((known->last_seen_ms == (int64_t) adapter->scan_marker_ms &&
+    if (((adapter->active_inventory_not_modified ||
+          known->last_seen_ms == (int64_t) adapter->scan_marker_ms) &&
          strcmp(known->lifecycle_state, "active") == 0) ||
         y_resource_in_batch(storage, resource_count, known->resource_id))
       continue;

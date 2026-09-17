@@ -50,6 +50,7 @@ typedef struct query_filter {
   const char *lifecycle;
   const char *availability;
   int limit;
+  int limit_explicit;
   int offset;
 } query_filter;
 
@@ -313,6 +314,15 @@ static int source_add(cli_context *context, int argc, char **argv) {
   if (adapter == NULL) adapter = "yotsuba";
   if (url == NULL && strcmp(adapter, "yotsuba") == 0)
     url = HTS_YOTSUBA_API_ORIGIN;
+  if (strcmp(adapter, "yotsuba") == 0) {
+    if (strcmp(url, HTS_YOTSUBA_API_ORIGIN) == 0 ||
+        strcmp(url, HTS_YOTSUBA_API_ORIGIN "/") == 0)
+      url = HTS_YOTSUBA_API_ORIGIN;
+    else {
+      print_error(context, "yotsuba sources require the official API origin");
+      return 2;
+    }
+  }
   if (url == NULL || (board_count == 0U && !discover)) {
     print_error(context, "source add requires a URL and board(s) or discovery");
     return 2;
@@ -1051,6 +1061,7 @@ static int sync_one_source(cli_context *context, const source_config *source,
   }
   (void) memset(&options, 0, sizeof(options));
   options.source_id = source->id;
+  options.base_url = source->base_url;
   options.boards = board_override != NULL ? override_boards
                                            : (const char *const *) boards;
   options.board_count = board_override != NULL ? 1U : board_count;
@@ -1340,6 +1351,7 @@ static int parse_filters(cli_context *context, int argc, char **argv,
     } else if (strcmp(option, "--limit") == 0 && value != NULL) {
       if (!parse_int(value, &filter->limit) || filter->limit < 1 ||
           filter->limit > CLI_LIMIT_MAX) goto invalid;
+      filter->limit_explicit = 1;
       index++;
     } else if (strcmp(option, "--offset") == 0 && value != NULL) {
       if (!parse_int(value, &filter->offset)) goto invalid;
@@ -1846,7 +1858,7 @@ static int selection_create(cli_context *context, int argc, char **argv) {
   if (from_search) {
     if (!parse_filters(context, filter_count, filter_args, &filter)) goto failure;
     filter.source_id = source_id;
-    if (filter.limit == CLI_LIMIT_DEFAULT) filter.limit = CLI_LIMIT_MAX;
+    if (!filter.limit_explicit) filter.limit = CLI_LIMIT_MAX;
   } else if (filter_count != 0) goto invalid;
   if (!open_catalog(context)) goto failure;
   if (!execute(context, "BEGIN IMMEDIATE")) goto database_failure;
