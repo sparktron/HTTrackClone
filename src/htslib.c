@@ -4056,9 +4056,9 @@ HTSEXT_API void get_httptype(httrackp * opt, char *s, const char *fil, int flag)
     strlcpybuff(s, "text/html", GET_HTTPTYPE_MIN_SIZE);
   } else {
     /* Check html -> text/html */
-    const char *a = fil + strlen(fil) - 1;
+    const char *a = fil + strlen(fil);
 
-    while((*a != '.') && (*a != '/') && (a > fil))
+    while((a > fil) && (*a != '.') && (*a != '/'))
       a--;
     if (*a == '.' && strlen(a) < 32) {
       int j = 0;

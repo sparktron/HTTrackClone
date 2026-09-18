@@ -1912,11 +1912,13 @@ extern int ZEXPORT zipClose(zipFile file, const char* global_comment) {
 
 extern int ZEXPORT zipRemoveExtraInfoBlock(char* pData, int* dataLen, short sHeader) {
   char* p = pData;
+  char* end;
   int size = 0;
   char* pNewHeader;
   char* pTmp;
-  short header;
-  short dataSize;
+  unsigned short header;
+  unsigned short dataSize;
+  size_t blockSize;
 
   int retVal = ZIP_OK;
 
@@ -1927,22 +1929,33 @@ extern int ZEXPORT zipRemoveExtraInfoBlock(char* pData, int* dataLen, short sHea
   if (pNewHeader == NULL)
     return ZIP_INTERNALERROR;
   pTmp = pNewHeader;
+  end = pData + *dataLen;
 
-  while(p < (pData + *dataLen))
+  while(p < end)
   {
-    header = *(short*)p;
-    dataSize = *(((short*)p)+1);
+    if ((size_t)(end - p) < 4U) {
+      retVal = ZIP_PARAMERROR;
+      goto done;
+    }
+    memcpy(&header, p, sizeof(header));
+    memcpy(&dataSize, p + sizeof(header), sizeof(dataSize));
+    blockSize = (size_t)dataSize + 4U;
+    if (blockSize > (size_t)(end - p)) {
+      retVal = ZIP_PARAMERROR;
+      goto done;
+    }
 
-    if( header == sHeader ) // Header found.
+    if( header == (unsigned short)sHeader ) // Header found.
     {
-      p += dataSize + 4; // skip it. do not copy to temp buffer
+      p += blockSize; // skip it. do not copy to temp buffer
     }
     else
     {
       // Extra Info block should not be removed, So copy it to the temp buffer.
-      memcpy(pTmp, p, dataSize + 4);
-      p += dataSize + 4;
-      size += dataSize + 4;
+      memcpy(pTmp, p, blockSize);
+      pTmp += blockSize;
+      p += blockSize;
+      size += (int)blockSize;
     }
 
   }
@@ -1964,6 +1977,7 @@ extern int ZEXPORT zipRemoveExtraInfoBlock(char* pData, int* dataLen, short sHea
   else
     retVal = ZIP_ERRNO;
 
+done:
   free(pNewHeader);
 
   return retVal;

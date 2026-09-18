@@ -230,6 +230,11 @@ static const char migration_4[] =
   "INSERT INTO schema_migrations(version) VALUES(4);"
   "PRAGMA user_version=4;";
 
+/* This wrapper accepts only format strings supplied by this translation unit. */
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+#endif
 static void set_error(hts_catalog *catalog, const char *format, ...) {
   va_list args;
   if (catalog == NULL) {
@@ -239,6 +244,9 @@ static void set_error(hts_catalog *catalog, const char *format, ...) {
   (void) vsnprintf(catalog->error, sizeof(catalog->error), format, args);
   va_end(args);
 }
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 static int prepare(hts_catalog *catalog, const char *sql, sqlite3_stmt **stmt) {
   int rc;

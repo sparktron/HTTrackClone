@@ -64,7 +64,7 @@ jobs:
           # Keep warning errors out of configure probes: Autoconf's generic
           # function declarations are intentionally old-style and trip
           # -Werror=strict-prototypes. Apply them to the actual build below.
-          ./configure CFLAGS="-O2 -g"
+          ./configure --enable-imageboard-catalog CFLAGS="-O2 -g"
 
       - name: Build
         run: make -j"$(nproc)" CFLAGS="-O2 -g -Wall -Wextra $HARD_WARNINGS $SOFT_WARNINGS"
@@ -95,7 +95,7 @@ jobs:
         env:
           CC: clang
         run: |
-          ./configure --disable-shared \
+          ./configure --enable-imageboard-catalog --disable-shared \
             CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all" \
             LDFLAGS="-fsanitize=address,undefined"
 
