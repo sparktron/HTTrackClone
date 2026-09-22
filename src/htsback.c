@@ -3738,19 +3738,28 @@ void back_wait(struct_back * sback, httrackp * opt, cache_back * cache,
                   back[i].r.statuscode = STATUSCODE_SSL_HANDSHAKE;
                 } else {
                   SSL_set_verify(back[i].r.ssl_con, SSL_VERIFY_PEER, NULL);
-#if (OPENSSL_VERSION_NUMBER >= 0x10100000L)
-                  /* setting the expected host enables hostname checking */
-                  if (!SSL_set1_host(back[i].r.ssl_con, hostname)) {
-                    back[i].r.statuscode = STATUSCODE_SSL_HANDSHAKE;
-                  }
-#elif (OPENSSL_VERSION_NUMBER >= 0x10002000L)
+#if (OPENSSL_VERSION_NUMBER >= 0x10002000L)
                   {
                     X509_VERIFY_PARAM *const param =
                       SSL_get0_param(back[i].r.ssl_con);
+                    /* An address has to be matched against the certificate's
+                       IP SANs: set1_host() would compare it as a DNS name and
+                       reject a certificate that does name the address.
+                       SSL_set1_host() only does this itself from OpenSSL 3.0
+                       on, so spell it out rather than mirror a crawl of
+                       https://<address>/ with the check silently failing on
+                       1.x. Brackets are already stripped above, so a colon
+                       means IPv6. */
+                    const hts_boolean is_address =
+                      hts_host_is_ipv4(hostname, strlen(hostname))
+                      || strchr(hostname, ':') != NULL;
+                    const int target_ok = is_address
+                      ? X509_VERIFY_PARAM_set1_ip_asc(param, hostname)
+                      : X509_VERIFY_PARAM_set1_host(param, hostname, 0);
 
                     X509_VERIFY_PARAM_set_hostflags(param,
                                                     X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-                    if (!X509_VERIFY_PARAM_set1_host(param, hostname, 0)) {
+                    if (target_ok != 1) {
                       back[i].r.statuscode = STATUSCODE_SSL_HANDSHAKE;
                     }
                   }
