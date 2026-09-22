@@ -1,0 +1,303 @@
+#!/bin/bash
+#
+# Drives ci-windows-suite.sh here: the source guard, the bindir contract and the
+# loop's accounting. All three are Windows-only in production, so nothing would
+# exercise them before merge (#948).
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# Before the driver is sourced: with these set, anything it starts posts a commit
+# status on whatever the surrounding shell was last looking at.
+unset WATCHDOG_TOKEN WATCHDOG_REPO WATCHDOG_SHA WATCHDOG_URL
+
+driver="$testdir/ci-windows-suite.sh"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/httrack_ciwin.XXXXXX")
+cleanup_push rm -rf "$tmp"
+
+cd "$tmp"
+
+path_before=$PATH
+# shellcheck source=tests/ci-windows-suite.sh
+. "$driver"
+test "$(type -t ci_suite_heartbeat)" = function || fail "sourcing did not define the watchdog"
+test ! -e suite-progress.log || fail "sourcing drove a suite"
+test "$PATH" = "$path_before" || fail "sourcing exported the suite's PATH"
+
+# bash -c sets $0 to the operand, so this defeats a [ BASH_SOURCE = $0 ] guard.
+out=$(bash -c '. "$0"' "$driver" 2>&1) || fail "sourcing through bash -c: $out"
+test ! -e suite-progress.log || fail "sourcing with \$0 at the driver drove a suite"
+
+rc=0
+out=$(bash "$driver" 2>&1) || rc=$?
+test "$rc" -eq 1 || fail "argless run exited $rc, want 1"
+grep -q usage <<<"$out" || fail "argless run said: $out"
+
+# A copy, so $testdir resolves to a testlib we can neuter: the driver reaps
+# engines host-wide between tests, which under "make check -j" would kill a
+# sibling's.
+run=$tmp/run
+mkdir -p "$run"
+cp "$driver" "$testdir/testlib.sh" "$testdir/proclib.sh" "$testdir/test-timeout.sh" \
+    "$testdir/ci-windows-watchdog.ps1" "$run/"
+chmod u+w "$run"/*.sh # distcheck's srcdir is read-only, and cp carries that over
+cat >>"$run/proclib.sh" <<'EOF'
+reap_leftover_processes() { return 0; }
+EOF
+# Records who sourced this copy, so assert_staged can tell the staged driver from
+# the srcdir one. test-timeout.sh sources it too, hence the caller and not a bare
+# marker file.
+cat >>"$run/testlib.sh" <<EOF
+printf '%s\n' "\${BASH_SOURCE[1]##*/}" >>"$tmp/sourced-by"
+EOF
+: >"$tmp/sourced-by"
+
+# The suite under test has to be the staged copy: only it sources the testlib.sh
+# neutered above, and the srcdir one would reap sibling engines under "make check -j".
+assert_staged() {
+    grep -qx 'ci-windows-suite.sh' "$tmp/sourced-by" ||
+        fail "the srcdir driver ran, not the staged copy: $(sort -u "$tmp/sourced-by" | tr '\n' ' ')"
+    : >"$tmp/sourced-by"
+}
+
+bin=$tmp/bin
+mkdir -p "$bin"
+printf '#!/bin/sh\nexit 0\n' >"$bin/httrack"
+# The first child the driver forks: the token has to be gone before it runs.
+# shellcheck disable=SC2016 # $2 and the token are the stub's own expansions
+printf '#!/bin/sh\necho "TOKEN=${WATCHDOG_TOKEN:-}" >>%s\necho "$2"\n' "$tmp/cygpathtoken" \
+    >"$bin/cygpath"
+chmod +x "$bin/httrack" "$bin/cygpath"
+# The driver puts this bindir first on PATH, so this is the interpreter it finds.
+# Unconditional, because a real PowerShell here runs the real watchdog, and only
+# the scrub above stands between that and api.github.com.
+wdargv=$tmp/wdargv
+wdmark=$tmp/wdmark
+: >"$wdargv"
+cat >"$bin/pwsh" <<EOF
+#!/bin/sh
+{ echo "TOKEN=\${WATCHDOG_TOKEN:-}"; printf '%s\n' "\$@"; } >>"$wdargv"
+echo "watchdog ready"
+# Ticks rather than sleeps: a pid can be reused, a running reporter cannot.
+n=0
+while :; do
+    n=\$((n + 1))
+    echo "\$n" >"$wdmark.part"
+    mv "$wdmark.part" "$wdmark"
+    sleep 0.2
+done
+EOF
+chmod +x "$bin/pwsh"
+# Ahead of any command -v, which asks access(X_OK) and so reads false here.
+test -x "$bin/pwsh" || skip "${TMPDIR:-/tmp} is noexec, the stub bindir cannot be run"
+test "$(PATH="$bin:$PATH" command -v pwsh)" = "$bin/pwsh" ||
+    fail "the stub does not shadow PowerShell: $(PATH="$bin:$PATH" command -v pwsh)"
+
+# The stub advances $wdmark every 0.2s, so a marker that moves says it still runs.
+# Sampled three times, or a loaded box starving the stub would read as a kill.
+still_ticking() {
+    local a b
+    a=$(cat "$wdmark" 2>/dev/null || true)
+    for _ in 1 2 3; do
+        sleep 1
+        b=$(cat "$wdmark" 2>/dev/null || true)
+        test -n "$b" && test "$a" != "$b" && return 0
+    done
+    return 1
+}
+
+# Not still_ticking negated: the marker's mv outlives the kill -9 of its parent,
+# and one differing sample would read that straggler as a live reporter (#1058).
+reporter_stopped() {
+    local a b _try
+    for _try in 1 2 3 4 5; do
+        a=$(cat "$wdmark" 2>/dev/null || true)
+        sleep 3
+        b=$(cat "$wdmark" 2>/dev/null || true)
+        test -n "$b" && test "$a" = "$b" && return 0
+    done
+    return 1
+}
+
+# One per glob the driver enumerates: an empty category is counted as a failing
+# test named after the unexpanded pattern, which would drown the accounting.
+# 00_runnable_local-smoke is the overlap. The runnable pattern has no leading
+# "*_", so a two-token name can match it beside another category.
+for t in 00_runnable 00_runnable_local-smoke 13_zlib-pass 14_local-pass \
+    15_watchdog-pass 16_crawl_proxy_https 17_crawl-log-salvage 18_testlib-pass \
+    19_crawllib 20_crawl-harness-pass; do
+    printf '#!/bin/sh\nexit 0\n' >"$run/$t.test"
+done
+# One test reports back what it inherited: the token the step is handed can post
+# commit statuses, and a forged one has already reached a commit under test.
+# shellcheck disable=SC2016 # the stub expands it, not this shell
+printf '#!/bin/sh\necho "TOKEN=${WATCHDOG_TOKEN:-}" >%s\nexit 0\n' "$tmp/childtoken" \
+    >"$run/10_engine-pass.test"
+printf '#!/bin/sh\nexit 77\n' >"$run/11_engine-skip.test"
+# Intermittent and chatty on the re-run: only a stub that passes the second time
+# and outruns the 25-line tail can tell a kept failure from a kept trace.
+cat >"$run/12_engine-fail.test" <<EOF
+#!/bin/sh
+if test -e "$tmp/failedonce"; then
+    i=0
+    while [ \$i -lt 40 ]; do
+        echo "trace line \$i"
+        i=\$((i + 1))
+    done
+    exit 0
+fi
+: >"$tmp/failedonce"
+echo "the first run said so"
+exit 3
+EOF
+cd "$run"
+rc=0
+out=$(RUNNER_TEMP="$tmp" GITHUB_STEP_SUMMARY="$tmp/summary" WATCHDOG_TOKEN=s3cr3t \
+    bash ./ci-windows-suite.sh "$bin" 2>&1) || rc=$?
+assert_staged
+# The skip set and the pass floor are pinned to the real suite, so a stub run
+# ends on the floor; what is under test is the tally that reaches it.
+test "$rc" -eq 1 || fail "stub suite exited $rc, want 1 from the pass floor"
+# Two globs claiming one test would run it twice, and the second worker removes
+# the TMPDIR the first is still writing into (#1639).
+dup=$(awk '/^RUN /{print $2}' suite-progress.log | sort | uniq -d)
+test -z "$dup" || fail "a test was selected by two categories: $dup"
+grep -q '^::notice title=a test matched two categories::scheduled once each: 00_runnable_local-smoke.test$' <<<"$out" ||
+    fail "the test matching two categories was not named: $out"
+grep -q '^ran=13 pass=11 fail=1 skip=1 lost=0$' <<<"$out" ||
+    fail "wrong tally: $(grep '^ran=' <<<"$out")"
+grep -q '::error::only 11 tests passed (1 skipped)' <<<"$out" ||
+    fail "the pass floor did not report the count"
+grep -q 'FAIL 12_engine-fail.test (exit 3)' <<<"$out" || fail "the failing test was not named"
+# The report has to carry the run that failed, not just the trace that passed,
+# and carry it under its own label: reported after the separator it reads as
+# part of the trace. Captured, since a pipe would take grep -q's SIGPIPE.
+grep -q -- '--- traced re-run ---' <<<"$out" || fail "the traced re-run was not reported"
+first=$(sed -n '1,/--- traced re-run ---/p' <<<"$out")
+grep -q 'the first run said so' <<<"$first" ||
+    fail "the failing run's tail was lost to the traced re-run"
+grep -q 'trace line 39' <<<"$out" || fail "the traced re-run's own tail was dropped"
+# Both halves stay tails: an unbounded report would carry the trace's first line
+# as well as its last, and a CI failure would print the whole log.
+grep -q 'trace line 0$' <<<"$out" && fail "the report is not bounded to a tail"
+
+# This launches the watchdog the way the real driver does, not through a test
+# sourcing the helper, proving it starts and holds a token nothing else sees.
+grep -q '^watchdog ready$' watchdog.log || fail "no watchdog was launched: $(<watchdog.log)"
+test -r "$tmp/childtoken" || fail "the test that reads its environment did not run"
+grep -qx 'TOKEN=' "$tmp/childtoken" ||
+    fail "a test inherited the status token: $(<"$tmp/childtoken")"
+grep -qx 'TOKEN=s3cr3t' "$wdargv" ||
+    fail "the watchdog was launched without its token: $(<"$wdargv")"
+test -s "$tmp/cygpathtoken" || fail "the cygpath stub never ran"
+grep -q 'TOKEN=s3cr3t' "$tmp/cygpathtoken" &&
+    fail "the driver forked a child before scrubbing its token: $(<"$tmp/cygpathtoken")"
+# An orphan runs out its own deadline, re-posting a frozen tail past the step (#795).
+reporter_stopped || fail "the driver exited leaving its reporter running"
+# Positive control for the gate below: with every category matched it stays silent.
+grep -q 'matched no tests' <<<"$out" && fail "a full suite reported an empty category"
+
+# The progress log is what the watchdog reads and what the artifact keeps.
+grep -q '^RUN 12_engine-fail.test at ' suite-progress.log || fail "no RUN line for the failing test"
+grep -q '^RERUN 12_engine-fail.test$' suite-progress.log || fail "the traced re-run was not noted"
+grep -q '^77 11_engine-skip.test$' suite-progress.log || fail "the skip's status was not recorded"
+test -s 12_engine-fail.test.log || fail "no per-test log for the failing test"
+
+# An emptied category must name itself and stop the suite, rather than hand the
+# unexpanded pattern to test-timeout.sh and count it as a test failing 127 (#952).
+rm -f "$run/13_zlib-pass.test"
+rc=0
+out=$(RUNNER_TEMP="$tmp" GITHUB_STEP_SUMMARY="$tmp/summary" \
+    bash ./ci-windows-suite.sh "$bin" 2>&1) || rc=$?
+assert_staged
+test "$rc" -eq 1 || fail "an empty category exited $rc, want 1"
+grep -q '::error::test category zlib matched no tests' <<<"$out" ||
+    fail "the empty category was not named: $out"
+grep -q 'FAIL \*_zlib' <<<"$out" && fail "the glob was counted as a failing test: $out"
+grep -q '^ran=' <<<"$out" && fail "the suite ran a test with a category empty: $out"
+
+# The first category names a single test, and a name nullglob cannot empty would
+# never reach the gate at all.
+printf '#!/bin/sh\nexit 0\n' >"$run/13_zlib-pass.test"
+rm -f "$run/00_runnable.test" "$run/00_runnable_local-smoke.test"
+rc=0
+out=$(RUNNER_TEMP="$tmp" GITHUB_STEP_SUMMARY="$tmp/summary" \
+    bash ./ci-windows-suite.sh "$bin" 2>&1) || rc=$?
+assert_staged
+test "$rc" -eq 1 || fail "an empty single-test category exited $rc, want 1"
+grep -q '::error::test category runnable matched no tests' <<<"$out" ||
+    fail "the empty single-test category was not named: $out"
+grep -q 'FAIL 00_runnable' <<<"$out" && fail "the unexpanded name was run as a test: $out"
+
+# The wedge branch has to end the reporter itself: its kill of the suite is a
+# TerminateProcess, which runs no EXIT trap. Forked the way the driver forks it,
+# since the branch reads $watchdog from the shell it was forked from.
+wedge_leg() (
+    PATH="$bin:$PATH"
+    export PATH
+    prog=$run/wedge-progress.log
+    printf 'RUN 99_wedged.test at 0s\n' >"$prog"
+    ci_watchdog_pid=''
+    ci_start_native_watchdog "$prog" || fail "the wedge leg launched no watchdog"
+    watchdog=$ci_watchdog_pid
+    still_ticking || fail "the wedge leg's reporter was not running to begin with"
+    # Its own process group, so the tree kill below cannot reach this shell.
+    set -m
+    sleep 300 &
+    victim=$!
+    set +m
+    ci_suite_heartbeat 0 1 "$prog" 0 "$victim" >"$tmp/wedge.out" 2>&1 &
+    wait "$!"
+    grep -q '::error title=suite watchdog::' "$tmp/wedge.out" ||
+        fail "the wedge branch was never reached: $(<"$tmp/wedge.out")"
+    reporter_stopped || fail "the wedge kill orphaned the reporter"
+)
+# Held back: bash announces every job it reaps from a signal, which reads as a
+# failure in a log that passed.
+wedge_leg >"$tmp/wedge.log" 2>&1 || fail_dump "the wedge leg failed" "$tmp/wedge.log"
+
+# A sleep still holding the step's stdout keeps its reader waiting for EOF past the
+# trap that killed the heartbeat (#949); 171 shims sleep, forks nothing, is blind to it.
+fd_tick=15
+fd_kill=$tmp/fd-killed
+
+# Seconds between the producer's own kill and the reader seeing EOF.
+eof_latency() {
+    "$1" 2>>"$tmp/fd.err" | cat >"$tmp/fd.out"
+    echo $(($(date +%s) - $(<"$fd_kill")))
+}
+
+# What the driver's EXIT trap does: signal the heartbeat shell mid-tick and let go.
+fd_leg() (
+    printf 'RUN 99_fd.test at 0s\n' >"$tmp/fd-progress.log"
+    rm -f "$tmp/fd-dead"
+    sleep 30 >/dev/null 2>&1 & # a pid for the wedge branch, which cannot fire here
+    victim=$!
+    ci_suite_heartbeat 100000 "$fd_tick" "$tmp/fd-progress.log" 100000 "$victim" &
+    hb=$!
+    sleep 2 # well inside the first tick
+    # A heartbeat that ended early forks no sleep and gives a prompt EOF too, so the
+    # verdict below would be vacuous. Marked, not failed: this is a subshell.
+    kill -0 "$hb" 2>/dev/null || : >"$tmp/fd-dead"
+    date +%s >"$fd_kill"
+    kill "$hb" "$victim" 2>/dev/null || :
+)
+
+# Positive control: the same reader, against a child that does keep the pipe.
+fd_holder() (
+    sleep 6 &
+    date +%s >"$fd_kill"
+)
+
+lat=$(eof_latency fd_holder)
+test "$lat" -ge 3 || fail "EOF ${lat}s after a child kept the pipe: the reader cannot see one"
+lat=$(eof_latency fd_leg)
+test ! -e "$tmp/fd-dead" ||
+    fail "the heartbeat was already dead at the kill, so a prompt EOF proves nothing"
+test "$lat" -le 4 ||
+    fail "EOF ${lat}s after the heartbeat died: its sleep inherited the caller's stdout"
+
+echo "ci-windows driver OK"

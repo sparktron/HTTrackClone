@@ -1,5 +1,123 @@
 #!/bin/bash
 #
 
-# minimalistic charset test
-test "$(httrack -O /dev/null -#3 "iso-8859-1" "café")" == "cafÃ©"	|| exit 1
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# charset -> UTF-8 conversion (hts_convertStringToUTF8).
+# -#test=charset <charset> <string> prints the string re-decoded from <charset> as UTF-8.
+conv() { selftest_queue "$3" charset "$1" "$2"; }
+# crash probe: malformed input must exit cleanly, not abort.
+runs() {
+    httrack -O /dev/null -#test=charset "$1" "$2" >/dev/null 2>&1 || fail "charset '$1' '$2' exited non-zero"
+}
+
+# the source bytes below are UTF-8 (this file is UTF-8); "café" is 0x63 61 66 C3 A9.
+
+# already UTF-8: identity
+conv 'utf-8' 'café' 'café'
+
+# bytes reinterpreted as latin-1: each input byte becomes one codepoint
+conv 'iso-8859-1' 'café' 'cafÃ©'
+
+# windows-1252 is NOT latin-1: 0x80 is the euro sign, not U+0080. This is the
+# case that actually exercises the cp1252 table (the 0x80-0x9F range).
+conv 'windows-1252' 'hex:80' '€'
+
+# IBM850 is the IANA name for the cp850 table, as windows-1252 is for cp1252.
+conv 'ibm850' 'hex:80' 'Ç'
+
+# pure ASCII is charset-invariant
+conv 'us-ascii' 'hello' 'hello'
+
+# unknown charset: ASCII passes through unchanged, but non-ASCII input cannot be
+# decoded and yields empty output (an error is printed to stderr).
+conv 'no-such-charset-xyz' 'abc' 'abc'
+assert_eq "" "$(httrack -O /dev/null -#test=charset 'no-such-charset-xyz' 'café' 2>/dev/null)"
+
+# malformed UTF-8 (lone continuation byte, truncated lead byte) must not crash
+runs 'utf-8' 'hex:80'
+runs 'utf-8' 'hex:c3'
+
+# A leading NUL used to store the terminator through a pointer the loop had
+# never allocated. The non-ASCII byte is what makes these reach the tables at
+# all, because an all-ASCII string is copied without consulting them.
+runs 'windows-1252' 'hex:0080'
+runs 'ibm850' 'hex:0080'
+
+# hts_getCharsetFromMeta: <meta> charset extraction, HTML5 and legacy forms.
+# -#test=metacharset <html> prints the charset, or "(none)".
+meta() { selftest_queue "$2" metacharset "$1"; }
+
+# HTML5 form, quoting/spacing flavors
+meta '<meta charset="utf-8">' 'utf-8'
+meta "<meta charset='utf-8'>" 'utf-8'
+meta '<meta charset=utf-8>' 'utf-8'
+meta '<meta charset=utf-8 />' 'utf-8'
+meta '<meta charset=utf-8/>' 'utf-8'
+# charset labels are case-insensitive downstream; only require case-insensitive match
+assert_eq 'utf-8' "$(httrack -O /dev/null -#test=metacharset '<META CHARSET=UTF-8>' | tr '[:upper:]' '[:lower:]')"
+meta '<html><head><meta   charset = "utf-8"  ></head>' 'utf-8'
+
+# legacy http-equiv form, attributes in any order
+meta '<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">' 'iso-8859-1'
+meta '<meta content="text/html; charset=gb2312" http-equiv="content-type">' 'gb2312'
+meta '<meta http-equiv=Content-Type content="text/html;charset=euc-jp">' 'euc-jp'
+meta '<meta http-equiv="Content-Type" content="text/html; charset = koi8-r ">' 'koi8-r'
+meta '<meta http-equiv="Content-Type" content="text/html; charset=utf-8;">' 'utf-8'
+meta '<meta http-equiv=content-type content=text/html;charset=utf-8 />' 'utf-8'
+meta '<meta http-equiv=content-type content=text/html;charset=utf-8>' 'utf-8'
+
+# first resolvable meta wins; unrelated metas are skipped
+meta '<meta name="viewport" content="width=1"><meta charset="koi8-r">' 'koi8-r'
+meta '<meta charset="utf-8"><meta http-equiv="Content-Type" content="text/html; charset=gb2312">' 'utf-8'
+
+# duplicate attribute: first wins, as in browsers
+meta '<meta http-equiv="Content-Type" content="text/html; charset=big5" http-equiv="refresh">' 'big5'
+
+# negatives: wrong tag/attribute, empty value
+meta '<p>x</p>' '(none)'
+meta '<meta name="desc" content="charset=bogus">' '(none)'
+meta '<meta http-equiv="refresh" content="0; url=x.html">' '(none)'
+meta '<body charset="utf-8">' '(none)'
+meta '<meta charset="">' '(none)'
+
+# The prescan's whitespace is SPACE, TAB, CR, LF, and nothing else. TAB, CR and
+# LF need the batch path, which carries them where argv rewrites them to a space.
+TAB=$(printf '\011')
+meta "<meta${TAB}charset=\"utf-8\">" 'utf-8'
+meta "<meta${SELFTEST_CR}charset=\"utf-8\">" 'utf-8'
+meta "<meta${TESTLIB_NL}charset=\"utf-8\">" 'utf-8'
+VT=$(printf '\013')
+FF=$(printf '\014')
+meta "<meta${VT}charset=\"utf-8\">" '(none)'
+meta "<meta${FF}charset=\"utf-8\">" '(none)'
+meta "<meta http-equiv=\"Content-Type\"${VT}content=\"text/html; charset=utf-8\">" '(none)'
+meta "<meta http-equiv=\"Content-Type\" content=\"text/html;${FF}charset=utf-8\">" '(none)'
+# a quote inside an unquoted value is a value byte, not a terminator
+meta '<meta charset=ut"f8>' 'ut"f8'
+meta "<meta charset=ut'f8>" "ut'f8"
+
+# hostile truncations: no crash, no match
+meta '<meta charset="utf-8' '(none)'
+meta '<meta charset=' '(none)'
+meta '<meta ' '(none)'
+meta '<meta' '(none)'
+
+# hts_isStringUTF8: valid-UTF-8 probe (guards the #180 link conversion).
+utf8() { selftest_queue "$2" isutf8 "$1"; }
+utf8 'plain' '1'
+utf8 'café' '1'
+utf8 '统计' '1'
+utf8 'hex:636166e9' '0'   # latin-1 accent
+utf8 'hex:c3' '0'         # truncated lead byte
+utf8 'hex:a9' '0'         # lone continuation byte
+utf8 'hex:f09f9880' '1'   # 4-byte emoji
+utf8 'hex:c0af' '0'       # overlong (latin-1 "À¯" must stay convertible)
+utf8 'hex:eda080' '0'     # UTF-16 surrogate
+utf8 'hex:f4908080' '0'   # above U+10FFFF
+utf8 'hex:f888808080' '0' # legacy 5-byte form
+
+selftest_run_queued

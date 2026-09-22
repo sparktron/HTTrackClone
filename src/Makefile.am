@@ -5,7 +5,7 @@ DevIncludes_DATA = \
 	htsopt.h \
 	htswrap.h \
 	htsconfig.h \
-	../config.h \
+	../htsfeatures.h \
 	htsmodules.h \
 	htsbasenet.h \
 	htsnet.h \
@@ -15,17 +15,19 @@ DevIncludes_DATA = \
 	htsarrays.h \
 	htssafe.h
 
-if BUILD_IMAGEBOARD_CATALOG
-DevIncludes_DATA += htscatalog.h htsmetadata.h htsyotsuba.h htscatalogpath.h
-endif
+# What hands a consumer the include path and the rpath the @rpath id needs (#978).
+pkgconfigdir = $(libdir)/pkgconfig
+pkgconfig_DATA = libhttrack.pc
 
 AM_CPPFLAGS = \
+	-DHTS_INTERNAL_BUILD \
 	@DEFAULT_CFLAGS@ \
 	@THREADS_CFLAGS@ \
 	@V6_FLAG@ \
 	@LFS_FLAG@ \
 	-DPREFIX=\""$(prefix)"\" \
 	-DSYSCONFDIR=\""$(sysconfdir)"\" \
+	-DBINDIR=\""$(bindir)"\" \
 	-DDATADIR=\""$(datadir)"\" \
 	-DLIBDIR=\""$(libdir)"\" \
 	-I"$(abs_srcdir)" \
@@ -36,76 +38,95 @@ AM_LDFLAGS = \
 
 bin_PROGRAMS = proxytrack httrack htsserver
 
-httrack_LDADD = $(THREADS_LIBS) libhttrack.la
-htsserver_LDADD = $(THREADS_LIBS) $(SOCKET_LIBS) $(OPENSSL_LIBS) libhttrack.la
+httrack_SOURCES = httrack.c htsbacktrace.c htsbacktrace.h
+# $(DL_LIBS): dladdr() in the crash handler, still in libdl on pre-2.34 glibc.
+httrack_LDADD = $(THREADS_LIBS) $(DL_LIBS) $(BACKTRACE_LIBS) libhttrack.la
+htsserver_LDADD = $(THREADS_LIBS) $(SOCKET_LIBS) libhttrack.la
 proxytrack_LDADD = $(THREADS_LIBS) $(SOCKET_LIBS)
 
 httrack_CFLAGS = $(AM_CFLAGS) $(CFLAGS_PIE)
-proxytrack_CFLAGS = $(AM_CFLAGS) $(CFLAGS_PIE) -DNO_MALLOCT -DZLIB_CONST -DHTS_INTHASH_USES_MD5
+# -DHTS_NO_LIBHTTRACK: see htsnet.h's HTSNET_API guard.
+proxytrack_CFLAGS = $(AM_CFLAGS) $(CFLAGS_PIE) -DZLIB_CONST -DHTS_INTHASH_USES_MD5 -DHTS_NO_LIBHTTRACK
 htsserver_CFLAGS = $(AM_CFLAGS) $(CFLAGS_PIE) -DZLIB_CONST -DHTS_INTHASH_USES_MD5
 
-httrack_LDFLAGS = $(AM_LDFLAGS) $(LDFLAGS_PIE)
+# @RPATH_ORIGIN_LDFLAGS@ makes a copied tree find libhttrack next to it (#906),
+# pairing on Darwin with the dylib's @rpath id (#978); proxytrack needs none of it.
+httrack_LDFLAGS = $(AM_LDFLAGS) $(LDFLAGS_PIE) @RPATH_ORIGIN_LDFLAGS@
 proxytrack_LDFLAGS = $(AM_LDFLAGS) $(LDFLAGS_PIE)
-htsserver_LDFLAGS = $(AM_LDFLAGS) $(LDFLAGS_PIE)
+htsserver_LDFLAGS = $(AM_LDFLAGS) $(LDFLAGS_PIE) @RPATH_ORIGIN_LDFLAGS@
 
-lib_LTLIBRARIES = libhttrack.la libhtsjava.la
+lib_LTLIBRARIES = libhttrack.la
 
-htsserver_SOURCES = htsserver.c htsserver.h htsweb.c htsweb.h
+htsserver_SOURCES = htsserver.c htsserver.h htsweb.c htsweb.h htsstats.h \
+	htsrandom.c htsrandom.h \
+	htscmdline.c htscmdline.h \
+	htsurlport.c htsurlport.h htsescape.c htsescape.h
 proxytrack_SOURCES = proxy/main.c \
 	proxy/proxytrack.c proxy/store.c \
+	htsurlport.c htsurlport.h htsdate.c htsdate.h htsnet.c \
 	coucal/coucal.c htsmd5.c md5.c \
 	minizip/ioapi.c minizip/mztools.c minizip/unzip.c minizip/zip.c
 
 whttrackrundir = $(bindir)
 whttrackrun_SCRIPTS = webhttrack
 
+# $(datadir) only expands at make time, so substitute here rather than through
+# AC_CONFIG_FILES (#887).
+webhttrack: webhttrack.in Makefile
+	$(AM_V_GEN)$(SED) -e 's|@datadir[@]|$(datadir)|g' $(srcdir)/webhttrack.in >$@.tmp \
+		&& chmod +x $@.tmp && mv -f $@.tmp $@
+CLEANFILES = webhttrack
+
 libhttrack_la_SOURCES =  htscore.c htsparse.c htsback.c htscache.c \
+	htscache_selftest.c htsdns_selftest.c htsparse_selftest.c htsselftest.c \
 	htscatchurl.c htsfilters.c htsftp.c htshash.c coucal/coucal.c \
-	htshelp.c htslib.c htscoremain.c \
-	htsname.c htsrobots.c htstools.c htswizard.c \
+	htscmdline.c htshelp.c htslib.c htsurlport.c htsdate.c htscoremain.c \
+	htsname.c htsrobots.c htstools.c htsrandom.c htswizard.c \
 	htsalias.c htsthread.c htsindex.c htsbauth.c \
-	htsmd5.c htszlib.c htswrap.c htsconcat.c \
-	htsmodules.c htscharset.c punycode.c htsencoding.c \
+	htscrashtest.c \
+	htsmd5.c htsnet.c htscodec.c htswarc.c htschanges.c htssinglefile.c htssitemap.c htsproxy.c htszlib.c htswrap.c htsconcat.c \
+	htsmodules.c htscharset.c punycode.c htsencoding.c htsescape.c htssniff.c \
 	md5.c \
 	minizip/ioapi.c minizip/mztools.c minizip/unzip.c minizip/zip.c \
-	hts-indextmpl.h htsalias.h htsback.h htsbase.h htssafe.h \
-	htsbasenet.h htsbauth.h htscache.h htscatchurl.h  \
-	htsconfig.h htscore.h htsparse.h htscoremain.h htsdefines.h  \
+	hts-indextmpl.h htsalias.h htsback.h htsbase.h htssafe.h htsdate.h \
+	htsbasenet.h htsbauth.h htscache.h htscache_selftest.h htsdns_selftest.h htsparse_selftest.h htsselftest.h htscatchurl.h  \
+	htscmdline.h htsconfig.h htscore.h htsparse.h htscoremain.h htsdefines.h  \
 	htsfilters.h htsftp.h htsglobal.h htshash.h coucal/coucal.h \
-	htshelp.h htsindex.h htslib.h htsmd5.h \
-	htsmodules.h htsname.h htsnet.h \
-	htsopt.h htsrobots.h htsthread.h  \
-	htstools.h htswizard.h htswrap.h htszlib.h  \
-	htsstrings.h htsarrays.h httrack-library.h \
-	htscharset.h punycode.h htsencoding.h \
+	htshelp.h htsindex.h htsio.h htslib.h htsurlport.h htsmd5.h \
+	htsmodules.h htsname.h htsnet.h htssniff.h \
+	htsopt.h htsrobots.h htsthread.h htswin32.h  \
+	htscrashtest.h htstools.h htsrandom.h htswizard.h htswrap.h htscodec.h htswarc.h htschanges.h htssinglefile.h htssitemap.h htsproxy.h htszlib.h  \
+	htsstrings.h htsarrays.h htsarena.h httrack-library.h \
+	htscharset.h punycode.h htsencoding.h htsescape.h \
 	htsentities.h htsentities.sh htsbasiccharsets.sh htscodepages.h \
+	winprofile-keys.h \
 	md5.h coucal/murmurhash3.h \
 	minizip/crypt.h minizip/ioapi.h minizip/mztools.h minizip/unzip.h minizip/zip.h
-
-if BUILD_IMAGEBOARD_CATALOG
-libhttrack_la_SOURCES += htscatalog.c htscatalog.h htsmetadata.c htsmetadata.h \
-	htsyotsuba.c htsyotsuba.h htscatalogpath.c htscatalogpath.h
-endif
-
-libhttrack_la_LIBADD = $(THREADS_LIBS) $(ZLIB_LIBS) $(OPENSSL_LIBS) $(DL_LIBS) $(SOCKET_LIBS) $(ICONV_LIBS) $(SQLITE_LIBS) $(ICU_LIBS)
+libhttrack_la_LIBADD = $(THREADS_LIBS) $(ZLIB_LIBS) $(BROTLI_LIBS) $(ZSTD_LIBS) $(OPENSSL_LIBS) $(DL_LIBS) $(SOCKET_LIBS) $(ICONV_LIBS)
 libhttrack_la_CFLAGS = $(AM_CFLAGS) -DLIBHTTRACK_EXPORTS -DZLIB_CONST
 libhttrack_la_LDFLAGS = $(AM_LDFLAGS) -version-info $(VERSION_INFO)
 
+# Fork-only: imageboard catalog (--enable-imageboard-catalog). A standalone
+# program: nothing in libhttrack calls it, so it stays out of the library, its
+# exports and its installed headers, which therefore match upstream's.
 if BUILD_IMAGEBOARD_CATALOG
 bin_PROGRAMS += httrack-catalog
-httrack_catalog_SOURCES = httrack-catalog.c
-httrack_catalog_LDADD = libhttrack.la $(SQLITE_LIBS) $(CURL_LIBS) $(ICU_LIBS)
+httrack_catalog_SOURCES = httrack-catalog.c \
+	htscatalog.c htscatalog.h htsmetadata.c htsmetadata.h \
+	htsyotsuba.c htsyotsuba.h htscatalogpath.c htscatalogpath.h
+httrack_catalog_LDADD = $(SQLITE_LIBS) $(CURL_LIBS) $(ICU_LIBS)
 endif
 
-libhtsjava_la_SOURCES = htsjava.c htsjava.h
-libhtsjava_la_LIBADD = $(THREADS_LIBS) $(DL_LIBS) libhttrack.la
-libhtsjava_la_LDFLAGS = $(AM_LDFLAGS) -version-info $(VERSION_INFO)
-
-EXTRA_DIST = httrack.h webhttrack \
+EXTRA_DIST = httrack.h htsstats.h webhttrack.in \
+		version.rc \
+		libhttrack.rc \
+		httrack.rc \
 		coucal/murmurhash3.h.diff \
 		coucal/murmurhash3.h.orig \
 		minizip/iowin32.c \
 		minizip/iowin32.h \
+		minizip/iowin32.c.diff \
+		minizip/iowin32.c.orig \
 		minizip/ioapi.c.diff \
 		minizip/ioapi.h.diff \
 		minizip/zip.c.diff \
@@ -124,6 +145,13 @@ EXTRA_DIST = httrack.h webhttrack \
 		proxy/proxystrings.h \
 		proxy/proxytrack.h \
 		proxy/store.h \
-		proxy/proxytrack.vcproj \
-		coucal/* \
-		*.dsw *.dsp *.vcproj
+		coucal/LICENSE \
+		coucal/Makefile \
+		coucal/README.md \
+		coucal/sample.c \
+		coucal/tests.c \
+		vcpkg.json \
+		httrack.vcxproj \
+		libhttrack.vcxproj \
+		proxytrack.vcxproj \
+		webhttrack.vcxproj

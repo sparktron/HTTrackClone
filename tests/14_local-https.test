@@ -1,0 +1,22 @@
+#!/bin/bash
+#
+# HTTPS crawl against the local test server, using the shipped self-signed
+# cert. httrack does not verify certs (htslib.c: SSL_CTX_new with no
+# SSL_CTX_set_verify), so the self-signed cert is accepted as-is and this
+# exercises the real TLS path offline. basic.html links to link.html with four
+# distinct query strings, each saved under a hashed name -> 5 files.
+
+: "${top_srcdir:=..}"
+
+if test "$HTTPS_SUPPORT" == "no"; then
+    echo "no https support compiled, skipping"
+    exit 77
+fi
+
+# The URL in the log pins the scheme the crawl asked for, which --files 5 above
+# then proves the server answered: a harness that dropped --tls would serve and
+# crawl plain http, and pass every other assertion here.
+bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 0 --files 5 \
+    --found 'simple/basic.html' \
+    --log-found 'https://127\.0\.0\.1:' \
+    httrack 'BASEURL/simple/basic.html'

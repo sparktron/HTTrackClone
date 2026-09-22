@@ -66,8 +66,6 @@ LANGUAGE_ISO
 LANGUAGE_ISO
 LANGUAGE_AUTHOR
 LANGUAGE_AUTHOR
-LANGUAGE_CHARSET
-LANGUAGE_CHARSET
 LANGUAGE_WINDOWSID
 LANGUAGE_WINDOWSID
 LANG_OK
@@ -264,14 +262,12 @@ LANG_F21
 \nSee the log file if necessary.\n\nClick FINISH to quit WinHTTrack Website Copier.\n\nThanks for using WinHTTrack!
 LANG_F22
 Mirroring operation complete.\nClick Exit to quit WinHTTrack.\nSee log file(s) if necessary to ensure that everything is OK.\n\nThanks for using WinHTTrack!
-LANG_F22b
-* * MIRROR ABORTED! * *\r\nThe current temporary cache is required for any update operation and only contains data downloaded during the present aborted session.\r\nThe former cache might contain more complete information; if you do not want to lose that information, you have to restore it and delete the current cache.\r\n[Note: This can easily be done here by erasing the hts-cache/new.* files]\r\n\r\nDo you think the former cache might contain more complete information, and do you want to restore it?
 LANG_F22c
 * * MIRROR ERROR! * *\r\nHTTrack has detected that the current mirror is empty. If it was an update, the previous mirror has been restored.\r\nReason: the first page(s) either could not be found, or a connection problem occurred.\r\n=> Ensure that the website still exists, and/or check your proxy settings! <=
+LANG_F22s
+Mirroring operation stopped before the end.\nThe files already downloaded are kept.\nSee log file(s) if necessary.\n\nThanks for using WinHTTrack!
 LANG_F23
 \n\nTip: Click [View log file] to see warning or error messages
-LANG_F24
-Error deleting a hts-cache/new.* file, please do it manually
 LANG_G1
 Do you really want to quit WinHTTrack Website Copier?
 LANG_G2
@@ -713,7 +709,7 @@ Disconnect when finished
 LANG_J17
 Disconnect modem on completion
 LANG_K1
-\r\n(Please notify us of any bug or problem)\r\n\r\nDevelopment:\r\nInterface (Windows): Xavier Roche\r\nSpider: Xavier Roche\r\nJavaParserClasses: Yann Philippot\r\n\r\n(C)1998-2003 Xavier Roche and other contributors\r\nMANY THANKS for translation tips to:\r\nRobert Lagadec (rlagadec@yahoo.fr)
+\r\n(Please notify us of any bug or problem)\r\n\r\nDevelopment:\r\nEngine and interfaces: Xavier Roche\r\nCode, documentation and packaging: many contributors\r\n\r\n(C) Xavier Roche and other contributors\r\nMANY THANKS for English translations to:\r\nXavier Roche, Robert Lagadec
 LANG_K2
 About WinHTTrack Website Copier
 LANG_K3
@@ -740,6 +736,10 @@ LANG_M8
 Mirror domain
 LANG_M9
 Ignore all
+LANG_M10
+Mirror %s and every host below it
+LANG_M11
+Ignore %s and every host below it
 LANG_N1
 Wizard query
 LANG_N2
@@ -1006,3 +1006,77 @@ LANG_SERVEND
 Server terminated
 LANG_FATALERR
 A fatal error has occurred during this mirror
+LANG_PROXYTYPE
+Proxy type:
+LANG_PROXYTYPETIP
+Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request through a CONNECT tunnel, for CONNECT-only proxies like Tor's HTTPTunnelPort. SOCKS5: default port 1080.
+LANG_COOKIEFILE
+Load cookies from file:
+LANG_COOKIEFILETIP
+Preload cookies from a Netscape cookies.txt file before crawling.
+LANG_PAUSEFILES
+Pause between files:
+LANG_PAUSEFILESTIP
+Random delay between file downloads, in seconds. Use MIN:MAX for a random range (e.g. 2:8).
+LANG_KEEPWWW
+Keep the www. prefix (do not merge www.host with host)
+LANG_KEEPWWWTIP
+Do not treat www.host and host as the same site.
+LANG_KEEPSLASHES
+Keep double slashes in URLs
+LANG_KEEPSLASHESTIP
+Do not collapse duplicate slashes in URLs.
+LANG_KEEPQUERYORDER
+Keep the original query-string order
+LANG_KEEPQUERYORDERTIP
+Do not reorder query-string parameters when deduplicating URLs.
+LANG_STRIPQUERY
+Strip query keys:
+LANG_STRIPQUERYTIP
+Comma-separated query keys to drop from the saved-file naming (e.g. sid,utm_source).
+LANG_HOSTALIAS
+Host aliases:
+LANG_HOSTALIASTIP
+Other hostnames serving this same site, folded onto one, one rule per line (e.g. www2.example.com,m.example.com=example.com).
+LANG_WARC
+Write a WARC archive of the crawl
+LANG_WARCTIP
+Also save every fetched response into an ISO-28500 WARC/1.1 archive, next to the mirror.
+LANG_WARCFILE
+WARC archive name:
+LANG_WARCFILETIP
+Optional base name for the WARC archive; leave blank to auto-name it under the output directory.
+LANG_WARCCDX
+Write a CDXJ index of the WARC archive
+LANG_WARCCDXTIP
+Also write a sorted CDXJ index listing every record in the WARC archive, for replay tools.
+LANG_WACZ
+Package the crawl as a WACZ file
+LANG_WACZTIP
+Bundle the WARC archive, its CDXJ index and the mirrored pages into a single WACZ file; implies the WARC archive and the CDXJ index.
+LANG_WARCMAXSIZE
+WARC segment size limit:
+LANG_WARCMAXSIZETIP
+Start a new WARC segment once the current one grows past this many bytes; leave blank or 0 to keep a single file.
+LANG_CHANGES
+Report what changed since the previous mirror
+LANG_CHANGESTIP
+Also write hts-changes.json listing what this crawl left new, changed, unchanged and gone compared to the previous mirror.
+LANG_SINGLEFILE
+Inline assets as data: URIs (self-contained pages)
+LANG_SINGLEFILETIP
+Once the mirror is finished, rewrite every saved page with its stylesheets, scripts, images and fonts embedded, so a page can also be opened on its own.
+LANG_SINGLEFILEMAX
+Largest inlined asset (bytes):
+LANG_SINGLEFILEMAXTIP
+An asset above this size keeps an ordinary link; leave blank for the 10485760-byte default.
+LANG_SITEMAP
+Seed the crawl from the site's sitemap
+LANG_SITEMAPTIP
+Read the site's sitemap (robots.txt Sitemap: lines, then /sitemap.xml) and add every URL it lists as a start URL.
+LANG_SITEMAPURL
+Sitemap address:
+LANG_SITEMAPURLTIP
+Address of a sitemap to read instead of probing the site; leave blank to probe robots.txt then /sitemap.xml.
+LANG_MANUAL
+Manual

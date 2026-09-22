@@ -1,0 +1,18 @@
+#!/bin/bash
+#
+# Stick to POSIX tool flags: macOS ships BSD grep/sed, not the GNU ones.
+
+# unzRepair header read must not overflow a signed shift (-#test=zip-repair-shift
+# <dir>). A damaged local file header whose CRC high word has bit 15 set made
+# READ_32 shift an int past INT_MAX; UBSan aborts before the fix casts to uLong.
+
+set -eu
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+dir=$(mktemp -d)
+cleanup_push rm -rf "$dir"
+
+out=$(httrack -#test=zip-repair-shift "$dir")
+
+grep -qx "zip-repair-shift: OK (recovered 1 entry)" <<<"$out" || fail "expected 'zip-repair-shift: OK (recovered 1 entry)', got: $out"

@@ -1,0 +1,960 @@
+#!/bin/bash
+#
+# lang/*.txt are line pairs: an English msgid, then its translation. A stray
+# blank or a drifted msgid silently unhooks every translation that follows,
+# rather than failing, so assert the pairing and the join against English.txt.
+# Pairs are physical lines here; a msgid ending in \ continues onto the next one
+# for the engine (linput_cpp) but not for us. None do today.
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+langdir="$top_srcdir/lang"
+def="$top_srcdir/lang.def"
+eng="$langdir/English.txt"
+for f in "$eng" "$def"; do
+    [ -f "$f" ] || fail "cannot find $f"
+done
+
+tmp=$(mktemp -d)
+cleanup_push rm -rf "$tmp"
+keys="$tmp/english.keys"
+
+# Byte-wise: the catalogs and lang.def are UTF-8, and CRLF but for Uzbek.txt.
+LC_ALL=C awk 'NR%2==1 { sub(/\r$/, ""); print }' "$eng" >"$keys"
+
+# An empty parse would make every check below pass vacuously.
+nkeys=$(wc -l <"$keys")
+if [ "$nkeys" -lt 400 ]; then
+    echo "only $nkeys msgids parsed from $eng; the parse is broken"
+    exit 1
+fi
+
+nfiles=0
+fail=0
+# A sweep that could not run must not read as a pass: these reasons turn the
+# run into a skip.
+skipped=''
+defer_skip() { skipped="${skipped:+$skipped; }$1"; }
+for f in "$langdir"/*.txt; do
+    nfiles=$((nfiles + 1))
+    LC_ALL=C awk -v keys="$keys" -v name="${f##*/}" '
+        BEGIN { while ((getline k < keys) > 0) known[k] = 1 }
+        { sub(/\r$/, "") }
+        NR % 2 == 1 {
+            if ($0 == "")
+                printf "%s:%d: blank line where an English msgid belongs\n", name, NR
+            else if (!($0 in known))
+                printf "%s:%d: msgid absent from English.txt: %s\n", name, NR, $0
+            else
+                next
+            bad++
+        }
+        END {
+            if (NR % 2) {
+                printf "%s: odd line count (%d): msgid/translation pairing is broken\n", name, NR
+                bad++
+            }
+            exit(bad > 0)
+        }
+    ' "$f" || fail=1
+done
+
+if [ "$nfiles" -lt 25 ]; then
+    echo "only $nfiles language files found in $langdir"
+    exit 1
+fi
+
+# The catalogs are UTF-8 and html/server/*.html says so in its <meta>. A
+# re-encode that guessed the source wrong leaves U+FFFD or bytes that do not
+# decode (#963).
+replacement=$(printf '\357\277\275')
+# The value line following a metadata key. Most catalogs are CRLF, Uzbek.txt is not.
+field() {
+    LC_ALL=C awk -v key="$2" '
+        { sub(/\r$/, "") }
+        $0 == key { getline v; sub(/\r$/, "", v); print v; exit }' "$1"
+}
+
+bytes_are_utf8() {
+    f=$1
+    # Not iconv: macOS 14 swapped GNU libiconv for a Citrus one that rejects
+    # valid UTF-8, reporting a stale ENOTTY that no conversion can produce.
+    if ! "$py" "$tmp/utf8.py" "$f" 2>"$tmp/err"; then
+        echo "${f##*/}: not valid UTF-8: $(<"$tmp/err")"
+        return 1
+    fi
+    ln=$(LC_ALL=C awk -v r="$replacement" 'index($0, r) { print NR; exit }' "$f")
+    if [ -n "$ln" ]; then
+        echo "${f##*/}:$ln: holds U+FFFD, so the re-encode lost a character"
+        return 1
+    fi
+    ln=$(LC_ALL=C awk '/LANGUAGE_CHARSET/ { print NR; exit }' "$f")
+    if [ -n "$ln" ]; then
+        echo "${f##*/}:$ln: still declares LANGUAGE_CHARSET; the catalogs are UTF-8 now"
+        return 1
+    fi
+    return 0
+}
+
+py=$(find_python || true)
+if [ -z "$py" ]; then
+    defer_skip "python3 not found, so the UTF-8 sweep did not run"
+else
+    cat >"$tmp/utf8.py" <<'PYEOF'
+import sys
+
+try:
+    open(sys.argv[1], "rb").read().decode("utf-8")
+except UnicodeDecodeError as e:
+    sys.exit("byte %d: %s" % (e.start, e.reason))
+PYEOF
+    # Positive controls, one per branch, each planting its defect where a check
+    # that only read the head, the keys, or the header would miss it.
+    {
+        cat "$langdir/Francais.txt"
+        printf 'Caf\351\r\n'
+    } >"$tmp/legacy.txt"
+    LC_ALL=C awk -v r="$replacement" 'NR == 500 { print r; next } { print }' \
+        "$langdir/Francais.txt" >"$tmp/lossy.txt"
+    LC_ALL=C awk 'NR == 501 { print "LANGUAGE_CHARSET" } { print }' \
+        "$langdir/Francais.txt" >"$tmp/declared.txt"
+    for probe in legacy lossy declared; do
+        if bytes_are_utf8 "$tmp/$probe.txt" >/dev/null; then
+            echo "the encoding check passed a deliberately broken file ($probe)"
+            exit 1
+        fi
+    done
+
+    nchecked=0
+    for f in "$langdir"/*.txt; do
+        nchecked=$((nchecked + 1))
+        bytes_are_utf8 "$f" || fail=1
+    done
+    if [ "$nchecked" -ne "$nfiles" ]; then
+        echo "encoding check saw $nchecked of $nfiles language files"
+        exit 1
+    fi
+fi
+
+# Άκυρο. Valid UTF-8 does not say the re-encode read the right source: cp1253
+# and ISO-8859-7 disagree on this letter, and reading the file as the label
+# rather than the bytes turns it into a curly quote.
+cancel=$(LC_ALL=C awk '{ sub(/\r$/, "") } $0 == "Cancel" { getline v; sub(/\r$/, "", v); print v; exit }' \
+    "$langdir/Greek.txt")
+if [ "$cancel" != "$(printf '\316\206\316\272\317\205\317\201\316\277')" ]; then
+    echo "Greek.txt: the Cancel value is not the UTF-8 for the Greek word"
+    fail=1
+fi
+ln=$(LC_ALL=C awk -v q="$(printf '\342\200\231')" 'index($0, q) { print NR; exit }' \
+    "$langdir/Greek.txt")
+if [ -n "$ln" ]; then
+    echo "Greek.txt:$ln: a curly quote, so the re-encode read cp1253 as ISO-8859-7"
+    fail=1
+fi
+
+# LANGUAGE_FILE is the catalog basename and reaches the network as the update
+# link's Language= (#1353), so it must exist, be ASCII, and match the filename.
+# The loader backfills an absent key from English, which would silently report
+# the wrong language rather than nothing.
+for f in "$langdir"/*.txt; do
+    base=${f##*/}
+    base=${base%.txt}
+    lf=$(field "$f" LANGUAGE_FILE)
+    if [ -z "$lf" ]; then
+        echo "$base.txt: no LANGUAGE_FILE; the loader would report English instead"
+        fail=1
+    elif [ "$lf" != "$base" ]; then
+        echo "$base.txt: LANGUAGE_FILE is \"$lf\", not the basename"
+        fail=1
+    elif printf '%s' "$lf" | LC_ALL=C grep -q '[^ -~]'; then
+        echo "$base.txt: LANGUAGE_FILE \"$lf\" is not ASCII; the update endpoint cannot decode it"
+        fail=1
+    fi
+done
+
+# webhttrack turns the caller's locale into a lang.def number through
+# lang.indexes and hands it to htsserver, so a wrong number serves another
+# catalog silently. lang.def names the file behind each number and that file
+# declares its own LANGUAGE_ISO, which is the oracle here.
+indexes="$top_srcdir/lang.indexes"
+[ -f "$indexes" ] || fail "cannot find $indexes"
+LC_ALL=C awk '
+    { sub(/\r$/, "") }
+    NR % 2 == 1 { name = $0; next }
+    /^LANGUAGE_[0-9]+$/ {
+        n = $0
+        sub(/^LANGUAGE_/, "", n)
+        print n "\t" name
+    }
+' "$def" >"$tmp/bynum"
+ndef=$(wc -l <"$tmp/bynum")
+if [ "$ndef" -ne "$nfiles" ]; then
+    echo "lang.def numbers $ndef catalogs, but $langdir holds $nfiles"
+    exit 1
+fi
+
+# Complains on stdout; the status only says whether it did.
+indexes_agree() { # $1 = a lang.indexes to read
+    bad=0
+    nseen=0
+    seen=' '
+    while IFS=: read -r tag num || [ -n "$tag" ]; do
+        [ -n "$tag" ] || continue
+        case $seen in
+        *" $tag "*)
+            echo "lang.indexes: $tag is listed twice"
+            bad=1
+            continue
+            ;;
+        esac
+        seen="$seen$tag "
+        nseen=$((nseen + 1))
+        name=$(LC_ALL=C awk -F'\t' -v n="$num" '$1 == n { print $2; exit }' "$tmp/bynum")
+        if [ -z "$name" ]; then
+            echo "lang.indexes: $tag:$num names no LANGUAGE_$num in lang.def"
+            bad=1
+            continue
+        fi
+        iso=$(field "$langdir/$name.txt" LANGUAGE_ISO | LC_ALL=C tr '[:upper:]' '[:lower:]')
+        if [ "$iso" != "$tag" ]; then
+            echo "lang.indexes: $tag:$num is $name.txt, whose LANGUAGE_ISO is \"$iso\""
+            bad=1
+        fi
+    done <"$1"
+    # Tags are unique and each names one catalog, so a missing entry leaves a
+    # language nothing can select.
+    if [ "$nseen" -ne "$ndef" ]; then
+        echo "lang.indexes holds $nseen entries for $ndef catalogs"
+        bad=1
+    fi
+    return "$bad"
+}
+
+# Controls built out of the file itself: a hardcoded "es:3" would quietly become
+# a copy of the real thing the day Castellano is renumbered.
+tag1=$(LC_ALL=C sed -n '1s/:.*//p' "$indexes")
+num2=$(LC_ALL=C sed -n '2s/.*://p' "$indexes")
+if [ -z "$tag1" ] || [ -z "$num2" ]; then
+    fail "cannot read the first two entries of $indexes"
+fi
+LC_ALL=C sed "1s|.*|$tag1:$num2|" "$indexes" >"$tmp/wrongnum"
+LC_ALL=C sed "1s|.*|$tag1:9999|" "$indexes" >"$tmp/nodef"
+LC_ALL=C sed '1d' "$indexes" >"$tmp/dropped"
+for probe in wrongnum nodef dropped; do
+    if indexes_agree "$tmp/$probe" >/dev/null; then
+        echo "the lang.indexes check passed a deliberately wrong file ($probe)"
+        exit 1
+    fi
+done
+indexes_agree "$indexes" || fail=1
+
+# LANGUAGE_NAME must be the endonym, not English: the menu shows every catalog
+# together (#116). Two oracles rather than a copy of the current values, so the
+# name may repeat neither a word of the catalog's own English LANGUAGE_WINDOWSID
+# nor a common English language name. A language whose endonym really is the
+# English word joins own_name_is_english below.
+own_name_is_english="en"
+exonyms="afrikaans albanian arabic basque belarusian bulgarian catalan chinese croatian czech
+danish dutch english estonian farsi filipino finnish flemish french galician georgian
+german greek hebrew hindi hungarian icelandic indonesian irish italian japanese kazakh
+korean latvian lithuanian macedonian malay norwegian persian polish portuguese
+romanian russian serbian simplified slovak slovene slovenian spanish swedish thai
+traditional turkish ukrainian urdu uzbek vietnamese welsh"
+# BSD awk rejects a newline inside a -v value, so the list travels on one line.
+exonyms=$(printf '%s' "$exonyms" | tr '\n' ' ')
+
+name_is_endonym() {
+    f=$1
+    LC_ALL=C awk -v name="$(field "$f" LANGUAGE_NAME)" -v iso="$(field "$f" LANGUAGE_ISO)" \
+        -v wid="$(field "$f" LANGUAGE_WINDOWSID)" -v exonyms="$exonyms" -v n="${f##*/}" \
+        -v exempt="$own_name_is_english" '
+        BEGIN {
+            split(exempt, x, /[ \t\n]+/)
+            for (i in x)
+                if (x[i] == iso)
+                    exit 0
+            split(exonyms, e, /[ \t\n]+/)
+            for (i in e)
+                bad_word[e[i]] = 1
+            split(tolower(wid), w, /[^0-9A-Za-z]+/)
+            for (i in w)
+                if (w[i] != "")
+                    bad_word[w[i]] = 1
+            split(tolower(name), t, /[ ()\/,.-]+/)
+            for (i in t) {
+                if (t[i] != "" && t[i] in bad_word) {
+                    printf "%s: LANGUAGE_NAME \"%s\" is the English name, not the endonym (#116)\n", n, name
+                    exit 1
+                }
+            }
+        }'
+}
+
+# One control per oracle: an English name its own catalog does not name, then
+# a word its LANGUAGE_WINDOWSID does but the list above does not. Match the
+# complaint, not the status: an unreadable fixture also returns non-zero.
+LC_ALL=C sed '2s/.*/Swedish/' "$langdir/Dansk.txt" >"$tmp/exonym.txt"
+LC_ALL=C sed '2s/.*/Nynorsk/' "$langdir/Norsk.txt" >"$tmp/wid.txt"
+for probe in exonym wid; do
+    said=$(name_is_endonym "$tmp/$probe.txt" || true)
+    case $said in
+    *"is the English name"*) ;;
+    *)
+        echo "the endonym check passed a deliberately English name ($probe): [$said]"
+        exit 1
+        ;;
+    esac
+done
+for f in "$langdir"/*.txt; do
+    name_is_endonym "$f" || fail=1
+done
+
+# lang.def maps each LANG_* macro to the English string the GUI compiles in,
+# which is the lookup key into every lang/*.txt: no msgid, no translations.
+LC_ALL=C awk -v keys="$keys" '
+    BEGIN { while ((getline k < keys) > 0) known[k] = 1 }
+    { sub(/\r$/, "") }
+    NR % 2 == 1 { macro = $0; next }
+    macro ~ /^(LANG_|LISTDEF_)/ {
+        n++
+        if (!($0 in known)) {
+            printf "lang.def:%d: %s maps to \"%s\", which is not a msgid in English.txt\n", NR, macro, $0
+            bad++
+        }
+    }
+    END {
+        if (n < 400) {
+            printf "lang.def: only %d LANG_ entries parsed; the parse is broken\n", n
+            bad++
+        }
+        exit(bad > 0)
+    }
+' "$def" || fail=1
+
+# The CLI prints the wizard's scope answers itself while the GUI reads them from
+# lang.def, so a reword on one side alone silently drifts the two apart (#1117).
+for scope in "Mirror %s and every host below it" "Ignore %s and every host below it"; do
+    for f in "$eng" "$def" "$top_srcdir/src/httrack.c"; do
+        if ! LC_ALL=C grep -qF "$scope" "$f"; then
+            echo "${f##*/}: missing the wizard scope answer \"$scope\""
+            fail=1
+        fi
+    done
+done
+
+# A msgid absent from a language file silently falls back to English (#862).
+# Multisets, not sets: a catalog repeating a msgid more often than English.txt
+# does keeps the set equal while one of the values it pairs goes unreachable.
+# English.txt repeats 27 msgids of its own, and those cancel out on both sides.
+LC_ALL=C sort <"$keys" >"$tmp/english.sorted"
+for f in "$langdir"/*.txt; do
+    LC_ALL=C awk 'NR%2==1 { sub(/\r$/, ""); print }' "$f" | LC_ALL=C sort >"$tmp/have"
+    untranslated=$(LC_ALL=C comm -23 "$tmp/english.sorted" "$tmp/have")
+    if [ -n "$untranslated" ]; then
+        printf '%s\n' "$untranslated" | awk -v n="${f##*/}" '{print n ": untranslated msgid: " $0}'
+        fail=1
+    fi
+    repeated=$(LC_ALL=C comm -13 "$tmp/english.sorted" "$tmp/have")
+    if [ -n "$repeated" ]; then
+        printf '%s\n' "$repeated" | awk -v n="${f##*/}" '{print n ": msgid occurs more often than in English.txt: " $0}'
+        fail=1
+    fi
+done
+
+# WinHTTrack sprintf()s these strings, and %n/%N/%t/%p/%h/%M/%Q/%q double as
+# HTTrack's own build-string letters, so a lost or invented one breaks either.
+# No positional specifiers, so a %s that swaps with a %d takes its argument.
+placeholder_drift() {
+    LC_ALL=C awk '
+        # Two characters from each %, so a printf conversion and a build-string
+        # letter read alike; %% pairs off on both sides and cancels.
+        function toks(s,   n, i, out) {
+            n = length(s)
+            for (i = 1; i <= n; i++)
+                if (substr(s, i, 1) == "%") {
+                    out = out substr(s, i, 2) " "
+                    i++
+                }
+            return out
+        }
+        FNR == 1 { name = FILENAME; sub(/.*\//, "", name) }
+        { sub(/\r$/, "") }
+        FNR % 2 == 1 { key = $0; next }
+        # An empty value falls back to English; the untranslated pin owns it.
+        $0 == "" { next }
+        {
+            pairs++
+            want = toks(key)
+            got = toks($0)
+            if (want != got) {
+                printf "%s:%d: placeholders [%s] became [%s]\n", name, FNR, want, got
+                bad++
+            }
+        }
+        END { printf "pairs=%d\n", pairs; exit(bad > 0) }
+    ' "$@"
+}
+
+# One control per direction: a dropped placeholder, then an invented one. A file
+# carrying no % at all would satisfy the check with the scanner doing nothing.
+printf 'Delete %%s?\nSupprimer ?\n' >"$tmp/dropped.txt"
+printf 'Delete?\nSupprimer %%s ?\n' >"$tmp/invented.txt"
+printf 'Delete %%s?\nSupprimer %%d ?\n' >"$tmp/swapped.txt"
+printf 'Copy %%s to %%d\nCopie %%d vers %%s\n' >"$tmp/reordered.txt"
+for probe in dropped invented swapped reordered; do
+    if placeholder_drift "$tmp/$probe.txt" >/dev/null; then
+        echo "the placeholder check passed a deliberately damaged value ($probe)"
+        exit 1
+    fi
+done
+
+placeholder_drift "$langdir"/*.txt >"$tmp/ph" || fail=1
+LC_ALL=C sed '/^pairs=/d' "$tmp/ph"
+# Every catalog carries English.txt's msgid count, minus the few empty values
+# skipped above; far fewer means the scan read something other than the catalogs.
+npairs=$(LC_ALL=C sed -n 's/^pairs=//p' "$tmp/ph")
+if [ "${npairs:-0}" -lt $((nfiles * nkeys * 9 / 10)) ]; then
+    echo "placeholder check saw only ${npairs:-0} value lines across $nfiles catalogs"
+    exit 1
+fi
+
+# conv_printf() copies the letter after an unknown escape and drops the backslash,
+# so a "\n" that lost its n merges two combo-box rows and mislabels every row after.
+unknown_escapes() {
+    LC_ALL=C awk -v name="$2" -v showok="${3:-}" '
+        # Built here from character codes: a quote or a backslash spelled inside
+        # an -v assignment is eaten before awk sees it.
+        BEGIN {
+            ok = "abfnrtv?" sprintf("%c%c%c", 39, 34, 92)
+            if (showok) { print ok; exit }
+        }
+        { sub(/\r$/, "") }
+        NR % 2 == 1 { next }
+        {
+            values++
+            n = length($0)
+            for (i = 1; i <= n; i++)
+                if (substr($0, i, 1) == "\\") {
+                    c = substr($0, i + 1, 1)
+                    if (c == "" || index(ok, c) == 0)
+                        printf "%s:%d: \\%s is not an escape; conv_printf drops the backslash\n",
+                            name, NR, (c == "" ? "<end of line>" : c)
+                    i++
+                }
+        }
+        END { printf "values=%d\n", values + 0 }
+    ' "$1"
+}
+
+# Controls: a lost n, then a dangling backslash. Match the complaint rather
+# than the status, since an empty report also reads as success.
+printf 'Two lines\nDeux lignes\\mTrois lignes\n' >"$tmp/lostn.txt"
+printf 'Ends badly\nFinit mal\\\n' >"$tmp/dangling.txt"
+escape_wanted() { [ "$1" = lostn ] && printf '\\m' || printf '\\<end of line>'; }
+# An escaped backslash is legal and common (Windows paths in English.txt:812),
+# so prove the check does not fire on one.
+printf 'A path\nC:\\\\Temp\n' >"$tmp/legal.txt"
+for probe in lostn dangling; do
+    case $(unknown_escapes "$tmp/$probe.txt" "$probe.txt" | LC_ALL=C sed '/^values=/d') in
+    *"$(escape_wanted "$probe") is not an escape"*) ;;
+    *)
+        echo "the escape check passed a deliberately broken value ($probe)"
+        exit 1
+        ;;
+    esac
+done
+if [ -n "$(unknown_escapes "$tmp/legal.txt" legal.txt | LC_ALL=C sed '/^values=/d')" ]; then
+    echo "the escape check rejects a legally escaped backslash"
+    exit 1
+fi
+# The set is the spec, mirroring conv_printf's switch: a probe can only ever
+# name the letters it happens to use, so widening by any other one is invisible.
+want_ok="abfnrtv?$(printf '\047\042\134')"
+got_ok=$(printf 'x\ny\n' >"$tmp/ok.txt" && unknown_escapes "$tmp/ok.txt" ok.txt 1 | head -1)
+if [ "$got_ok" != "$want_ok" ]; then
+    echo "the escape valid set is [$got_ok], expected [$want_ok]"
+    exit 1
+fi
+
+# One probe per letter the catalogs actually got wrong, so a widened set
+# also fails loudly rather than only through the pin above.
+printf 'Five bad\na\\Pb\\Dc\\Kd\\he\\sf\n' >"$tmp/letters.txt"
+nbad=$(unknown_escapes "$tmp/letters.txt" letters.txt | LC_ALL=C grep -c 'is not an escape') || true
+if [ "${nbad:-0}" -ne 5 ]; then
+    echo "the escape check named ${nbad:-0} of 5 bad escape letters"
+    exit 1
+fi
+
+nesc=0
+for f in "$langdir"/*.txt; do
+    nesc=$((nesc + 1))
+    out=$(unknown_escapes "$f" "${f##*/}")
+    nval=$(printf '%s\n' "$out" | LC_ALL=C sed -n 's/^values=//p')
+    # A scan that stopped after the first pair would satisfy every control.
+    if [ "${nval:-0}" -lt $((nkeys * 9 / 10)) ]; then
+        echo "${f##*/}: escape scan read only ${nval:-0} of $nkeys values"
+        exit 1
+    fi
+    found=$(printf '%s\n' "$out" | LC_ALL=C sed '/^values=/d')
+    if [ -n "$found" ]; then
+        printf '%s\n' "$found"
+        fail=1
+    fi
+done
+if [ "$nesc" -ne "$nfiles" ]; then
+    echo "escape check saw $nesc of $nfiles language files"
+    exit 1
+fi
+
+# A value copied verbatim from its msgid, or left empty, passes every check above
+# while the string is still English on screen (#1260). A handful are legitimate,
+# so the per-catalog counts are pinned and have to match exactly.
+pin="$testdir/62_lang-untranslated.counts"
+[ -f "$pin" ] || fail "cannot find $pin"
+
+# Surrounding blanks are stripped before comparing: a value of one space, or a
+# msgid copied with a trailing one, is as untranslated as the bare shapes.
+count_untranslated() {
+    # Two anchored sub()s, not one alternation gsub: BSD awk restarts gsub after
+    # each match, where the leading-blank anchor can fire again mid-line.
+    LC_ALL=C awk -v name="$2" '
+        function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+        { sub(/\r$/, "") }
+        NR % 2 == 1 { key = trim($0); next }
+        { value = trim($0) }
+        value == "" { empty++ }
+        value != "" && value == key { same++ }
+        END { printf "%-25s %-9d %d\n", name, same + 0, empty + 0 }
+    ' "$1"
+}
+
+# Catalogs pinned at zero would also match a counter that never leaves it, so
+# count a fixture carrying one of each shape before trusting the real ones.
+printf 'Cancel\nCancel\nClose\nClose \nOK\n \nSave\nEnregistrer\n' >"$tmp/probe.txt"
+got=$(count_untranslated "$tmp/probe.txt" probe.txt)
+want=$(printf '%-25s %-9d %d\n' probe.txt 2 1)
+if [ "$got" != "$want" ]; then
+    echo "the untranslated counter miscounts a known fixture: got [$got] want [$want]"
+    exit 1
+fi
+
+: >"$tmp/counts"
+for f in "$langdir"/*.txt; do
+    # English.txt is the msgid side of every pair, identical by construction.
+    [ "$f" != "$eng" ] || continue
+    count_untranslated "$f" "${f##*/}" >>"$tmp/counts"
+done
+LC_ALL=C sort -o "$tmp/counts" "$tmp/counts"
+
+rc=0
+LC_ALL=C awk -v pin="$pin" '
+    function report(name, got, want, kind,   what) {
+        what = "lower the pin here"
+        if (got > want)
+            what = "translate it rather than raise the pin"
+        printf "%s: %d %s, pinned at %d: %s\n", name, got, kind, want, what
+        bad++
+    }
+    BEGIN {
+        while ((getline line < pin) > 0) {
+            sub(/\r$/, "", line)
+            if (line ~ /^[ \t]*(#|$)/)
+                continue
+            # A second row for the same catalog would otherwise just win, so the
+            # numbers a bad merge left behind have to be rejected, not applied.
+            if (split(line, a, /[ \t]+/) != 3 || a[2] !~ /^[0-9]+$/ ||
+                a[3] !~ /^[0-9]+$/ || a[1] in pinned) {
+                printf "%s: malformed pin line: %s\n", pin, line
+                bad++
+                continue
+            }
+            same[a[1]] = a[2]
+            empty[a[1]] = a[3]
+            pinned[a[1]] = 1
+        }
+    }
+    {
+        seen[$1] = 1
+        if (!($1 in pinned)) {
+            printf "%s: no pinned untranslated counts; add them\n", $1
+            bad++
+            next
+        }
+        if ($2 != same[$1])
+            report($1, $2, same[$1], "values identical to their English msgid")
+        if ($3 != empty[$1])
+            report($1, $3, empty[$1], "empty values")
+    }
+    END {
+        for (f in pinned)
+            if (!(f in seen)) {
+                printf "%s: pinned but no such catalog\n", f
+                bad++
+            }
+        exit(bad > 0 ? 3 : 0)
+    }
+' "$tmp/counts" || rc=$?
+# A mismatch says so with 3, because awk's own error status varies by
+# implementation; reading any of them as a mismatch would hide a broken check.
+if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+    echo "the untranslated-count comparison itself failed"
+    exit 1
+elif [ "$rc" -ne 0 ]; then
+    new=$PWD/62_lang-untranslated.counts.new
+    LC_ALL=C awk '/^[ \t]*#/ || /^[ \t]*$/' "$pin" >"$new"
+    cat "$tmp/counts" >>"$new"
+    echo "once the counts are right for the right reason: cp $new $pin"
+    fail=1
+fi
+
+# These name real paths on disk and on the wire, so a translated one sends the
+# user nowhere: "htscache/new.*" and "robot.txt" both shipped. Case is the
+# translator's, spelling is not, and example hostnames stay their call. Counted
+# rather than matched: keeping one web/ of eleven still misroutes ten rows.
+# Counts must match: one too few loses a path, one too many duplicates a row.
+literal_tokens="hts-cache robots.txt cgi-bin web/images web/html"
+translated_literals() {
+    LC_ALL=C awk -v name="$2" -v toks="$literal_tokens" '
+        function count(hay, needle,   n, i) {
+            n = 0
+            i = index(hay, needle)
+            while (i > 0) {
+                n++
+                hay = substr(hay, i + length(needle))
+                i = index(hay, needle)
+            }
+            return n
+        }
+        BEGIN { split(toks, t, " ") }
+        { sub(/\r$/, "") }
+        NR % 2 == 1 { key = $0; next }
+        $0 == "" { next }
+        {
+            for (i in t) {
+                want = count(tolower(key), t[i])
+                got = count(tolower($0), t[i])
+                if (got != want)
+                    printf "%s:%d: msgid names %s %d times, the translation %d\n",
+                        name, NR, t[i], want, got
+            }
+        }
+    ' "$1"
+}
+
+# A fixture carrying one kept and one lost literal, so a checker that never
+# fires cannot pass for one that has nothing to report.
+printf 'Erase hts-cache/new.*\nEfface htscache/new.*\nFollow robots.txt\nSuivre robot.txt\nrobots.txt, robots.txt and robots.txt\nrobots.txt et robots.txt\nHtml in web/images and web/images\nHtml dans web/images\nHtml in web/html\nHtml dans web/html et web/html\nSee cgi-bin\nVoir cgi-poubelle\n' >"$tmp/literals.txt"
+case $(translated_literals "$tmp/literals.txt" literals.txt) in
+*"msgid names robots.txt 1 times, the translation 0"*) ;;
+*)
+    echo "the literal-token check missed a translated robots.txt"
+    exit 1
+    ;;
+esac
+# Two findings, not one: the second pair drops one robots.txt of three, which a
+# checker looking only for presence would pass.
+# The list is the spec, so pin it: a fixture can only ever exercise the tokens
+# it happens to name, and dropping any other one would go unnoticed.
+want_tokens="hts-cache robots.txt cgi-bin web/images web/html"
+if [ "$literal_tokens" != "$want_tokens" ]; then
+    echo "literal_tokens is [$literal_tokens], expected [$want_tokens]"
+    exit 1
+fi
+
+# One damaged pair per token, so narrowing the list cannot pass, plus the other
+# direction: a token named twice where the msgid names it once duplicates a
+# dropdown row, so a one-sided comparison has to fail here too.
+if [ "$(translated_literals "$tmp/literals.txt" literals.txt | wc -l)" -ne 6 ]; then
+    echo "the literal-token check did not report all six damaged fixtures"
+    exit 1
+fi
+
+for f in "$langdir"/*.txt; do
+    found=$(translated_literals "$f" "${f##*/}")
+    if [ -n "$found" ]; then
+        printf '%s\n' "$found"
+        fail=1
+    fi
+done
+
+# A combo-box "\n" starts a row, so a value whose break count differs from its
+# msgid shifts every row after it. Most drift here is prose reflowed to another
+# width, so counts are pinned per catalog; a new one has to be looked at.
+count_linebreaks() {
+    LC_ALL=C awk -v name="$2" '
+        # Escaped backslashes go first: in "\\n" the break belongs to neither
+        # the pair nor the n, and counting it hides a row that never breaks.
+        function breaks(s,   n) {
+            gsub(/\\\\/, "", s)
+            n = gsub(/\\r\\n/, "", s)
+            return n + gsub(/\\n/, "", s)
+        }
+        { sub(/\r$/, "") }
+        NR % 2 == 1 { key = $0; next }
+        # An empty value renders as English, breaks included.
+        $0 == "" { next }
+        breaks(key) != breaks($0) { drift++ }
+        END { printf "%-25s %d\n", name, drift + 0 }
+    ' "$1"
+}
+
+# A catalog pinned at zero would also match a counter stuck there, so count a
+# fixture holding one drifting pair and one matching pair first.
+printf 'a\\nb\nx\\ny\nc\\nd\nz\ne\\nf\ng\\\\nh\n' >"$tmp/breaks.txt"
+got=$(count_linebreaks "$tmp/breaks.txt" breaks.txt)
+want=$(printf '%-25s %d\n' breaks.txt 2)
+if [ "$got" != "$want" ]; then
+    echo "the line-break counter miscounts a known fixture: got [$got] want [$want]"
+    exit 1
+fi
+
+lbpin="$testdir/62_lang-linebreaks.counts"
+[ -f "$lbpin" ] || fail "cannot find $lbpin"
+: >"$tmp/lb"
+for f in "$langdir"/*.txt; do
+    [ "$f" != "$eng" ] || continue
+    count_linebreaks "$f" "${f##*/}" >>"$tmp/lb"
+done
+LC_ALL=C sort -o "$tmp/lb" "$tmp/lb"
+LC_ALL=C awk -v pin="$lbpin" '
+    BEGIN {
+        while ((getline line < pin) > 0) {
+            sub(/\r$/, "", line)
+            if (line ~ /^[ \t]*(#|$)/)
+                continue
+            if (split(line, a, /[ \t]+/) != 2 || a[2] !~ /^[0-9]+$/ || a[1] in pinned) {
+                printf "%s: malformed pin line: %s\n", pin, line
+                bad++
+                continue
+            }
+            want[a[1]] = a[2]
+            pinned[a[1]] = 1
+        }
+    }
+    {
+        seen[$1] = 1
+        if (!($1 in pinned)) {
+            printf "%s: no pinned line-break count; add it\n", $1
+            bad++
+            next
+        }
+        if ($2 > want[$1])
+            printf "%s: %d values whose line breaks differ from their msgid, pinned at %d: read the new one before raising it\n", $1, $2, want[$1], bad++
+        else if ($2 < want[$1])
+            printf "%s: %d line-break mismatches, pinned at %d: lower the pin\n", $1, $2, want[$1], bad++
+    }
+    END {
+        for (f in pinned)
+            if (!(f in seen)) {
+                printf "%s: pinned but no such catalog\n", f
+                bad++
+            }
+        exit(bad > 0)
+    }
+' "$tmp/lb" || fail=1
+
+# A catalog re-encoded from the wrong source is still valid UTF-8, so the check
+# above cannot see it. Mojibake is exactly text that survives a trip back to
+# Latin-1 and reads as UTF-8 again. A byte pattern instead flags real
+# punctuation: French needs a no-break space after an accent before ! ? : ; ».
+if [ -z "$py" ]; then
+    defer_skip "python3 not found, so the mojibake sweep did not run"
+elif ! command -v iconv >/dev/null 2>&1; then
+    defer_skip "iconv not found, so the mojibake control cannot be built"
+else
+    cat >"$tmp/mojibake.py" <<'PYEOF'
+import sys
+
+name = sys.argv[2]
+for n, line in enumerate(open(sys.argv[1], "rb").read().decode("utf-8").split("\n"), 1):
+    try:
+        again = line.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        continue
+    if any(ord(c) > 127 for c in again):
+        print("%s:%d: mojibake, so the source charset was wrong" % (name, n))
+        break
+PYEOF
+
+    # Control: the mistake itself, on a catalog with enough accents to carry it.
+    # English is pure ASCII and would prove nothing.
+    LC_ALL=C iconv -f ISO-8859-1 -t UTF-8 "$langdir/Francais.txt" >"$tmp/mis"
+    if [ -z "$("$py" "$tmp/mojibake.py" "$tmp/mis" Francais.txt)" ]; then
+        echo "the mojibake check passed a deliberately misread catalog"
+        exit 1
+    fi
+    # And the other way, since the pattern this replaced flagged it: legitimate
+    # punctuation after an accent must pass.
+    printf 'Miroir termin\303\251\302\240!\r\n' >"$tmp/nbsp"
+    if [ -n "$("$py" "$tmp/mojibake.py" "$tmp/nbsp" nbsp)" ]; then
+        echo "the mojibake check rejected a no-break space after an accent"
+        exit 1
+    fi
+    for f in "$langdir"/*.txt; do
+        found=$("$py" "$tmp/mojibake.py" "$f" "${f##*/}")
+        if [ -n "$found" ]; then
+            printf '%s\n' "$found"
+            fail=1
+        fi
+    done
+fi
+
+# The catalogs carry no charset any more, so the served pages are the only place
+# left that names one, and a browser decodes by it.
+npage=0
+for f in "$top_srcdir"/html/server/*.html; do
+    test -f "$f" || continue
+    npage=$((npage + 1))
+    LC_ALL=C awk '/charset=utf-8/ { found = 1 } END { exit !found }' "$f" || {
+        echo "${f##*/}: does not declare charset=utf-8"
+        fail=1
+    }
+done
+# Before the loop's silence can mean anything: an unmatched glob leaves the
+# literal, which test -f skips, so zero pages would otherwise read as clean.
+if [ "$npage" -lt 20 ]; then
+    echo "only $npage server pages scanned for their charset"
+    exit 1
+fi
+
+# Each combo box is filled from a LISTDEF_* list and read back as a bare row
+# index that selects an engine option, so a list whose item count differs from
+# its msgid hands the engine the neighbour of what the user clicked: wrong robots
+# policy, wrong travel mode, wrong structure, silently and per locale. WinHTTrack
+# cannot catch it (its own selftest checks the English list) and it never shows
+# in English, so this is the only place it is caught. Exact, not pinned like the
+# line-break counts: these are the strings where a compensating change hides.
+listdef_keys="$tmp/listdef.keys"
+LC_ALL=C awk '
+    { sub(/\r$/, "") }
+    NR % 2 == 1 { macro = $0; next }
+    macro ~ /^LISTDEF_/ { print }
+' "$def" | LC_ALL=C sort -u >"$listdef_keys"
+nlist=$(wc -l <"$listdef_keys")
+# Pinned: a new list is a new combo box whose indices want looking at, not a
+# number to bump. A parse that returned nothing would otherwise pass everything.
+if [ "$nlist" -ne 11 ]; then
+    echo "$def: parsed $nlist LISTDEF_ lists, expected 11"
+    exit 1
+fi
+
+listdef_items() {
+    LC_ALL=C awk -v name="$2" -v keyfile="$3" '
+        # Items, not breaks: an escaped backslash is not a separator.
+        # An escaped backslash is not a separator, so it goes first; the count
+        # that follows sees a \n inside a \r\n exactly once either way.
+        function items(s) {
+            gsub(/\\\\/, "", s)
+            return gsub(/\\n/, "", s) + 1
+        }
+        BEGIN { while ((getline k < keyfile) > 0) want[k] = items(k) }
+        { sub(/\r$/, "") }
+        NR % 2 == 1 { key = $0; next }
+        !(key in want) { next }
+        # An empty value renders as English, so English sets its row count.
+        $0 == "" { next }
+        {
+            cmp++
+            if (items($0) != want[key])
+                printf "%s:%d: list has %d items, its msgid %d: a combo row selects the wrong option\n",
+                    name, NR, items($0), want[key]
+        }
+        END { printf "cmp=%d\n", cmp + 0 }
+    ' "$1"
+}
+
+# One control per direction: a value that lost an item and one that invented
+# another, against a real msgid. Built as a pair rather than by editing a
+# catalog, since English.txt repeats each msgid as its own value and resizing
+# both sides at once keeps them equal.
+LC_ALL=C awk -v kf="$listdef_keys" -v dir="$tmp" '
+    BEGIN {
+        getline k < kf
+        short = k
+        sub(/\\n[^\\]*$/, "", short)
+        print k > (dir "/short.txt")
+        print short > (dir "/short.txt")
+        print k > (dir "/long.txt")
+        print k "\\nextra" > (dir "/long.txt")
+        # An escaped backslash before an n is not a separator. No catalog holds
+        # one today, so without this the guard that strips them is unreachable.
+        esc = k
+        sub(/\\n/, "\\\\n", esc)
+        print k > (dir "/escbs.txt")
+        print esc > (dir "/escbs.txt")
+    }' </dev/null
+for probe in short long escbs; do
+    case $(listdef_items "$tmp/$probe.txt" "$probe.txt" "$listdef_keys") in
+    *"selects the wrong option"*) ;;
+    *)
+        echo "the LISTDEF check passed a deliberately resized list ($probe)"
+        exit 1
+        ;;
+    esac
+done
+
+ncmp=0
+for f in "$langdir"/*.txt; do
+    out=$(listdef_items "$f" "${f##*/}" "$listdef_keys")
+    ncmp=$((ncmp + $(printf '%s\n' "$out" | LC_ALL=C sed -n 's/^cmp=//p')))
+    found=$(printf '%s\n' "$out" | LC_ALL=C sed '/^cmp=/d')
+    if [ -n "$found" ]; then
+        printf '%s\n' "$found"
+        fail=1
+    fi
+done
+# Every catalog owns every list, bar a couple of empty values. A scan narrowed
+# to one list, one catalog or none would otherwise report nothing and pass.
+if [ "$ncmp" -lt $((nfiles * nlist * 9 / 10)) ]; then
+    echo "LISTDEF check compared $ncmp values, expected about $((nfiles * nlist))"
+    exit 1
+fi
+# An unknown ${LANG_*} renders as nothing rather than erroring, so check that
+# every macro the templates interpolate, in any wrapper form, resolves.
+LC_ALL=C grep -oh '[$]{[^}]*LANG_[A-Za-z0-9_]*}' "$top_srcdir"/html/server/*.html |
+    LC_ALL=C sed 's|.*\(LANG_[A-Za-z0-9_]*\)}|\1|' | LC_ALL=C sort -u >"$tmp/used"
+nused=$(wc -l <"$tmp/used")
+if [ "$nused" -lt 100 ]; then
+    echo "only $nused LANG_ macros scanned from html/server; the scan is broken"
+    exit 1
+fi
+LC_ALL=C awk 'NR%2==1 { sub(/\r$/, ""); print }' "$def" | LC_ALL=C sort -u >"$tmp/defined"
+undef=$(LC_ALL=C comm -23 "$tmp/used" "$tmp/defined")
+if [ -n "$undef" ]; then
+    printf '%s\n' "$undef" | awk '{print "html/server uses a macro absent from lang.def: " $0}'
+    fail=1
+fi
+
+# "\r \n" renders as a break, a space, then a second break, and the space shows.
+split_pairs() { # $1 = catalog, $2 = display name
+    LC_ALL=C awk -v name="$2" '
+        { sub(/\r$/, "") }
+        # Escaped backslashes go first, as in breaks(): the r of "C:\\r" is a path
+        # character, not a CR escape.
+        NR % 2 == 0 {
+            s = $0
+            gsub(/\\\\/, "", s)
+            if (s ~ /\\r[ \t]+\\n/)
+                printf "%s: line %d has whitespace inside a CR/LF escape pair\n", name, NR
+        }
+    ' "$1"
+}
+# Line 6 is the canary: drop the backslash stripping and it fires too.
+printf 'K1\nv \\r \\n\nK2\nv \\r\\n\nK3\nC:\\\\r \\n\n' >"$tmp/split.txt"
+got=$(split_pairs "$tmp/split.txt" split.txt)
+[ "$got" = "split.txt: line 2 has whitespace inside a CR/LF escape pair" ] ||
+    fail "the split-pair check misreads a known fixture: [$got]"
+for f in "$langdir"/*.txt; do
+    out=$(split_pairs "$f" "${f##*/}")
+    [ -z "$out" ] || {
+        printf '%s\n' "$out"
+        fail=1
+    }
+done
+
+[ "$fail" -eq 0 ] || exit 1
+[ -z "$skipped" ] || skip "$skipped"
+
+echo "$nfiles language files consistent with $nkeys English msgids"

@@ -1,0 +1,81 @@
+#!/bin/bash
+#
+# A host that resolves to several addresses must fall back to the next one when
+# a connect fails, instead of giving up on the first (dead IPv6 on a dual-stack
+# host, ...). HTTRACK_DEBUG_RESOLVE pins "deadhost" to a refused address first
+# (127.0.0.2, nothing listening) then the live server (127.0.0.1): the crawl
+# only succeeds if httrack retries the second address. A second case pins every
+# address to a refused one, so the slot must exhaust the list and error out
+# (rather than hang or loop).
+
+set -euo pipefail
+
+# shellcheck source=tests/crawllib.sh
+. "${0%"${0##*/}"}./crawllib.sh"
+
+if test "${V6_SUPPORT:-}" == "no"; then
+    echo "no IPv6 support (resolver list/override is IPv6-only), skipping"
+    exit 77
+fi
+# The fixture needs a second loopback IP (dead 127.0.0.2 + live 127.0.0.1) for
+# the fallback to have a target; GNU/Hurd has only 127.0.0.1, so skip there.
+case "$HTS_OS" in
+GNU | GNU/*)
+    echo "GNU/Hurd: single loopback IP, connect-fallback fixture unbuildable, skipping"
+    exit 77
+    ;;
+esac
+
+tmpdir=$(mktemp -d)
+
+cleanup() {
+    rm -rf "$tmpdir"
+}
+cleanup_push cleanup
+
+# bind the live server to 127.0.0.1 only, so 127.0.0.2 refuses the connect
+local_server_start --log "$tmpdir/srv.out" --bind 127.0.0.1
+
+out="$tmpdir/crawl"
+# macOS has only 127.0.0.1, so the dead 127.0.0.x connects block to the timeout
+# instead of refusing instantly (as on Linux); a small --timeout + --retries=0
+# bound the stall without changing what the fallback exercises.
+HTTRACK_DEBUG_RESOLVE="deadhost:127.0.0.2,127.0.0.1" \
+    local_crawl --log "$tmpdir/log" "http://deadhost:${SRV_PORT}/simple/basic.html" -O "$out" -c1 --robots=0 --timeout=5 --retries=0 --quiet -Z
+
+log="$out/hts-log.txt"
+
+# the dead address was tried, then the next one (proves the fallback ran)
+if ! grep -q "trying next address" "$log"; then
+    echo "FAIL: no connect fallback happened"
+    cat "$log"
+    exit 1
+fi
+
+# 0 errors and the file was actually fetched (over the live address)
+errs=$(count_log_errors "$log")
+test "$errs" == "0" || {
+    echo "FAIL: $errs error(s) reported"
+    grep -iE "Error:" "$log"
+    exit 1
+}
+test -f "$out/deadhost_${SRV_PORT}/simple/basic.html" || {
+    echo "FAIL: basic.html not downloaded via fallback"
+    find "$out" -type f
+    exit 1
+}
+
+# every address dead: the slot exhausts the list, then errors out (the harness
+# timeout would catch a hang/loop)
+out2="$tmpdir/crawl2"
+HTTRACK_DEBUG_RESOLVE="alldead:127.0.0.2,127.0.0.3" \
+    local_crawl --log "$tmpdir/log2" "http://alldead:${SRV_PORT}/simple/basic.html" -O "$out2" -c1 --robots=0 --timeout=5 --retries=0 --quiet -Z
+log2="$out2/hts-log.txt"
+
+grep -q "trying next address" "$log2" ||
+    fail_dump "exhaustion path never tried the fallback address" "$log2"
+grep -iqE "^[0-9:]*[[:space:]]Error:" "$log2" ||
+    fail_dump "all addresses failing did not report an error" "$log2"
+test ! -f "$out2/alldead_${SRV_PORT}/simple/basic.html" || fail "file downloaded despite every address failing"
+
+echo "OK: connect fallback succeeds, and exhausting all addresses errors out"

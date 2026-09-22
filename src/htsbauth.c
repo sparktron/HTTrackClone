@@ -1,6 +1,8 @@
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -15,11 +17,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -39,8 +39,49 @@ Please visit our Website: http://www.httrack.com
 #include "htsglobal.h"
 #include "htslib.h"
 #include "htscore.h"
+#ifdef _WIN32
+#include "htscharset.h" /* hts_pathToUCS2, hts_convertUCS2StringToUTF8 */
+#endif
 
 /* END specific definitions */
+
+/* See htsbauth.h. */
+hts_boolean cookie_host(const char *adr, char *dst, size_t dst_size) {
+  const char *host = jump_identification_const(adr);
+  hts_boolean literal = HTS_FALSE;
+  size_t len;
+
+  if (host[0] == '[') { // bracketed IPv6 literal, [::1]:8080
+    const char *const end = strchr(host, ']');
+
+    literal = HTS_TRUE;
+    host++;
+    len = end != NULL ? (size_t) (end - host) : strlen(host);
+  } else {
+    const char *port = strchr(host, ':');
+
+    // several colons means a bare IPv6 literal, which has no port to cut
+    if (port != NULL && strchr(port + 1, ':') != NULL)
+      port = NULL;
+    len = port != NULL ? (size_t) (port - host) : strlen(host);
+  }
+  // an empty domain is a suffix of every host, so it would match all of them
+  if (len == 0 || len >= dst_size)
+    return HTS_FALSE;
+  dst[0] = '\0';
+  strlncatbuff(dst, host, dst_size, len);
+  // host names are case-insensitive, so one folded spelling reaches one entry
+  hts_lowcase(dst);
+  /* "%25" is RFC 6874's URI spelling of a zone id's '%'. Only a bracketed
+     literal carries it, because a bare host's '%' is already literal. */
+  if (literal) {
+    char *const zone = strchr(dst, '%');
+
+    if (zone != NULL && zone[1] == '2' && zone[2] == '5')
+      memmove(zone + 1, zone + 3, strlen(zone + 3) + 1);
+  }
+  return HTS_TRUE;
+}
 
 // gestion des cookie
 // ajoute, dans l'ordre
@@ -48,12 +89,19 @@ Please visit our Website: http://www.httrack.com
 int cookie_add(t_cookie * cookie, const char *cook_name, const char *cook_value,
                const char *domain, const char *path) {
   char buffer[8192];
+  char host[256];
   char *a = cookie->data;
   char *insert;
   char cook[16384];
 
-  // effacer éventuel cookie en double
+  /* One representation per host, because an old or hand-edited jar carries a
+     port the send side no longer queries with. */
+  if (!cookie_host(domain, host, sizeof(host)))
+    return -1;
+
+  // erase any duplicate; cookie_del normalises too, so it takes the raw domain
   cookie_del(cookie, cook_name, domain, path);
+  domain = host;
   if (strlen(cook_value) > 1024)
     return -1;                  // trop long
   if (strlen(cook_name) > 256)
@@ -61,18 +109,26 @@ int cookie_add(t_cookie * cookie, const char *cook_name, const char *cook_value,
   if (strlen(domain) > 256)
     return -1;                  // trop long
   if (strlen(path) > 256)
-    return -1;                  // trop long
-  if (strlen(cookie->data)
-             + strlen(cook_value)
-             + strlen(cook_name)
-             + strlen(domain)
-             + strlen(path)
-             + 256 > cookie->max_len)
-    return -1;                  // impossible d'ajouter
+    return -1; // too long
+  /* Each part against the room left, never a sum: the sum of five lengths
+     read off the wire can wrap and pass a check it should fail. */
+  {
+    const size_t parts[] = {strlen(cookie->data), strlen(cook_value),
+                            strlen(cook_name),    strlen(domain),
+                            strlen(path),         256};
+    size_t left = cookie->max_len;
+    size_t i;
+
+    for (i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
+      if (parts[i] > left)
+        return -1; // no room to add it
+      left -= parts[i];
+    }
+  }
 
   insert = a;                   // insérer ici
   while(*a) {
-    if (strlen(cookie_get(buffer, sizeof(buffer), a, 2)) < strlen(path))        // long. path (le + long est prioritaire)
+    if (strlen(cookie_get(buffer, a, 2)) < strlen(path))        // long. path (le + long est prioritaire)
       a = cookie->data + strlen(cookie->data);  // fin
     else {
       a = strchr(a, '\n');      // prochain champ
@@ -100,14 +156,20 @@ int cookie_add(t_cookie * cookie, const char *cook_name, const char *cook_value,
   strcatbuff(cook, "\t");
   strcatbuff(cook, cook_value);
   strcatbuff(cook, "\n");
-  if (!((strlen(cookie->data) + strlen(cook)) < cookie->max_len))
-    return -1;                  // impossible d'ajouter
-  cookie_insert(insert, sizeof(cookie->data) - (size_t) (insert - cookie->data),
+  /* Backstop, not a live gate: the check above reserves 256 bytes and this
+     record adds ~30 of literals, so it fires only if that assembly ever
+     outgrows the headroom. Overflow-safe form regardless. */
+  {
+    const size_t used = strlen(cookie->data);
+
+    if (used >= cookie->max_len || strlen(cook) >= cookie->max_len - used)
+      return -1; // no room to add it
+  }
+  cookie_insert(insert, cookie->max_len - (size_t) (insert - cookie->data),
                 cook);
 #if DEBUG_COOK
   printf("add_new cookie: name=\"%s\" value=\"%s\" domain=\"%s\" path=\"%s\"\n",
          cook_name, cook_value, domain, path);
-  //printf(">>>cook: %s<<<\n",cookie->data);
 #endif
   return 0;
 }
@@ -115,65 +177,50 @@ int cookie_add(t_cookie * cookie, const char *cook_name, const char *cook_value,
 // effacer cookie si existe
 int cookie_del(t_cookie * cookie, const char *cook_name, const char *domain, const char *path) {
   char *a, *b;
+  char host[256];
 
-  b = cookie_find(cookie->data, cook_name, domain, path);
+  /* Same normalisation as cookie_add, or the pair would disagree on where a
+     port-qualified domain was stored. */
+  if (!cookie_host(domain, host, sizeof(host)))
+    return 0; // nothing can be stored under it, so nothing to delete
+
+  b = cookie_find(cookie->data, cook_name, host, path);
   if (b) {
     a = cookie_nextfield(b);
-    cookie_delete(b, sizeof(cookie->data) - (size_t) (b - cookie->data),
-                  (size_t) (a - b));
+    cookie_delete(b, cookie->max_len - (size_t) (b - cookie->data), a - b);
 #if DEBUG_COOK
-    printf("deleted old cookie: %s %s %s\n", cook_name, domain, path);
+    printf("deleted old cookie: %s %s %s\n", cook_name, host, path);
 #endif
   }
   return 0;
 }
 
-// Matches wildcard cookie domains that start with a dot
-// chk_dom: the domain stored in the cookie (potentially wildcard).
-// domain: query domain
-static int cookie_cmp_wildcard_domain(const char *chk_dom, const char *domain) {
-  const size_t n = strlen(chk_dom);
-  const size_t m = strlen(domain);
-  const size_t l = n < m ? n : m;
-  size_t i;
+/* See htsbauth.h. */
+hts_boolean cookie_domain_match(const char *jar_dom, const char *host) {
+  size_t dom_len;
+  const size_t host_len = strlen(host);
 
-  /* Compare the common trailing part of both domains.
-     Note: 'i' is unsigned, so count up and index from the end ; counting down
-     from (l - 1) never terminates, and underflows when l is 0. */
-  for (i = 0; i < l; i++) {
-    if (chk_dom[n - i - 1] != domain[m - i - 1]) {
-      return 1;
-    }
-  }
-  /* ".foo.com" applies to the bare domain "foo.com", and to that one only:
-     n must be exactly m + 1, so that chk_dom is "." followed by domain.
-     A looser test (m < n) would let a cookie scoped to ".x.foo.com" be sent
-     to "foo.com", widening its scope instead of narrowing it. */
-  if (n == m + 1 && chk_dom[0] == '.') {
-    return 0;
-  }
-  else if (m != n) {
-    return 1;
-  }
-  return 0;
+  // a Netscape jar writes ".example.com" where RFC 6265 stores example.com
+  if (jar_dom[0] == '.')
+    jar_dom++;
+  dom_len = strlen(jar_dom);
+  // an empty domain is a suffix of every host, so it would match all of them
+  if (dom_len == 0 || dom_len > host_len)
+    return HTS_FALSE;
+  if (strcmpnocase(jar_dom, host + host_len - dom_len) != 0)
+    return HTS_FALSE;
+  if (dom_len == host_len)
+    return HTS_TRUE; // the same host
+  /* Shorter than the host, so it is a parent domain only if the byte before it
+     ends a label, for example "example.com" is no parent of wwwexample.com. */
+  if (host[host_len - dom_len - 1] != '.')
+    return HTS_FALSE;
+  /* An address has no parent domain, or "1.1" would reach 192.168.1.1, and
+     cookie_host unbrackets IPv6, so a colon left here is an address too. */
+  if (hts_host_is_ipv4(host, host_len) || memchr(host, ':', host_len) != NULL)
+    return HTS_FALSE;
+  return HTS_TRUE;
 }
-
-// Does the domain stored in a cookie apply to the queried domain?
-// chk_dom: the domain stored in the cookie (potentially wildcard, ie. ".foo.com")
-// domain: query domain
-// returns !=0 if the cookie applies to this domain
-int cookie_matches_domain(const char *chk_dom, const char *domain) {
-  const size_t n = strlen(chk_dom);
-  const size_t m = strlen(domain);
-
-  /* chk_dom is a trailing part of domain: ".foo.com" applies to "www.foo.com" */
-  if (n <= m && strcmp(chk_dom, domain + m - n) == 0) {
-    return 1;
-  }
-  /* wildcard domain applied to the bare domain: ".foo.com" applies to "foo.com" */
-  return cookie_cmp_wildcard_domain(chk_dom, domain) == 0;
-}
-
 
 // rechercher cookie à partir de la position s (par exemple s=cookie.data)
 // renvoie pointeur sur ligne, ou NULL si introuvable
@@ -189,14 +236,16 @@ char *cookie_find(char *s, const char *cook_name, const char *domain, const char
     if (strnotempty(cook_name) == 0)
       t = 1;                    // accepter par défaut
     else
-      t = (strcmp(cookie_get(buffer, sizeof(buffer), a, 5), cook_name) == 0);   // tester si même nom
+      t = (strcmp(cookie_get(buffer, a, 5), cook_name) == 0);   // tester si même nom
     if (t) {                    // même nom ou nom qualconque
       //
-      const char *chk_dom = cookie_get(buffer, sizeof(buffer), a, 0); // domaine concerné par le cookie
+      const char *chk_dom = cookie_get(buffer, a, 0); // cookie's own domain
 
-      if (cookie_matches_domain(chk_dom, domain)) {     // même domaine
-          //
-        const char *chk_path = cookie_get(buffer, sizeof(buffer), a, 2);    // chemin concerné par le cookie
+      /* The path below is byte-exact where the domain is not, because RFC 6265
+         folds a host name and matches a path literally. */
+      if (cookie_domain_match(chk_dom, domain)) { // same domain
+        //
+        const char *chk_path = cookie_get(buffer, a, 2);    // chemin concerné par le cookie
 
         if (strlen(chk_path) <= strlen(path)) {
           if (strncmp(path, chk_path, strlen(chk_path)) == 0) {       // même chemin
@@ -224,30 +273,56 @@ char *cookie_nextfield(char *a) {
   return a;
 }
 
-// lire cookies.txt
-// lire également (Windows seulement) les *@*.txt (cookies IE copiés)
-// !=0 : erreur
-int cookie_load(t_cookie * cookie, const char *fpath, const char *name) {
+/* Copy Netscape-jar field <param> into dst, or refuse the line and say so: a
+   shortened domain or path would silently change where the cookie is sent. */
+static hts_boolean cookie_load_field(httrackp *opt, char *dst, size_t dst_size,
+                                     char *buffer, const char *line, int param,
+                                     const char *field_name, const char *file) {
+  const char *const value = cookie_get(buffer, line, param);
+  const size_t len = strlen(value);
+
+  if (len >= dst_size) {
+    hts_log_print(opt, LOG_WARNING,
+                  "Cookies: ignoring a line whose %s field is %d bytes "
+                  "(maximum %d): %s",
+                  field_name, (int) len, (int) dst_size - 1, file);
+    return HTS_FALSE;
+  }
+  strlcpybuff(dst, value, dst_size);
+  return HTS_TRUE;
+}
+
+// Read cookies.txt (+ copied IE cookies *@*.txt on Windows); !=0 on error.
+int cookie_load(httrackp *opt, t_cookie *cookie, const char *fpath,
+                const char *name) {
   char catbuff[CATBUFF_SIZE];
   char buffer[8192];
 
-  //  cookie->data[0]='\0';
-
-  // Fusionner d'abord les éventuels cookies IE
+  // Merge any IE cookies first
 #ifdef _WIN32
   {
-    WIN32_FIND_DATAA find;
+    WIN32_FIND_DATAW find;
     HANDLE h;
-    char pth[MAX_PATH + 32];
+    char pth[HTS_URLMAXSIZE];
+    LPWSTR wpth;
 
     strcpybuff(pth, fpath);
     strcatbuff(pth, "*@*.txt");
-    h = FindFirstFileA((char *) pth, &find);
+    // Wide glob so a long or non-ASCII IE-cookie folder is scanned (#133).
+    wpth = hts_pathToUCS2(pth);
+    h = wpth != NULL ? FindFirstFileW(wpth, &find) : INVALID_HANDLE_VALUE;
+    freet(wpth);
     if (h != INVALID_HANDLE_VALUE) {
       do {
         if (!(find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
           if (!(find.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM)) {
-            FILE *fp = fopen(fconcat(catbuff, sizeof(catbuff), fpath, find.cFileName), "rb");
+            // cFileName is UTF-16: convert to UTF-8 so the mirror path and
+            // file wrappers stay UTF-8 (no CP_ACP mojibake).
+            char *u = hts_convertUCS2StringToUTF8(find.cFileName, -1);
+            FILE *fp =
+                u != NULL
+                    ? FOPEN(fconcat(catbuff, sizeof(catbuff), fpath, u), "rb")
+                    : NULL;
 
             if (fp) {
               char cook_name[256];
@@ -255,11 +330,9 @@ int cookie_load(t_cookie * cookie, const char *fpath, const char *name) {
               char domainpathpath[512];
               char dummy[512];
 
-              //
-              lien_adrfil af;   // chemin (/)
+              lien_adrfil af; // host + path (/)
               int cookie_merged = 0;
 
-              //
               // Read all cookies
               while(!feof(fp)) {
                 cook_name[0] = cook_value[0] = domainpathpath[0]
@@ -288,41 +361,61 @@ int cookie_load(t_cookie * cookie, const char *fpath, const char *name) {
               }
               fclose(fp);
               if (cookie_merged)
-                remove(fconcat(catbuff, sizeof(catbuff), fpath, find.cFileName));
+                UNLINK(fconcat(catbuff, sizeof(catbuff), fpath, u));
             }                   // if fp
+            freet(u);
           }
-      } while(FindNextFileA(h, &find));
+      } while (FindNextFileW(h, &find));
       FindClose(h);
     }
   }
 #endif
 
-  // Ensuite, cookies.txt
+  // then cookies.txt
   {
-    FILE *fp = fopen(fconcat(catbuff, sizeof(catbuff), fpath, name), "rb");
+    // file points into catbuff; nothing below writes catbuff again
+    const char *const file = fconcat(catbuff, sizeof(catbuff), fpath, name);
+    FILE *fp = FOPEN(file, "rb");
 
     if (fp) {
       char BIGSTK line[8192];
+      const size_t line_max = 8000;
 
-      while((!feof(fp)) && (((int) strlen(cookie->data)) < cookie->max_len)) {
+      while ((!feof(fp)) && (strlen(cookie->data) < cookie->max_len)) {
         rawlinput(fp, line, 8100);
         if (strnotempty(line)) {
-          if (strlen(line) < 8000) {
+          if (strlen(line) < line_max) {
             if (line[0] != '#') {
-              char domain[256]; // domaine cookie (.netscape.com)
-              char path[256];   // chemin (/)
-              char cook_name[1024];     // nom cookie (MYCOOK)
-              char BIGSTK cook_value[8192];     // valeur (ID=toto,S=1234)
+              char domain[256];             // cookie domain (.netscape.com)
+              char path[256];               // path (/)
+              char cook_name[1024];         // cookie name (MYCOOK)
+              char BIGSTK cook_value[8192]; // value (ID=toto,S=1234)
 
-              strcpybuff(domain, cookie_get(buffer, sizeof(buffer), line, 0));  // host
-              strcpybuff(path, cookie_get(buffer, sizeof(buffer), line, 2));    // path
-              strcpybuff(cook_name, cookie_get(buffer, sizeof(buffer), line, 5));       // name
-              strcpybuff(cook_value, cookie_get(buffer, sizeof(buffer), line, 6));      // value
 #if DEBUG_COOK
               printf("%s\n", line);
 #endif
-              cookie_add(cookie, cook_name, cook_value, domain, path);
+              if (cookie_load_field(opt, domain, sizeof(domain), buffer, line,
+                                    0, "domain", file) &&
+                  cookie_load_field(opt, path, sizeof(path), buffer, line, 2,
+                                    "path", file) &&
+                  cookie_load_field(opt, cook_name, sizeof(cook_name), buffer,
+                                    line, 5, "name", file) &&
+                  cookie_load_field(opt, cook_value, sizeof(cook_value), buffer,
+                                    line, 6, "value", file)) {
+                // the jar caps a field tighter still, and a full one refuses
+                if (cookie_add(cookie, cook_name, cook_value, domain, path) !=
+                    0) {
+                  hts_log_print(opt, LOG_WARNING,
+                                "Cookies: the jar did not store '%.64s': %s",
+                                cook_name, file);
+                }
+              }
             }
+          } else {
+            hts_log_print(opt, LOG_WARNING,
+                          "Cookies: ignoring an over-long line "
+                          "(%d bytes, maximum %d): %s",
+                          (int) strlen(line), (int) line_max - 1, file);
           }
         }
       }
@@ -333,14 +426,25 @@ int cookie_load(t_cookie * cookie, const char *fpath, const char *name) {
   return -1;
 }
 
-// écrire cookies.txt
-// !=0 : erreur
+/* Write cookies.txt; returns 0 on success. The jar holds live session
+   cookies, so keep it owner-only on Unix (Windows inherits folder ACLs). */
 int cookie_save(t_cookie * cookie, const char *name) {
   char catbuff[CATBUFF_SIZE];
 
   if (strnotempty(cookie->data)) {
     char BIGSTK line[8192];
-    FILE *fp = fopen(fconv(catbuff, sizeof(catbuff), name), "wb");
+#ifdef _WIN32
+    FILE *fp = FOPEN(fconv(catbuff, sizeof(catbuff), name), "wb");
+#else
+    const int fd = open(fconv(catbuff, sizeof(catbuff), name),
+                        O_WRONLY | O_CREAT | O_TRUNC, HTS_PROTECT_FILE);
+    FILE *fp = fd != -1 ? fdopen(fd, "wb") : NULL;
+
+    if (fd != -1 && fp == NULL)
+      close(fd);    /* fdopen failed: don't leak the descriptor */
+    if (fp != NULL) /* O_CREAT's mode skips pre-existing jars: tighten those */
+      (void) fchmod(fd, HTS_PROTECT_FILE);
+#endif
 
     if (fp) {
       char *a = cookie->data;
@@ -360,49 +464,45 @@ int cookie_save(t_cookie * cookie, const char *name) {
   return -1;
 }
 
-// insertion chaine ins avant s
-// size est la capacite restante a partir de s
-void cookie_insert(char *s, size_t size, const char *ins) {
+// Insert string ins before s. s_size is the capacity of the buffer at s.
+void cookie_insert(char *s, size_t s_size, const char *ins) {
   char *buff;
 
-  if (strnotempty(s) == 0) {    // rien à faire, juste concat
-    strlcatbuff(s, ins, size);
+  if (strnotempty(s) == 0) { // nothing there yet: just concatenate
+    strlcatbuff(s, ins, s_size);
   } else {
-    const size_t buffsize = strlen(s) + 1;
-
-    buff = (char *) malloct(buffsize);
+    buff = (char *) malloct(strlen(s) + 1);
     if (buff) {
-      strlcpybuff(buff, s, buffsize);   // copie temporaire
-      strlcpybuff(s, ins, size);        // insérer
-      strlcatbuff(s, buff, size);       // copier
+      strlcpybuff(buff, s, strlen(s) + 1); // temporary copy of s
+      strlcpybuff(s, ins, s_size);         // write ins
+      strlcatbuff(s, buff, s_size);        // then the saved content
       freet(buff);
     }
   }
 }
 
-// destruction chaine dans s position pos
-// size est la capacite restante a partir de s
-void cookie_delete(char *s, size_t size, size_t pos) {
+// Delete the substring of s at position pos. s_size is the capacity at s.
+void cookie_delete(char *s, size_t s_size, size_t pos) {
   char *buff;
 
-  if (strnotempty(s + pos) == 0) {      // rien à faire, effacer
+  if (strnotempty(s + pos) == 0) { // nothing after pos: truncate
     s[0] = '\0';
   } else {
-    const size_t buffsize = strlen(s + pos) + 1;
-
-    buff = (char *) malloct(buffsize);
+    buff = (char *) malloct(strlen(s + pos) + 1);
     if (buff) {
-      strlcpybuff(buff, s + pos, buffsize);     // copie temporaire
-      strlcpybuff(s, buff, size);       // copier
+      strlcpybuff(buff, s + pos, strlen(s + pos) + 1); // temporary copy
+      strlcpybuff(s, buff, s_size);                    // overwrite from start
       freet(buff);
     }
   }
 }
 
-// renvoie champ param de la chaine cookie_base
-// ex: cookie_get("ceci est<tab>un<tab>exemple",1) renvoi "un"
-const char *cookie_get(char *buffer, size_t size, const char *cookie_base,
-                       int param) {
+// Return field <param> (0-based, tab-separated) of the cookie line cookie_base,
+// into buffer. ex: cookie_get("ceci est<tab>un<tab>exemple", 1) returns "un".
+// buffer must hold at least COOKIE_FIELD_BUFFER_SIZE bytes (all callers use
+// char[8192]).
+#define COOKIE_FIELD_BUFFER_SIZE 8192
+const char *cookie_get(char *buffer, const char *cookie_base, int param) {
   const char *limit;
 
   while(*cookie_base == '\n')
@@ -425,11 +525,11 @@ const char *cookie_get(char *buffer, size_t size, const char *cookie_base,
     if (cookie_base) {
       if (cookie_base < limit) {
         const char *a = cookie_base;
+        htsbuff b = htsbuff_ptr(buffer, COOKIE_FIELD_BUFFER_SIZE);
 
         while((*a) && (*a != '\t') && (*a != '\n'))
           a++;
-        buffer[0] = '\0';
-        strlncatbuff(buffer, cookie_base, size, (size_t) (a - cookie_base));
+        htsbuff_catn(&b, cookie_base, (size_t) (a - cookie_base));
         return buffer;
       } else
         return "";
@@ -450,12 +550,20 @@ int bauth_add(t_cookie * cookie, const char *adr, const char *fil, const char *a
   if (cookie) {
     if (!bauth_check(cookie, adr, fil)) {       // n'existe pas déja
       bauth_chain *chain = &cookie->auth;
-      char *prefix = bauth_prefix(buffer, sizeof(buffer), adr, fil);
+      char *prefix = bauth_prefix(buffer, adr, fil);
+
+      if (prefix == NULL)
+        return 0;
+      /* A clipped prefix matches more URLs than were authenticated. */
+      if (strlen(prefix) >= sizeof(chain->prefix) ||
+          strlen(auth) >= sizeof(chain->auth)) {
+        return 0;
+      }
 
       /* fin de la chaine */
       while(chain->next)
         chain = chain->next;
-      chain->next = (bauth_chain *) calloc(sizeof(bauth_chain), 1);
+      chain->next = (bauth_chain *) calloct(sizeof(bauth_chain), 1);
       if (chain->next) {
         chain = chain->next;
         chain->next = NULL;
@@ -468,6 +576,21 @@ int bauth_add(t_cookie * cookie, const char *adr, const char *fil, const char *a
   return 0;
 }
 
+/* Release the heap tail of the list; the head node is embedded in the jar. */
+void bauth_free(t_cookie *cookie) {
+  if (cookie != NULL) {
+    bauth_chain *chain = cookie->auth.next;
+
+    cookie->auth.next = NULL;
+    while (chain != NULL) {
+      bauth_chain *const next = chain->next;
+
+      freet(chain);
+      chain = next;
+    }
+  }
+}
+
 /* tester adr et fil, et retourner authentification si nécessaire */
 /* sinon, retourne NULL */
 char *bauth_check(t_cookie * cookie, const char *adr, const char *fil) {
@@ -475,8 +598,10 @@ char *bauth_check(t_cookie * cookie, const char *adr, const char *fil) {
 
   if (cookie) {
     bauth_chain *chain = &cookie->auth;
-    char *prefix = bauth_prefix(buffer, sizeof(buffer), adr, fil);
+    char *prefix = bauth_prefix(buffer, adr, fil);
 
+    if (prefix == NULL)
+      return NULL;
     while(chain) {
       if (strnotempty(chain->prefix)) {
         if (strncmp(prefix, chain->prefix, strlen(chain->prefix)) == 0) {
@@ -489,16 +614,24 @@ char *bauth_check(t_cookie * cookie, const char *adr, const char *fil) {
   return NULL;
 }
 
-char *bauth_prefix(char *prefix, size_t size, const char *adr, const char *fil) {
+/* Build the auth prefix (host + path, query stripped) into prefix, or return
+   NULL if adr+fil does not fit. Callers pass HTS_URLMAXSIZE * 2 bytes. */
+char *bauth_prefix(char *prefix, const char *adr, const char *fil) {
+  const size_t size = HTS_URLMAXSIZE * 2;
+  const char *const host = jump_identification_const(adr);
+  const size_t used = strlen(host);
   char *a;
 
-  strlcpybuff(prefix, jump_identification_const(adr), size);
+  /* a clipped prefix matches URLs nobody authenticated, so refuse instead */
+  if (used >= size || strlen(fil) >= size - used)
+    return NULL;
+  strlcpybuff(prefix, host, size);
   strlcatbuff(prefix, fil, size);
   a = strchr(prefix, '?');
   if (a)
     *a = '\0';
   if (strchr(prefix, '/')) {
-    a = prefix + strlen(prefix) - 1;
+    a = hts_lastcharptr(prefix);
     while(*a != '/')
       a--;
     *(a + 1) = '\0';

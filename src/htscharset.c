@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -31,6 +31,9 @@ Please visit our Website: http://www.httrack.com
 /* ------------------------------------------------------------ */
 
 #include "htscharset.h"
+#ifdef _WIN32
+#include <shellapi.h>
+#endif
 #include "htsbase.h"
 #include "punycode.h"
 #include "htssafe.h"
@@ -84,7 +87,7 @@ static int hts_equalsAlphanum(const char *a, const char *b) {
 
 /* Copy the memory region [s .. s + size - 1 ] as a \0-terminated string. */
 static char *hts_stringMemCopy(const char *s, size_t size) {
-  char *dest = malloc(size + 1);
+  char *dest = malloct(size + 1);
 
   if (dest != NULL) {
     memcpy(dest, s, size);
@@ -293,16 +296,52 @@ LPWSTR hts_convertUTF8StringToUCS2(const char *s, int size, int *pwsize) {
   return hts_convertStringToUCS2(s, size, CP_UTF8, pwsize);
 }
 
-char *hts_convertUCS2StringToCP(LPWSTR woutput, int wsize, UINT cp) {
-  const int usize =
-    WideCharToMultiByte(cp, 0, woutput, wsize, NULL, 0, NULL, FALSE);
+/* WideCharToMultiByte rejects lpUsedDefaultChar, and any non-zero dwFlags, on
+   the Unicode, ISO-2022, HZ, GB18030 and ISCII codepages, where a substitution
+   stays invisible. */
+static hts_boolean cp_reports_default_char(UINT cp) {
+  if (cp == 42 /* CP_SYMBOL */ || cp == CP_UTF7 || cp == CP_UTF8 ||
+      cp == 52936 || cp == 54936 || (cp >= 50220 && cp <= 50229) ||
+      (cp >= 57002 && cp <= 57011)) {
+    return HTS_FALSE;
+  }
+  return HTS_TRUE;
+}
+
+/* When plossy is non-NULL, *plossy reports that the codepage lacked a character
+   and a substitute was emitted for it. */
+static char *hts_convertUCS2StringToCPEx(LPWSTR woutput, int wsize, UINT cp,
+                                         hts_boolean *plossy) {
+  /* Best-fit maps U+00A5 to CP932's backslash, usedDefault unset. */
+  const DWORD flags = cp_reports_default_char(cp) ? WC_NO_BEST_FIT_CHARS : 0;
+  /* U+00B5 sizes 1 on CP932, best-fit needs 2: size for the larger pass. */
+  const int bsize =
+      WideCharToMultiByte(cp, 0, woutput, wsize, NULL, 0, NULL, NULL);
+  const int fsize = flags != 0 ? WideCharToMultiByte(cp, flags, woutput, wsize,
+                                                     NULL, 0, NULL, NULL)
+                               : bsize;
+  const int usize = bsize > fsize ? bsize : fsize;
+
+  if (plossy != NULL) {
+    *plossy = HTS_FALSE;
+  }
   if (usize > 0) {
     char *const uoutput = malloc((usize + 1) * sizeof(char));
 
     if (uoutput != NULL) {
-      if (WideCharToMultiByte
-          (cp, 0, woutput, wsize, uoutput, usize, NULL, FALSE) == usize) {
-        uoutput[usize] = '\0';
+      BOOL usedDefault = FALSE;
+      LPBOOL const pUsedDefault =
+          plossy != NULL && cp_reports_default_char(cp) ? &usedDefault : NULL;
+
+      const int n = WideCharToMultiByte(cp, flags, woutput, wsize, uoutput,
+                                        usize, NULL, pUsedDefault);
+
+      /* usize only bounds the result; the written length is what n reports */
+      if (n > 0 && n <= usize) {
+        uoutput[n] = '\0';
+        if (plossy != NULL && usedDefault) {
+          *plossy = HTS_TRUE;
+        }
         return uoutput;
       } else {
         free(uoutput);
@@ -310,6 +349,10 @@ char *hts_convertUCS2StringToCP(LPWSTR woutput, int wsize, UINT cp) {
     }
   }
   return NULL;
+}
+
+char *hts_convertUCS2StringToCP(LPWSTR woutput, int wsize, UINT cp) {
+  return hts_convertUCS2StringToCPEx(woutput, wsize, cp, NULL);
 }
 
 char *hts_convertUCS2StringToUTF8(LPWSTR woutput, int wsize) {
@@ -343,7 +386,11 @@ char *hts_convertStringCPToUTF8(const char *s, size_t size, UINT cp) {
   return NULL;
 }
 
-char *hts_convertStringCPFromUTF8(const char *s, size_t size, UINT cp) {
+static char *hts_convertStringCPFromUTF8Ex(const char *s, size_t size, UINT cp,
+                                           hts_boolean *plossy) {
+  if (plossy != NULL) {
+    *plossy = HTS_FALSE;
+  }
   /* Empty string ? */
   if (size == 0) {
     return hts_stringMemCopy(s, size);
@@ -359,7 +406,8 @@ char *hts_convertStringCPFromUTF8(const char *s, size_t size, UINT cp) {
     LPWSTR woutput = hts_convertStringToUCS2(s, (int) size, CP_UTF8, &wsize);
 
     if (woutput != NULL) {
-      char *const uoutput = hts_convertUCS2StringToCP(woutput, wsize, cp);
+      char *const uoutput =
+          hts_convertUCS2StringToCPEx(woutput, wsize, cp, plossy);
 
       free(woutput);
       return uoutput;
@@ -370,7 +418,12 @@ char *hts_convertStringCPFromUTF8(const char *s, size_t size, UINT cp) {
   return NULL;
 }
 
-char *hts_convertStringToUTF8(const char *s, size_t size, const char *charset) {
+char *hts_convertStringCPFromUTF8(const char *s, size_t size, UINT cp) {
+  return hts_convertStringCPFromUTF8Ex(s, size, cp, NULL);
+}
+
+HTSEXT_API char *hts_convertStringToUTF8(const char *s, size_t size,
+                                         const char *charset) {
   const UINT cp = hts_getCodepage(charset);
 
   return hts_convertStringCPToUTF8(s, size, cp);
@@ -382,8 +435,59 @@ char *hts_convertStringFromUTF8(const char *s, size_t size, const char *charset)
   return hts_convertStringCPFromUTF8(s, size, cp);
 }
 
-char *hts_convertStringSystemToUTF8(const char *s, size_t size) {
+char *hts_convertStringFromUTF8Strict(const char *s, size_t size,
+                                      const char *charset) {
+  hts_boolean lossy = HTS_FALSE;
+  char *const out =
+      hts_convertStringCPFromUTF8Ex(s, size, hts_getCodepage(charset), &lossy);
+
+  if (lossy) {
+    free(out);
+    return NULL;
+  }
+  return out;
+}
+
+HTSEXT_API char *hts_convertStringSystemToUTF8(const char *s, size_t size) {
   return hts_convertStringCPToUTF8(s, size, GetACP());
+}
+
+HTSEXT_API char *hts_convertStringUTF8ToSystem(const char *s, size_t size) {
+  return hts_convertStringCPFromUTF8(s, size, GetACP());
+}
+
+HTSEXT_API void hts_argv_utf8(int *pargc, char ***pargv) {
+  int wargc = 0;
+  LPWSTR *const wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+  char **argv;
+  int i;
+
+  // On any failure keep the CRT's ANSI argv: lossy, but never half-converted.
+  if (wargv == NULL)
+    return;
+  if (wargc <= 0 ||
+      (argv = calloct((size_t) wargc + 1, sizeof(char *))) == NULL) {
+    LocalFree(wargv);
+    return;
+  }
+  for (i = 0; i < wargc; i++) {
+    const int wsize = (int) wcslen(wargv[i]);
+
+    // hts_convertUCS2StringToUTF8() returns NULL on an empty string
+    argv[i] =
+        wsize != 0 ? hts_convertUCS2StringToUTF8(wargv[i], wsize) : strdupt("");
+    if (argv[i] == NULL) {
+      while (i-- != 0)
+        freet(argv[i]);
+      freet(argv);
+      LocalFree(wargv);
+      return;
+    }
+  }
+  argv[wargc] = NULL; // callers may rely on argv[argc] == NULL
+  LocalFree(wargv);
+  *pargc = wargc;
+  *pargv = argv; // never freed: argv lives for the process
 }
 
 #else
@@ -399,47 +503,88 @@ char *hts_convertStringSystemToUTF8(const char *s, size_t size) {
 #else
 #include "htscodepages.h"
 
-/* decode from a codepage to UTF-8 */
-static char* hts_codepageToUTF8(const char *codepage, const char *s) {
-  /* find the given codepage */
-  size_t i;
-  for(i = 0 ; table_mappings[i].name != NULL
-      && !hts_equalsAlphanum(table_mappings[i].name, codepage) ; i++) ;
+/* The tables are keyed "cp1252", but IANA, HTTP headers and <meta charset>
+   spell the same codepages "windows-1252" and "IBM850". */
+static int hts_equalsCodepageName(const char *table_name, const char *label) {
+  static const char *const prefixes[] = {"windows", "ibm", NULL};
+  size_t p, i;
 
-  /* found ; decode */
-  if (table_mappings[i].name != NULL) {
-    size_t j, k;
-    char *dest = NULL;
-    size_t capa = 0;
+#define LOWER(C) (((C) >= 'A' && (C) <= 'Z') ? ((C) + 'a' - 'A') : (C))
+  if (hts_equalsAlphanum(table_name, label)) {
+    return 1;
+  }
+  if (LOWER(table_name[0]) != 'c' || LOWER(table_name[1]) != 'p') {
+    return 0;
+  }
+  /* "cp" then whatever followed the prefix; hts_equalsAlphanum drops the
+     separator, so "windows-1252" and "windows1252" both reach "cp1252". */
+  for (p = 0; prefixes[p] != NULL; p++) {
+    for (i = 0; prefixes[p][i] != '\0' && LOWER(label[i]) == prefixes[p][i];
+         i++)
+      ;
+    if (prefixes[p][i] == '\0' &&
+        hts_equalsAlphanum(&table_name[2], &label[i])) {
+      return 1;
+    }
+  }
+#undef LOWER
+  return 0;
+}
+
+/* Decode size bytes of a codepage to a NUL-terminated UTF-8 string, or NULL
+   when no table names that codepage. */
+static char *hts_codepageToUTF8(const char *codepage, const char *s,
+                                size_t size) {
+  size_t i, j, k, capa;
+  char *dest;
+
+  for (i = 0; table_mappings[i].name != NULL &&
+              !hts_equalsCodepageName(table_mappings[i].name, codepage);
+       i++)
+    ;
+  if (table_mappings[i].name == NULL) {
+    return NULL;
+  }
+
 #define MAX_UTF 8
-    for(j = 0, k = 0 ; s[j] != '\0' ; j++) {
-      const unsigned char c = (unsigned char) s[j];
-      const hts_UCS4 uc = table_mappings[i].table[c];
-      const size_t max = k + MAX_UTF;
-      if (capa < max) {
-        char *newDest;
+  /* Allocated before the loop: an empty input writes the terminator too. */
+  capa = 16;
+  dest = malloct(capa);
+  if (dest == NULL) {
+    return NULL;
+  }
+  for (j = 0, k = 0; j < size; j++) {
+    const unsigned char c = (unsigned char) s[j];
+    const hts_UCS4 uc = table_mappings[i].table[c];
+    const size_t max = k + MAX_UTF;
 
-        for(capa = 16 ; capa < max ; capa <<= 1) ;
-        /* note: realloc() returns NULL without freeing, so assigning it
-           straight back to 'dest' loses the old block */
-        newDest = realloc(dest, capa);
-        if (newDest == NULL) {
-          free(dest);
+    /* Room for the code point and for the terminator past it. */
+    if (capa <= max) {
+      char *grown;
+      /* From a non-zero floor: doubling a zero capacity never progresses. */
+      size_t want = capa > 16 ? capa : 16;
+
+      while (want <= max) {
+        if (want > (size_t) -1 / 2) {
+          freet(dest);
           return NULL;
         }
-        dest = newDest;
+        want <<= 1;
       }
-      if (dest != NULL) {
-        const size_t len = hts_writeUTF8(uc, &dest[k], MAX_UTF);
-        k += len;
-        assertf(k < capa);
+      grown = realloct(dest, want);
+      if (grown == NULL) {
+        freet(dest);
+        return NULL;
       }
+      dest = grown;
+      capa = want;
     }
-    dest[k] = '\0';
-    return dest;
-#undef MAX_UTF
+    k += hts_writeUTF8(uc, &dest[k], MAX_UTF);
+    assertf(k < capa);
   }
-  return NULL;
+  dest[k] = '\0';
+  return dest;
+#undef MAX_UTF
 }
 #endif
 
@@ -480,17 +625,17 @@ static char *hts_convertStringCharset(const char *s, size_t size,
         if (ret == (size_t) - 1) {
           if (errno == E2BIG) {
             const size_t used = outbufCapa - outbytesleft;
-
-            char *newOutbuf;
+            char *grown;
 
             outbufCapa *= 2;
-            newOutbuf = realloc(outbuf, outbufCapa);
-            if (newOutbuf == NULL) {
-              free(outbuf);
-              outbuf = NULL;
+            /* Reached from an exported entry point, which answers NULL rather
+               than taking its embedder down. */
+            grown = realloct(outbuf, outbufCapa);
+            if (grown == NULL) {
+              freet(outbuf);
               break;
             }
-            outbuf = newOutbuf;
+            outbuf = grown;
             outbytesleft = outbufCapa - used;
           } else {
             free(outbuf);
@@ -505,12 +650,13 @@ static char *hts_convertStringCharset(const char *s, size_t size,
 
       /* Terminating \0 */
       if (outbuf != NULL && finalSize + 1 >= outbufCapa) {
-        char *const newOutbuf = realloc(outbuf, finalSize + 1);
+        char *const grown = realloct(outbuf, finalSize + 1);
 
-        if (newOutbuf == NULL) {
-          free(outbuf);
+        if (grown == NULL) {
+          freet(outbuf);
+        } else {
+          outbuf = grown;
         }
-        outbuf = newOutbuf;
       }
       if (outbuf != NULL)
         outbuf[finalSize] = '\0';
@@ -525,7 +671,7 @@ static char *hts_convertStringCharset(const char *s, size_t size,
 #else
   /* Limited codepage decoding support only. */
   if (hts_isCharsetUTF8(to)) {
-    return hts_codepageToUTF8(from, s);
+    return hts_codepageToUTF8(from, s, size);
   }
 #endif
 
@@ -533,7 +679,8 @@ static char *hts_convertStringCharset(const char *s, size_t size,
   return NULL;
 }
 
-char *hts_convertStringToUTF8(const char *s, size_t size, const char *charset) {
+HTSEXT_API char *hts_convertStringToUTF8(const char *s, size_t size,
+                                         const char *charset) {
   /* Empty string ? */
   if (size == 0) {
     return strdup("");
@@ -563,59 +710,31 @@ char *hts_convertStringFromUTF8(const char *s, size_t size, const char *charset)
   }
 }
 
-#endif
-
-HTS_STATIC char *hts_getCharsetFromContentType(const char *mime) {
-  /* text/html; charset=utf-8 */
-  const char *const charset = "charset";
-  char *pos = strstr(mime, charset);
-
-  if (pos != NULL) {
-    /* Skip spaces */
-    int eq = 0;
-
-    for(pos += strlen(charset);
-        *pos == ' ' || *pos == '=' || *pos == '"' || *pos == '\''; pos++) {
-      if (*pos == '=') {
-        eq = 1;
-      }
-    }
-    if (eq == 1) {
-      int len;
-
-      for(len = 0;
-          pos[len] == ' ' || pos[len] == ';' || pos[len] == '"' || *pos == '\'';
-          pos++) ;
-      if (len != 0) {
-        char *const s = malloc(len + 1);
-        int i;
-
-        for(i = 0; i < len; i++) {
-          s[i] = pos[i];
-        }
-        s[len] = '\0';
-        return s;
-      }
-    }
-  }
-  return NULL;
+char *hts_convertStringFromUTF8Strict(const char *s, size_t size,
+                                      const char *charset) {
+  /* No transliteration is requested of iconv, so an unrepresentable code point
+     already fails the conversion outright. */
+  return hts_convertStringFromUTF8(s, size, charset);
 }
+
+#endif
 
 #ifdef _WIN32
 #define strcasecmp(a,b) stricmp(a,b)
 #define strncasecmp(a,b,n) strnicmp(a,b,n)
 #endif
 
-static int is_space(char c) {
+/* Whitespace for the <meta> charset prescan: SPACE, TAB, CR, LF. */
+static int is_html_space(char c) {
   return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
-static int is_space_or_equal(char c) {
-  return is_space(c) || c == '=';
+static int is_html_space_or_equal(char c) {
+  return is_html_space(c) || c == '=';
 }
 
-static int is_space_or_equal_or_quote(char c) {
-  return is_space_or_equal(c) || c == '"' || c == '\'';
+static int is_html_space_or_equal_or_quote(char c) {
+  return is_html_space_or_equal(c) || c == '"' || c == '\'';
 }
 
 size_t hts_stringLengthUTF8(const char *s) {
@@ -660,58 +779,108 @@ int hts_isCharsetUTF8(const char *charset) {
          || strcasecmp(charset, "utf8") == 0 );
 }
 
+/* Extract X from a "text/html; charset=X" content= attribute value. */
+static char *charset_from_content(const char *s, size_t len) {
+  size_t i;
+
+  for (i = 0; i + 7 < len; i++) {
+    if ((i == 0 || is_html_space(s[i - 1]) || s[i - 1] == ';') &&
+        strncasecmp(&s[i], "charset", 7) == 0 &&
+        is_html_space_or_equal(s[i + 7])) {
+      size_t j, val;
+
+      for (j = i + 7; j < len && is_html_space_or_equal_or_quote(s[j]); j++)
+        ;
+      for (val = j; j < len && s[j] != '"' && s[j] != '\'' && s[j] != ';' &&
+                    !is_html_space(s[j]);
+           j++)
+        ;
+      if (j != val) {
+        return hts_stringMemCopy(&s[val], j - val);
+      }
+    }
+  }
+  return NULL;
+}
+
 char *hts_getCharsetFromMeta(const char *html, size_t size) {
-  int i;
+  size_t i;
 
-  /* <META HTTP-EQUIV="CONTENT-TYPE" CONTENT="text/html; charset=utf-8" > */
-  for(i = 0; i < size; i++) {
-    if (html[i] == '<' && strncasecmp(&html[i + 1], "meta", 4) == 0
-        && is_space(html[i + 5])) {
-      /* Skip spaces */
-      for(i += 5; is_space(html[i]); i++) ;
-      if (strncasecmp(&html[i], "HTTP-EQUIV", 10) == 0
-          && is_space_or_equal(html[i + 10])) {
-        for(i += 10; is_space_or_equal_or_quote(html[i]); i++) ;
-        if (strncasecmp(&html[i], "CONTENT-TYPE", 12) == 0) {
-          for(i += 12; is_space_or_equal_or_quote(html[i]); i++) ;
-          if (strncasecmp(&html[i], "CONTENT", 7) == 0
-              && is_space_or_equal(html[i + 7])) {
-            for(i += 7; is_space_or_equal_or_quote(html[i]); i++) ;
-            /* Skip content-type */
-            for(;
-                i < size && html[i] != ';' && html[i] != '"' && html[i] != '\'';
-                i++) ;
-            /* Expect charset attribute here */
-            if (html[i] == ';') {
-              for(i++; is_space(html[i]); i++) ;
-              /* Look for charset */
-              if (strncasecmp(&html[i], "charset", 7) == 0
-                  && is_space_or_equal(html[i + 7])) {
-                int len;
+  /* HTML5 <meta charset=X> or legacy
+     <meta http-equiv="Content-Type" content="text/html; charset=X">,
+     attributes in any order; first resolvable tag wins. */
+  for (i = 0; i + 6 < size; i++) {
+    size_t j;
+    const char *equiv = NULL, *content = NULL;
+    size_t equiv_len = 0, content_len = 0;
 
-                for(i += 7; is_space_or_equal(html[i]) || html[i] == '\'';
-                    i++) ;
-                /* Charset */
-                for(len = 0;
-                    i + len < size && html[i + len] != '"'
-                    && html[i + len] != '\'' && html[i + len] != ' '; len++) ;
-                /* No error ? */
-                if (len != 0 && i < size) {
-                  char *const s = malloc(len + 1);
-                  int j;
+    if (html[i] != '<' || strncasecmp(&html[i + 1], "meta", 4) != 0 ||
+        !is_html_space(html[i + 5])) {
+      continue;
+    }
+    /* Attribute scan, strictly bounded by size. */
+    for (j = i + 6; j < size && html[j] != '>';) {
+      size_t name, name_len, val = 0, val_len = 0;
 
-                  for(j = 0; j < len; j++) {
-                    s[j] = html[i + j];
-                  }
-                  s[len] = '\0';
-                  return s;
-                }
-              }
-            }
+      if (is_html_space(html[j]) || html[j] == '/') {
+        j++;
+        continue;
+      }
+      for (name = j; j < size && html[j] != '=' && html[j] != '>' &&
+                     html[j] != '/' && !is_html_space(html[j]);
+           j++)
+        ;
+      name_len = j - name;
+      for (; j < size && is_html_space(html[j]); j++)
+        ;
+      if (j < size && html[j] == '=') {
+        for (j++; j < size && is_html_space(html[j]); j++)
+          ;
+        if (j < size && (html[j] == '"' || html[j] == '\'')) {
+          const char quote = html[j++];
+
+          for (val = j; j < size && html[j] != quote; j++)
+            ;
+          if (j >= size) /* unterminated quote: drop the tag */
+            break;
+          val_len = j++ - val;
+        } else {
+          /* unquoted: ends at whitespace or '>' only (HTML5 prescan); '/'
+             belongs to the value except as the tail of a self-close */
+          for (val = j; j < size && !is_html_space(html[j]) && html[j] != '>';
+               j++)
+            ;
+          val_len = j - val;
+          if (val_len != 0 && j < size && html[j] == '>' &&
+              html[val + val_len - 1] == '/') {
+            val_len--;
           }
         }
       }
+      /* first occurrence of each attribute wins, as in browsers */
+      if (val_len != 0) {
+        if (name_len == 7 && strncasecmp(&html[name], "charset", 7) == 0) {
+          return hts_stringMemCopy(&html[val], val_len);
+        } else if (equiv == NULL && name_len == 10 &&
+                   strncasecmp(&html[name], "http-equiv", 10) == 0) {
+          equiv = &html[val];
+          equiv_len = val_len;
+        } else if (content == NULL && name_len == 7 &&
+                   strncasecmp(&html[name], "content", 7) == 0) {
+          content = &html[val];
+          content_len = val_len;
+        }
+      }
     }
+    if (equiv_len == 12 && strncasecmp(equiv, "content-type", 12) == 0 &&
+        content != NULL) {
+      char *const s = charset_from_content(content, content_len);
+
+      if (s != NULL) {
+        return s;
+      }
+    }
+    i = j;
   }
   return NULL;
 }
@@ -857,85 +1026,15 @@ static unsigned int nlz8(unsigned char x) {
     }                                           \
   } while(0)
 
-/* Sample. */
-#if 0
-
-int main(int argc, char **argv) {
-  int i;
-  int hex = 0;
-  
-#define READ_INT(DEST)                                  \
-  ( ( !hex && sscanf(argv[i], "%d", &(DEST)) == 1)      \
-    || (hex && sscanf(argv[i], "%x", &(DEST)) == 1 ) )
-  
-  for(i = 1 ; i < argc ; i++) {
-    unsigned int uc, from, to;
-    
-    if (strcmp(argv[i], "--hex") == 0) {
-      hex = 1;
-    }
-    else if (strcmp(argv[i], "--decimal") == 0) {
-      hex = 0;
-    }
-    else if (strcmp(argv[i], "--decode") == 0) {
-#define RD fgetc_unlocked(stdin)
-#define WR(C) do {                              \
-        if (C != -1) {                          \
-          printf("%04x\n", C);                  \
-        } else if (!feof(stdin)) {              \
-          fprintf(stderr, "read error\n");      \
-          exit(EXIT_FAILURE);                   \
-        }                                       \
-      } while(0)
-      while(!feof(stdin)) {
-        READ_UNICODE(RD, WR);
-      }
-#undef RD
-#undef WR
-    }
-    else if (strcmp(argv[i], "-range") == 0
-             && i + 2 < argc
-             && (++i, 1)
-             && READ_INT(from)
-             && (++i, 1)
-             && READ_INT(to)
-             ) {
-      unsigned int i;
-      for(i = from ; i < to ; i++) {
-#define EM(C) fputc_unlocked(C, stdout)
-        EMIT_UNICODE(i, EM);
-#undef EM
-      }
-    }
-    else if (READ_INT(uc)) {
-#define EM(C) fputc_unlocked(C, stdout)
-      EMIT_UNICODE(uc, EM);
-#undef EM
-    }
-    else {
-      return EXIT_FAILURE;
-    }
-  }
-  
-  return EXIT_SUCCESS;
-}
-
-#endif
-
 /* IDNA helpers. */
 #undef ADD_BYTE
 #undef INCREASE_CAPA
-#define INCREASE_CAPA() do { \
-  void *newDest_; /* void*, as 'dest' is char* here and hts_UCS4* elsewhere */ \
-  capa = capa < 16 ? 16 : ( capa << 1 ); \
-  /* note: realloc() returns NULL without freeing the old block */ \
-  newDest_ = realloc(dest, capa*sizeof(dest[0])); \
-  if (newDest_ == NULL) { \
-    FREE_BUFFER(); \
-    return NULL; \
-  } \
-  dest = newDest_; \
-} while(0)
+#define INCREASE_CAPA()                                                        \
+  do {                                                                         \
+    capa = capa < 16 ? 16 : (capa << 1);                                       \
+    dest = realloct(dest, capa * sizeof(dest[0]));                             \
+    assertf(dest != NULL);                                                     \
+  } while (0)
 #define ADD_BYTE(C) do { \
   if (capa == destSize) { \
     INCREASE_CAPA(); \
@@ -995,19 +1094,19 @@ char *hts_convertStringUTF8ToIDNA(const char *s, size_t size) {
                 /* Reader: can read bytes up to j */
 #define RD ( utfSeq < j ? segData[utfSeq++] : -1 )
 
-                /* Writer: upon error, return FFFD (replacement character) */
-#define WR(C) do { \
-  if ((C) != -1) { \
-    /* copy character */ \
-    assertf(segOutputSize < segSize); \
-    segInt[segOutputSize++] = (C); \
-  } \
-  /* In case of error, abort. */ \
-  else { \
-    FREE_BUFFER(); \
-    return NULL; \
-  } \
-} while(0)
+                /* Writer: a malformed sequence abandons the encode (NULL) */
+#define WR(C)                                                                  \
+  do {                                                                         \
+    if ((C) != -1) {                                                           \
+      /* copy character */                                                     \
+      assertf(segOutputSize < segSize);                                        \
+      segInt[segOutputSize++] = (C);                                           \
+    } else {                                                                   \
+      freet(segInt);                                                           \
+      FREE_BUFFER();                                                           \
+      return NULL;                                                             \
+    }                                                                          \
+  } while (0)
 
                 /* Read/Write Unicode character. */
                 READ_UNICODE(RD, WR);
@@ -1127,18 +1226,10 @@ char *hts_convertStringIDNAToUTF8(const char *s, size_t size) {
             &s[startSeg + 4], &output_length, output_dest, NULL))
             == punycode_big_output 
           ; ) {
-          punycode_uint *newOutput;
-
           output_capa <<= 1;
-          newOutput =
-            (punycode_uint*) realloc(output_dest,
-                                     output_capa*sizeof(punycode_uint));
-          if (newOutput == NULL) {
-            free(output_dest);
-            FREE_BUFFER();
-            return NULL;
-          }
-          output_dest = newOutput;
+          output_dest = (punycode_uint *) realloct(
+              output_dest, output_capa * sizeof(punycode_uint));
+          assertf(output_dest != NULL);
           output_length = output_capa;
         }
 
@@ -1150,13 +1241,8 @@ char *hts_convertStringIDNAToUTF8(const char *s, size_t size) {
             if (uc < 0x80) {
               ADD_BYTE((char) uc);
             } else {
-              /* emiter (byte per byte) */
-/* note: EMIT_UNICODE only ever emits unsigned char values, so the
-   (C != -1) error test that used to be here was dead code -- and always
-   true, as the compiler points out with -Wtype-limits. Allocation
-   failures are handled inside ADD_BYTE()/INCREASE_CAPA(). */
+              /* EMIT_UNICODE only ever emits a byte, never an error */
 #define EM(C) ADD_BYTE(C)
-              /* Emit codepoint */
               EMIT_UNICODE(uc, EM);
 #undef EM
             }
@@ -1226,17 +1312,45 @@ int hts_isStringUTF8(const char *s, size_t size) {
   const unsigned char *const data = (const unsigned char*) s;
   size_t i;
 
+  /* Strict RFC 3629: reject overlongs, surrogates, > U+10FFFF, 5/6-byte. */
   for(i = 0 ; i < size ; ) {
-    /* Reader: can read bytes up to j */
-#define RD ( i < size ? data[i++] : -1 )
+    const unsigned char c = data[i];
+    size_t len, k;
+    hts_UCS4 uc, min;
 
-    /* Writer: upon error, return FFFD (replacement character) */
-#define WR(C) if ((C) == -1) { return 0; }
+    if (c < 0x80) {
+      i++;
+      continue;
+    } else if (c >= 0xc2 && c <= 0xdf) {
+      len = 2;
+      min = 0x80;
+      uc = c & 0x1f;
+    } else if (c >= 0xe0 && c <= 0xef) {
+      len = 3;
+      min = 0x800;
+      uc = c & 0x0f;
+    } else if (c >= 0xf0 && c <= 0xf4) {
+      len = 4;
+      min = 0x10000;
+      uc = c & 0x07;
+    } else { /* continuation byte, overlong C0/C1, or F5..FF lead */
+      return 0;
+    }
+    if (size - i < len) {
+      return 0;
+    }
+    for (k = 1; k < len; k++) {
+      const unsigned char cc = data[i + k];
 
-    /* Read Unicode character. */
-    READ_UNICODE(RD, WR);
-#undef RD
-#undef WR
+      if ((cc & 0xc0) != 0x80) {
+        return 0;
+      }
+      uc = (uc << 6) | (cc & 0x3f);
+    }
+    if (uc < min || uc > 0x10FFFF || (uc >= 0xD800 && uc <= 0xDFFF)) {
+      return 0;
+    }
+    i += len;
   }
 
   return 1;
@@ -1248,11 +1362,7 @@ char *hts_convertUCS4StringToUTF8(const hts_UCS4 *s, size_t nChars) {
   size_t capa = 0, destSize = 0;
   for(i = 0 ; i < nChars ; i++) {
     const hts_UCS4 uc = s[i];
-    /* emitter (byte per byte) */
-/* note: EMIT_UNICODE only ever emits unsigned char values, so the
-   (C != -1) error test that used to be here was dead code -- and always
-   true, as the compiler points out with -Wtype-limits. Allocation
-   failures are handled inside ADD_BYTE()/INCREASE_CAPA(). */
+    /* EMIT_UNICODE only ever emits a byte, never an error */
 #define EM(C) ADD_BYTE(C)
     EMIT_UNICODE(uc, EM);
 #undef EM
@@ -1324,12 +1434,6 @@ size_t hts_getUTF8SequenceLength(const char lead) {
     return 0;
     break;
   }
-}
-
-size_t hts_stringLengthUCS4(const hts_UCS4 *s) {
-  size_t i;
-  for(i = 0 ; s[i] != 0 ; i++) ;
-  return i;
 }
 
 #undef ADD_BYTE

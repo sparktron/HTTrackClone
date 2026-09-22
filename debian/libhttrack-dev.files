@@ -1,5 +1,5 @@
 usr/include/httrack
 usr/lib/*/libhttrack.{so}
-usr/lib/*/libhtsjava.{so}
+usr/lib/*/pkgconfig/libhttrack.pc
 usr/share/httrack/libtest
 usr/lib/*/httrack/libtest

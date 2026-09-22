@@ -1,0 +1,34 @@
+# Per-catalog count of values whose line-break count differs from their msgid.
+# English.txt is the msgid side of every pair, so it is not listed. A rising
+# count must be read before the pin is raised to match it.
+#
+# catalog                 drift
+Bulgarian.txt             2
+Castellano.txt            22
+Cesky.txt                 3
+Chinese-BIG5.txt          2
+Chinese-Simplified.txt    2
+Croatian.txt              1
+Dansk.txt                 5
+Deutsch.txt               5
+Eesti.txt                 2
+Finnish.txt               2
+Francais.txt              7
+Greek.txt                 2
+Italiano.txt              10
+Japanese.txt              7
+Macedonian.txt            8
+Magyar.txt                3
+Nederlands.txt            12
+Norsk.txt                 1
+Polski.txt                14
+Portugues-Brasil.txt      6
+Portugues.txt             5
+Romanian.txt              6
+Russian.txt               8
+Slovak.txt                8
+Slovenian.txt             1
+Svenska.txt               8
+Turkish.txt               1
+Ukrainian.txt             8
+Uzbek.txt                 8

@@ -1,0 +1,108 @@
+#!/bin/bash
+#
+# --warc-cdx follows the WARC box, --wacz never does: it only turns WARC on.
+
+set -euo pipefail
+
+testdir=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=tests/webhttracklib.sh
+. "${testdir}/webhttracklib.sh"
+
+htsserver_require
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/webhttrack_warcgate.XXXXXX") || fail "no tmpdir"
+cleanup_push htsserver_cleanup_dir "${work}"
+
+printf '[the CDXJ box follows the WARC box] ..\t'
+htsserver_start --home "${work}"
+
+htsserver_python - "${HTS_URL}" <<'PY' || fail "the WARC gate is broken (see above)"
+import re
+import sys
+
+from webtestlib import Session, textarea
+
+s = Session(sys.argv[1])
+rc = 0
+
+
+def check(ok, what):
+    global rc
+    print(("ok: " if ok else "FAIL: ") + what)
+    if not ok:
+        rc = 1
+
+
+def tag(page, name):
+    m = re.search(r'<input type="checkbox" name="%s"[^>]*>' % name, page)
+    if m is None:
+        sys.exit("no %s checkbox in the rendered option9.html" % name)
+    return m.group(0)
+
+
+def companion(page):
+    m = re.search(r'<input type="hidden" name="warccdx" value="([^"]*)"'
+                  r' id="warccdx_keep">', page)
+    if m is None:
+        sys.exit("no warccdx companion in the rendered option9.html")
+    return m.group(1)
+
+
+# A headless check cannot see a greyed control or run the click handlers, so this asserts the wiring directly.
+page = s.get("option9.html?sid=" + s.sid)
+for want in ("function warc_gate()", "function wacz_click()",
+             "var off = !box('warc').checked", "box('warccdx').disabled = off",
+             "box('warc').checked = true", 'onLoad="do_load();"'):
+    check(want in page, "option9.html carries %r" % want)
+# A profile with WARC clear and CDXJ set must open greyed on load too.
+check(re.search(r"function do_load\(\)[^}]*warc_gate\(\);", page) is not None,
+      "do_load() sets the initial state")
+for name, handler in (("warc", "warc_gate"), ("wacz", "wacz_click")):
+    check('onClick="%s()' % handler in tag(page, name),
+          "the %s box calls %s() on click" % (name, handler))
+# box() builds each id by hand, so it has to be the one the tag carries.
+for name in ("warc", "warccdx", "wacz"):
+    check('id="%s_box"' % name in tag(page, name),
+          "the %s box carries id=\"%s_box\"" % (name, name))
+
+# Both rendered states; the re-grey on untick is warc_gate()'s, and never runs here.
+for warc, greyed in (("", True), ("on", False), ("", True)):
+    s.post("step4.html", [("warc", warc), ("warccdx", "on")])
+    page = s.get("option9.html?sid=" + s.sid)
+    label = "WARC %s" % ("set" if warc else "clear")
+    check((" disabled" in tag(page, "warccdx")) == greyed,
+          "%s: the CDXJ box is %s" % (label, "greyed" if greyed else "available"))
+    check("disabled" not in tag(page, "wacz"),
+          "%s: the WACZ box stays available" % label)
+    check("checked" in tag(page, "warccdx"),
+          "%s: the CDXJ box is still drawn ticked" % label)
+    check(companion(page) == ("1" if greyed else ""),
+          "%s: the companion holds %r" % (label, "1" if greyed else ""))
+
+# What a browser posts from that greyed page: the two companions, no box.
+rendered = s.post("step4.html",
+                  [("warc", ""), ("warccdx", ""), ("warccdx", companion(page))])
+check("WarcCdx=1" in textarea(rendered, "winprofile").splitlines(),
+      "a greyed CDXJ box keeps its stored value")
+cmd = textarea(rendered, "command").split()
+# --user-agent is unconditional: an empty textarea holds no flag either.
+check("--user-agent" in cmd and "--warc-cdx" not in cmd,
+      "a greyed CDXJ box emits no flag")
+
+# Ungreyed, the box decides again: the companion is empty and the box posts.
+rendered = s.post("step4.html", [("warc", "on"), ("warccdx", ""), ("warccdx", "")])
+check("WarcCdx=0" in textarea(rendered, "winprofile").splitlines(),
+      "an unticked CDXJ box clears the stored value")
+rendered = s.post("step4.html", [("warc", "on"), ("warccdx", ""), ("warccdx", ""),
+                                 ("warccdx", "on")])
+check("--warc-cdx" in textarea(rendered, "command").split(),
+      "a ticked CDXJ box under a set WARC box emits the flag")
+
+sys.exit(rc)
+PY
+echo OK
+
+htsserver_cleanup
+htsserver_assert_reaped
+
+echo "PASS"

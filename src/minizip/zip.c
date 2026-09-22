@@ -1007,11 +1007,11 @@ local int Write_LocalFileHeader(zip64_internal* zi, const char* filename, uInt s
 
 /*
  NOTE.
- When writing RAW the ZIP64 extended information in extrafield_local and extrafield_global needs to be stripped
- before calling this function it can be done with zipRemoveExtraInfoBlock
+ When writing RAW the ZIP64 extended information in extrafield_local and
+ extrafield_global needs to be stripped before calling this function.
 
- It is not done here because then we need to realloc a new buffer since parameters are 'const' and I want to minimize
- unnecessary allocations.
+ It is not done here because then we need to realloc a new buffer since
+ parameters are 'const' and I want to minimize unnecessary allocations.
  */
 extern int ZEXPORT zipOpenNewFileInZip4_64(zipFile file, const char* filename, const zip_fileinfo* zipfi,
                                            const void* extrafield_local, uInt size_extrafield_local,
@@ -1230,6 +1230,19 @@ extern int ZEXPORT zipOpenNewFileInZip4_64(zipFile file, const char* filename, c
 
     if (err==Z_OK)
         zi->in_opened_file_inzip = 1;
+    else {
+      /* httrack addition: no close or abandon runs on a member that never
+         opened, so this call owns what it allocated */
+      if (zi->ci.stream_initialised == Z_DEFLATED)
+        (void) deflateEnd(&zi->ci.stream);
+#ifdef HAVE_BZIP2
+      else if (zi->ci.stream_initialised == Z_BZIP2ED)
+        (void) BZ2_bzCompressEnd(&zi->ci.bstream);
+#endif
+      zi->ci.stream_initialised = 0;
+      free(zi->ci.central_header);
+      zi->ci.central_header = NULL;
+    }
     return err;
 }
 
@@ -1706,6 +1719,47 @@ extern int ZEXPORT zipCloseFileInZip(zipFile file) {
     return zipCloseFileInZipRaw (file,0,0);
 }
 
+/* httrack addition: abandon the member being written instead of committing it.
+   Rewinding and truncating to its local header is the only rollback minizip can
+   offer: once zipCloseFileInZipRaw64() has appended the central-directory
+   record there is no API to take it back. */
+extern int ZEXPORT zipAbandonFileInZip(zipFile file) {
+  zip64_internal *zi;
+  int truncate_err;
+
+  if (file == NULL)
+    return ZIP_PARAMERROR;
+  zi = (zip64_internal *) file;
+  if (zi->in_opened_file_inzip == 0)
+    return ZIP_PARAMERROR;
+
+  if (zi->ci.stream_initialised) {
+    if ((zi->ci.method == Z_DEFLATED) && (!zi->ci.raw))
+      (void) deflateEnd(&zi->ci.stream);
+#ifdef HAVE_BZIP2
+    else if ((zi->ci.method == Z_BZIP2ED) && (!zi->ci.raw))
+      (void) BZ2_bzCompressEnd(&zi->ci.bstream);
+#endif
+    zi->ci.stream_initialised = 0;
+  }
+  free(zi->ci.central_header);
+  zi->ci.central_header = NULL;
+  zi->in_opened_file_inzip = 0;
+
+  /* not counted in zi->number_entry: the member never existed */
+  if (ZSEEK64(zi->z_filefunc, zi->filestream, zi->ci.pos_local_header,
+              ZLIB_FILEFUNC_SEEK_SET) != 0)
+    return ZIP_ERRNO;
+  truncate_err =
+      ZTRUNCATE64(zi->z_filefunc, zi->filestream, zi->ci.pos_local_header);
+  if (truncate_err < 0)
+    return ZIP_ERRNO;
+  /* the rewind alone leaves what the member flushed past the end-of-central-
+     directory written later, which no reader finds once that tail outgrows the
+     64KB backscan */
+  return truncate_err == 0 ? ZIP_OK : ZIP_NOTRUNCATED;
+}
+
 local int Write_Zip64EndOfCentralDirectoryLocator(zip64_internal* zi, ZPOS64_T zip64eocd_pos_inzip) {
   int err = ZIP_OK;
   ZPOS64_T pos = zip64eocd_pos_inzip - zi->add_position_when_writing_offset;
@@ -1908,77 +1962,4 @@ extern int ZEXPORT zipClose(zipFile file, const char* global_comment) {
     free(zi);
 
     return err;
-}
-
-extern int ZEXPORT zipRemoveExtraInfoBlock(char* pData, int* dataLen, short sHeader) {
-  char* p = pData;
-  char* end;
-  int size = 0;
-  char* pNewHeader;
-  char* pTmp;
-  unsigned short header;
-  unsigned short dataSize;
-  size_t blockSize;
-
-  int retVal = ZIP_OK;
-
-  if(pData == NULL || dataLen == NULL || *dataLen < 4)
-    return ZIP_PARAMERROR;
-
-  pNewHeader = (char*)ALLOC((unsigned)*dataLen);
-  if (pNewHeader == NULL)
-    return ZIP_INTERNALERROR;
-  pTmp = pNewHeader;
-  end = pData + *dataLen;
-
-  while(p < end)
-  {
-    if ((size_t)(end - p) < 4U) {
-      retVal = ZIP_PARAMERROR;
-      goto done;
-    }
-    memcpy(&header, p, sizeof(header));
-    memcpy(&dataSize, p + sizeof(header), sizeof(dataSize));
-    blockSize = (size_t)dataSize + 4U;
-    if (blockSize > (size_t)(end - p)) {
-      retVal = ZIP_PARAMERROR;
-      goto done;
-    }
-
-    if( header == (unsigned short)sHeader ) // Header found.
-    {
-      p += blockSize; // skip it. do not copy to temp buffer
-    }
-    else
-    {
-      // Extra Info block should not be removed, So copy it to the temp buffer.
-      memcpy(pTmp, p, blockSize);
-      pTmp += blockSize;
-      p += blockSize;
-      size += (int)blockSize;
-    }
-
-  }
-
-  if(size < *dataLen)
-  {
-    // clean old extra info block.
-    memset(pData,0, *dataLen);
-
-    // copy the new extra info block over the old
-    if(size > 0)
-      memcpy(pData, pNewHeader, size);
-
-    // set the new extra info size
-    *dataLen = size;
-
-    retVal = ZIP_OK;
-  }
-  else
-    retVal = ZIP_ERRNO;
-
-done:
-  free(pNewHeader);
-
-  return retVal;
 }

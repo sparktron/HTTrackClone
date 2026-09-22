@@ -213,84 +213,84 @@ typedef struct hts_catalog_entry {
 
 typedef int (*hts_catalog_visit_fn)(void *user, const hts_catalog_entry *entry);
 
-HTSEXT_API int hts_catalog_open(const char *path, hts_catalog **out_catalog);
-HTSEXT_API void hts_catalog_close(hts_catalog *catalog);
-HTSEXT_API const char *hts_catalog_last_error(const hts_catalog *catalog);
-HTSEXT_API int hts_catalog_schema_version(hts_catalog *catalog, int *out_version);
+int hts_catalog_open(const char *path, hts_catalog **out_catalog);
+void hts_catalog_close(hts_catalog *catalog);
+const char *hts_catalog_last_error(const hts_catalog *catalog);
+int hts_catalog_schema_version(hts_catalog *catalog, int *out_version);
 
-HTSEXT_API int hts_catalog_begin(hts_catalog *catalog);
-HTSEXT_API int hts_catalog_commit(hts_catalog *catalog);
-HTSEXT_API int hts_catalog_rollback(hts_catalog *catalog);
+int hts_catalog_begin(hts_catalog *catalog);
+int hts_catalog_commit(hts_catalog *catalog);
+int hts_catalog_rollback(hts_catalog *catalog);
 
-HTSEXT_API int hts_catalog_upsert_source(hts_catalog *catalog,
+int hts_catalog_upsert_source(hts_catalog *catalog,
                               const hts_catalog_source *source,
                               int64_t *out_id);
-HTSEXT_API int hts_catalog_upsert_board(hts_catalog *catalog,
+int hts_catalog_upsert_board(hts_catalog *catalog,
                              const hts_catalog_board *board,
                              int64_t *out_id);
-HTSEXT_API int hts_catalog_upsert_collection(hts_catalog *catalog,
+int hts_catalog_upsert_collection(hts_catalog *catalog,
                                   const hts_catalog_collection *collection,
                                   int64_t *out_id);
-HTSEXT_API int hts_catalog_upsert_post(hts_catalog *catalog,
+int hts_catalog_upsert_post(hts_catalog *catalog,
                             const hts_catalog_post *post,
                             int64_t *out_id);
-HTSEXT_API int hts_catalog_upsert_media(hts_catalog *catalog,
+int hts_catalog_upsert_media(hts_catalog *catalog,
                              const hts_catalog_media *media,
                              int64_t *out_id);
-HTSEXT_API int hts_catalog_upsert_collection_media(hts_catalog *catalog,
+int hts_catalog_upsert_collection_media(hts_catalog *catalog,
                                          int64_t source_id,
                                          int64_t collection_id,
                                          int64_t media_id,
                                          int64_t position);
-HTSEXT_API int hts_catalog_upsert_sync_cursor(hts_catalog *catalog,
+int hts_catalog_upsert_sync_cursor(hts_catalog *catalog,
                                    const hts_catalog_sync_cursor *cursor,
                                    int64_t *out_id);
-HTSEXT_API int hts_catalog_upsert_selection(hts_catalog *catalog,
+int hts_catalog_upsert_selection(hts_catalog *catalog,
                                  const hts_catalog_selection *selection,
                                  int64_t *out_id);
-HTSEXT_API int hts_catalog_upsert_download_job(hts_catalog *catalog,
+int hts_catalog_upsert_download_job(hts_catalog *catalog,
                                     const hts_catalog_download_job *job,
                                     int64_t *out_id);
 
-HTSEXT_API int hts_catalog_find_id(hts_catalog *catalog,
+int hts_catalog_find_id(hts_catalog *catalog,
                          hts_catalog_entity entity, int64_t source_id,
                          const char *key1, const char *key2,
                          int64_t *out_id);
-HTSEXT_API int hts_catalog_get_sync_cursor(hts_catalog *catalog,
+int hts_catalog_get_sync_cursor(hts_catalog *catalog,
                                 int64_t source_id,
                                 const char *resource_kind,
                                 const char *resource_id,
                                 hts_catalog_sync_state *out_state);
-HTSEXT_API int hts_catalog_upsert_resource_state(
+int hts_catalog_upsert_resource_state(
     hts_catalog *catalog, const hts_catalog_resource_state *resource,
     int64_t *out_id);
-HTSEXT_API int hts_catalog_get_resource_state(
+int hts_catalog_get_resource_state(
     hts_catalog *catalog, int64_t source_id, const char *resource_kind,
     const char *resource_id, hts_catalog_resource_visit_fn visit, void *user);
-HTSEXT_API int hts_catalog_list_resource_states(
+int hts_catalog_list_resource_states(
     hts_catalog *catalog, int64_t source_id, const char *resource_kind,
     const char *parent_remote_id, hts_catalog_resource_visit_fn visit,
     void *user);
-HTSEXT_API int hts_catalog_set_collection_lifecycle(
+int hts_catalog_set_collection_lifecycle(
     hts_catalog *catalog, int64_t source_id, const char *kind,
     const char *remote_id, const char *lifecycle_state,
     const char *media_availability_state);
-HTSEXT_API int hts_catalog_mark_post_deleted(
+int hts_catalog_mark_post_deleted(
     hts_catalog *catalog, int64_t source_id, const char *remote_id,
     const char *media_availability_state);
-HTSEXT_API int hts_catalog_clear_collection_media(
+int hts_catalog_clear_collection_media(
     hts_catalog *catalog, int64_t source_id, const char *kind,
     const char *remote_id);
 
-HTSEXT_API int hts_catalog_read(hts_catalog *catalog, hts_catalog_entity entity,
+int hts_catalog_read(hts_catalog *catalog, hts_catalog_entity entity,
                      int64_t id, hts_catalog_visit_fn visit, void *user);
 /* parent_id is source, collection, post, or selection according to entity. */
-HTSEXT_API int hts_catalog_list(hts_catalog *catalog, hts_catalog_entity entity,
+int hts_catalog_list(hts_catalog *catalog, hts_catalog_entity entity,
                      int64_t parent_id, hts_catalog_visit_fn visit,
                      void *user);
 
 /* Produces a safe basename; separators/control bytes are replaced with '_'. */
-HTSEXT_API int hts_catalog_sanitize_filename(const char *input, char *output,
+int hts_catalog_sanitize_filename(const char *input, char *output,
                                   size_t output_size);
 
 #ifdef __cplusplus

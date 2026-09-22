@@ -1,0 +1,14 @@
+#!/bin/bash
+#
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# Accept-Encoding (#450): advertise gzip+deflate; decode gzip/zlib/raw-deflate.
+dir=$(mktemp -d)
+cleanup_push rm -rf "$dir"
+
+# The advertised codings are the contract, so pin the whole line.
+assert_selftest "acceptencoding self-test OK: gzip, deflate, identity;q=0.9" \
+    acceptencoding "$dir" run

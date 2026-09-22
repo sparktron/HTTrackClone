@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -40,15 +40,16 @@ Please visit our Website: http://www.httrack.com
 
 /* String */
 #include "htsstrings.h"
-
-/* Listen on every interface rather than loopback only. Dangerous: this
-   server can start a mirror writing to an arbitrary path. */
-extern int smallserver_bind_any;
+#include "htsescape.h"
 
 // Fonctions
-void socinput(T_SOC soc, char *s, int max);
-T_SOC smallserver_init_std(int *port_prox, char *adr_prox, int defaultPort);
-T_SOC smallserver_init(int *port, char *adr);
+/* Read one line off a socket; HTS_TRUE if it did not fit "s". */
+hts_boolean socinput(T_SOC soc, char *s, int max);
+/* Listen on bindAddr, or the loopback interface if NULL/empty; adr (>= 258
+   bytes) gets the address to advertise. INVALID_SOCKET on error. */
+T_SOC smallserver_init_std(int *port_prox, char *adr_prox, int defaultPort,
+                           const char *bindAddr);
+T_SOC smallserver_init(int *port, char *adr, const char *bindAddr);
 int smallserver(T_SOC soc, char *url, char *method, char *data, char *path);
 
 #define CATCH_RESPONSE \
@@ -83,8 +84,7 @@ extern coucal NewLangList;
 
 extern httrackp *global_opt;
 
-/* Spaces: CR,LF,TAB,FF */
-#define  is_space(c)      ( ((c)==' ') || ((c)=='\"') || ((c)==10) || ((c)==13) || ((c)==9) || ((c)==12) || ((c)==11) || ((c)=='\'') )
+/* Duplicates of htslib.h's, which htsweb.c does not include. */
 #define  is_realspace(c)  ( ((c)==' ')                || ((c)==10) || ((c)==13) || ((c)==9) || ((c)==12) || ((c)==11)                )
 #define  is_taborspace(c) ( ((c)==' ')                                          || ((c)==9)                             )
 #define  is_quote(c)      (               ((c)=='\"')                                                    || ((c)=='\'') )
@@ -95,13 +95,25 @@ extern httrackp *global_opt;
 #define min(a,b) ((a)>(b)?(b):(a))
 #define max(a,b) ((a)>(b)?(a):(b))
 
-extern void smallserver_setpinghandler(void (*fun)(void*), void*arg);
+/* What the UI just told us about itself, reported to the ping handler. */
+typedef enum {
+  SMALLSERVER_CLIENT_REQUEST, /* any request; claims no window */
+  SMALLSERVER_CLIENT_PING,    /* one window's heartbeat */
+  SMALLSERVER_CLIENT_LEAVING  /* that window is closing */
+} smallserver_client_event;
+
+/* Longest window id a page may claim; a longer one is ignored. */
+#define SMALLSERVER_WINDOW_ID_MAX 32
+
+/* fun() receives the id of the window the event came from, NULL when no window
+   claimed it. */
+extern void smallserver_setpinghandler(
+    void (*fun)(void *, smallserver_client_event, const char *), void *arg);
 extern int smallserver_setkey(const char *key, const char *value);
 extern int smallserver_setkeyint(const char *key, LLint value);
 extern int smallserver_setkeyarr(const char *key, int id, const char *key2, const char *value);
 
 int htslang_init(void);
-int htslang_uninit(void);
 
 /* Static definitions */
 
@@ -168,13 +180,12 @@ HTS_UNUSED static int linputsoc_t(T_SOC soc, char *s, int max, int timeout) {
   return -1;
 }
 
+/* Same contract as hts_gethome(), which is hidden and out of reach from here */
 static const char *gethomedir(void) {
   const char *home = getenv("HOME");
 
-  if (home)
-    return home;
-  else
-    return ".";
+  /* An empty $HOME would put the base path and httrack.ini at the root */
+  return strnotempty(home) ? home : ".";
 }
 static int linput_cpp(FILE * fp, char *s, int max) {
   int rlen = 0;
@@ -260,63 +271,6 @@ static int linput_trim(FILE * fp, char *s, int max) {
     free(ls);
   }
   return rlen;
-}
-
-static int ehexh(char c) {
-  if ((c >= '0') && (c <= '9'))
-    return c - '0';
-  if ((c >= 'a') && (c <= 'f'))
-    c -= ('a' - 'A');
-  if ((c >= 'A') && (c <= 'F'))
-    return (c - 'A' + 10);
-  return 0;
-}
-
-static int ehex(const char *s) {
-  return 16 * ehexh(*s) + ehexh(*(s + 1));
-}
-
-HTS_UNUSED static void unescapehttp(const char *s, String * tempo) {
-  size_t i;
-
-  for(i = 0; s[i] != '\0'; i++) {
-    if (s[i] == '%' && s[i + 1] == '%') {
-      i++;
-      StringAddchar(*tempo, '%');
-    } else if (s[i] == '%') {
-      char hc;
-
-      i++;
-      hc = (char) ehex(s + i);
-      StringAddchar(*tempo, (char) hc);
-      i++;                      // sauter 2 caractères finalement
-    } else if (s[i] == '+') {
-      StringAddchar(*tempo, ' ');
-    } else
-      StringAddchar(*tempo, s[i]);
-  }
-}
-
-HTS_UNUSED static void unescapeini(char *s, String * tempo) {
-  size_t i;
-  char lastc = 0;
-
-  for(i = 0; s[i] != '\0'; i++) {
-    if (s[i] == '%' && s[i + 1] == '%') {
-      i++;
-      StringAddchar(*tempo, lastc = '%');
-    } else if (s[i] == '%') {
-      char hc;
-
-      i++;
-      hc = (char) ehex(s + i);
-      if (!is_retorsep(hc) || !is_retorsep(lastc)) {
-        StringAddchar(*tempo, lastc = (char) hc);
-      }
-      i++;                      // sauter 2 caractères finalement
-    } else
-      StringAddchar(*tempo, lastc = s[i]);
-  }
 }
 
 #endif

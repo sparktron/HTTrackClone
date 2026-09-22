@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2013 Xavier Roche and other contributors
+Copyright (C) 2014 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -118,9 +118,12 @@ HTSEXT_API const char *get_ext(char *catbuff, size_t size, const char *fil) {
 
   if (last != 0 && i > last) {
     const size_t len = i - last;
+    /* len characters plus the terminator, with the untrusted len alone */
     if (len < size) {
+      /* bounded on len, so the copy stops at the '?' the loop stopped at; the
+         guard above leaves strlncatbuff's abort arm unreachable */
       catbuff[0] = '\0';
-      strncat(catbuff, &fil[last], size);
+      strlncatbuff(catbuff, &fil[last], size, len);
       return catbuff;
     }
   }

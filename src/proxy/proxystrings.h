@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -32,41 +34,6 @@ Please visit our Website: http://www.httrack.com
 #include "htsstrings.h"
 
 /* Tools */
-
-HTS_UNUSED static int ehexh(char c) {
-  if ((c >= '0') && (c <= '9'))
-    return c - '0';
-  if ((c >= 'a') && (c <= 'f'))
-    c -= ('a' - 'A');
-  if ((c >= 'A') && (c <= 'F'))
-    return (c - 'A' + 10);
-  return 0;
-}
-
-HTS_UNUSED static int ehex(const char *s) {
-  return 16 * ehexh(*s) + ehexh(*(s + 1));
-}
-
-HTS_UNUSED static void unescapehttp(const char *s, String * tempo) {
-  int i;
-
-  for(i = 0; s[i] != '\0'; i++) {
-    if (s[i] == '%' && s[i + 1] == '%') {
-      i++;
-      StringAddchar(*tempo, '%');
-    } else if (s[i] == '%') {
-      char hc;
-
-      i++;
-      hc = (char) ehex(s + i);
-      StringAddchar(*tempo, (char) hc);
-      i++;                      // sauter 2 caractères finalement
-    } else if (s[i] == '+') {
-      StringAddchar(*tempo, ' ');
-    } else
-      StringAddchar(*tempo, s[i]);
-  }
-}
 
 HTS_UNUSED static void escapexml(const char *s, String * tempo) {
   int i;

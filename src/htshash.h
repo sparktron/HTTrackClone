@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -51,8 +51,17 @@ typedef enum hash_struct_type {
 } hash_struct_type;
 
 // tables de hachage
-void hash_init(httrackp *opt, hash_struct *hash, int normalized);
+void hash_init(httrackp *opt, hash_struct *hash, hts_boolean normalized);
 void hash_free(hash_struct *hash);
+/* Test helper: HTS_TRUE if the two URLs dedupe together under opt's urlhack
+   flags. */
+hts_boolean hash_url_equals(httrackp *opt, const char *adra, const char *fila,
+                            const char *adrb, const char *filb);
+/* Build the dedup key of ADR/FIL, the canonical host then the path, into DST
+   (DSTSIZE bytes) and return it. Each half is clipped to fit, so DST is always
+   NUL-terminated; it only feeds the hash, never a comparison. */
+const char *hash_url_key(hash_struct *hash, const char *adr, const char *fil,
+                         char *dst, size_t dstsize);
 int hash_read(const hash_struct * hash, const char *nom1, const char *nom2,
               hash_struct_type type);
 void hash_write(hash_struct * hash, size_t lpos);

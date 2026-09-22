@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -38,6 +38,7 @@ Please visit our Website: http://www.httrack.com
 #ifdef HTS_INTERNAL_BYTECODE
 
 #include "htsglobal.h"
+#include "htszlib.h" /* zipFile */
 
 #include <stdlib.h>
 
@@ -64,10 +65,26 @@ void cache_add(httrackp * opt, cache_back * cache, const htsblk * r,
                int all_in_cache, const char *path_prefix);
 htsblk cache_read(httrackp * opt, cache_back * cache, const char *adr,
                   const char *fil, const char *save, char *location);
+/* Re-store the previous run's entry for a link this run failed to fetch, so the
+   next one recomputes the same save name: nothing else maps the URL to it
+   (#1421). `url_save` is the copy that survived, which the caller has just
+   checked is on disk. The entry goes back marked kept, readable only through
+   cache_read_including_broken(): it names a file, it does not stand in for a
+   fetch. */
+void cache_keep_previous(httrackp *opt, cache_back *cache, const char *url_adr,
+                         const char *url_fil, const char *url_save);
 htsblk cache_read_ro(httrackp * opt, cache_back * cache, const char *adr,
                      const char *fil, const char *save, char *location);
-htsblk cache_read_including_broken(httrackp * opt, cache_back * cache,
-                                   const char *adr, const char *fil);
+/* Like cache_read, but also yields entries whose transfer broke; return_save
+   (optional, HTS_URLMAXSIZE*2) receives the entry's recorded save name and
+   return_location (optional, HTS_LOCATION_SIZE) its Location, which outlives
+   the status an entry naming no local file is invalidated to. Header fields
+   only: adr and headers come back NULL, so the caller owns and frees nothing,
+   and the location is the one to read, not r.location. This is also the one
+   reader that sees a kept entry (#1421). */
+htsblk cache_read_including_broken(httrackp *opt, cache_back *cache,
+                                   const char *adr, const char *fil,
+                                   char *return_save, char *return_location);
 htsblk cache_readex(httrackp * opt, cache_back * cache, const char *adr,
                     const char *fil, const char *save, char *location,
                     char *return_save, int readonly);
@@ -75,28 +92,49 @@ htsblk *cache_header(httrackp * opt, cache_back * cache, const char *adr,
                      const char *fil, htsblk * r);
 void cache_init(cache_back * cache, httrackp * opt);
 
-int cache_writedata(FILE * cache_ndx, FILE * cache_dat, const char *str1,
-                    const char *str2, char *outbuff, int len);
-int cache_readdata(cache_back * cache, const char *str1, const char *str2,
-                   char **inbuff, int *len);
+/* Recover the damaged cache at name into hts-cache/repair.zip and move it over
+   name, storing what was recovered in *entries and *bytes. Returns NULL on
+   success, else a reason the caller reports: a recovery that is empty or does
+   not open never replaces the cache, and neither does one that cannot be moved
+   into place (#786, #824). Note: utf-8. */
+const char *cache_repair(httrackp *opt, const char *name,
+                         unsigned long *entries, unsigned long *bytes);
 
-/* Capacity assumed for the 'location' buffer callers hand to cache_read()
-   and friends, and for the fallback used when they pass none. */
-#define CACHE_LOCATION_SIZE (HTS_URLMAXSIZE * 2)
-/* Capacity assumed for the 'return_save' buffer cache_readex() writes the
-   entry's previous save name into. */
-#define CACHE_SAVE_SIZE (HTS_URLMAXSIZE * 2)
-void cache_rstr(FILE * fp, char *s, size_t size);
-char *cache_rstr_addr(FILE * fp);
-int cache_brstr(char *adr, char *s);
-int cache_quickbrstr(char *adr, char *s);
-int cache_brint(char *adr, int *i);
-void cache_rint(FILE * fp, int *i);
-void cache_rLLint(FILE * fp, LLint * i);
+/* Which hts-cache/ generation (new.* vs old.*) is authoritative. */
+typedef enum {
+  CACHE_RECONCILE_PROMOTE,     /* no new cache: promote the old generation */
+  CACHE_RECONCILE_INTERRUPTED, /* aborted run: keep the larger generation */
+  CACHE_RECONCILE_ROLLBACK     /* nothing transferred: restore the old one */
+} hts_cache_reconcile_mode;
 
-int cache_wstr(FILE * fp, const char *s);
-int cache_wint(FILE * fp, int i);
-int cache_wLLint(FILE * fp, LLint i);
+/* Reconcile the on-disk cache generations according to mode; a no-op when
+   the involved files are absent. */
+void hts_cache_reconcile(httrackp *opt, hts_cache_reconcile_mode mode);
+
+/* Capacity of the per-entry header block cache_add builds; the self-test
+   asserts the writer stays inside it, so both must move together. */
+#define CACHE_HEADERS_SIZE 8192
+
+/* Cache key: url_adr followed by url_fil, each lien_back-sized. Write, index
+   load and lookup must each hold one whole -- a clipped key aliases another. */
+#define CACHE_KEY_SIZE (HTS_URLMAXSIZE * 4)
+/* The ZIP entry name is the key behind a "http://" the index load strips. */
+#define CACHE_ENTRYNAME_SIZE (CACHE_KEY_SIZE + 8)
+
+int cache_brstr(char *adr, char *s, size_t s_size);
+/* binput over a NUL-terminated buffer, bounded: no read starts at/past end. */
+int cache_binput(const char *adr, const char *end, char *s, int max);
+
+/* Consecutive entry write failures before the cache stream is declared dead. */
+#define CACHE_MAX_WRITE_FAILURES 8
+
+/* Fail r with "<what>: <strerror(err)>", clipped into r->msg. */
+void cache_read_failed(htsblk *r, const char *what, int err);
+
+/* cache_zip_store_stream() status: the source file read failed, as opposed to
+   any zip-side error, which comes back as its own Z_* code. */
+#define CACHE_ZIP_READ_ERROR (-1000)
+int cache_zip_store_stream(zipFile zf, FILE *fp);
 
 #endif
 

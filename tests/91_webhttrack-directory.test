@@ -1,0 +1,95 @@
+#!/bin/bash
+#
+# fopen() succeeds on a directory on POSIX and reading one never reaches EOF; a
+# FIFO blocks in fopen() instead. Either used to wedge the single-threaded server.
+
+set -euo pipefail
+
+# shellcheck source=tests/webhttracklib.sh
+. "${0%"${0##*/}"}./webhttracklib.sh"
+
+htsserver_require
+
+base=$(mktemp -d)
+cleanup_push htsserver_cleanup_dir "${base}"
+
+# GET $1, or fail with $2 when the reply never comes.
+get() {
+    local out
+    out=$(htsserver_get "$1") || fail "$1 did not answer: $2"
+    echo "${out}"
+}
+
+htsserver_start
+test -n "${HTS_PID}" || fail "htsserver did not report its pid"
+
+# Needs no session id and no project: html/server is a directory of the install.
+reply=$(get /server/ "an unauthenticated request wedged the server")
+case "${reply}" in
+"HTTP/1.0 404 "*) ;;
+*) fail "a GUI directory did not answer 404: $(firstline "${reply}")" ;;
+esac
+
+# Every request body is gated by the session id.
+reply=$(get /server/index.html "the GUI is not served")
+sid=$(firstline "$(echo "${reply}" |
+    sed -n 's/.*name="sid" value="\([0-9a-f]*\)".*/\1/p')")
+test "${#sid}" -eq 32 || fail "did not scrape a 32-hex sid (got '${sid}')"
+
+mkdir -p "${base}/proj/sub"
+echo "PROBEMARKER" >"${base}/proj/probe.txt"
+
+# mkfifo and ln -s may not work on a Windows checkout, so both stay optional.
+refuse=(/website/ /website/sub/)
+if mkfifo "${base}/proj/fifo.txt" 2>/dev/null; then
+    refuse+=(/website/fifo.txt)
+fi
+ln -s probe.txt "${base}/proj/link.txt" 2>/dev/null || true
+
+# step4's "save settings" flow registers the project without crawling, and that
+# is what arms the /website/ root.
+body="sid=${sid}&command=httrack&command_do=save&winprofile=x"
+body="${body}&path=${base}&projname=proj"
+htsserver_post "${body}" >/dev/null || fail "the save request did not answer"
+test -f "${base}/proj/hts-cache/winprofile.ini" ||
+    fail "the project was not registered: $(<"${HTS_LOG}")"
+
+# Positive control: every assertion below would pass on a server serving nothing.
+served() {
+    case "$(get "$1" "$2")" in
+    *PROBEMARKER*) ;;
+    *) fail "$2" ;;
+    esac
+}
+served /website/probe.txt "the registered project's mirror is not served"
+if test -L "${base}/proj/link.txt"; then
+    # The guard stats rather than lstats, so a symlinked mirror file still serves.
+    served /website/link.txt "a symlink to a mirror file is not served"
+fi
+
+# /website/ is where the GUI's own "browse mirrored site" link points.
+for path in "${refuse[@]}"; do
+    reply=$(get "${path}" "the server wedged on ${path}")
+    case "${reply}" in
+    "HTTP/1.0 404 "*) ;;
+    *) fail "${path} did not answer 404: $(firstline "${reply}")" ;;
+    esac
+done
+
+# The accept loop is single-threaded: one spin denies every later request.
+htsserver_alive || fail "the server died: $(<"${HTS_LOG}")"
+served /website/probe.txt "the server stopped answering after a directory request"
+
+# This fopen() is reached before any guard, so its read loop must stop on ferror().
+mkdir -p "${base}/proj2/hts-cache/winprofile.ini"
+reply=$(htsserver_post "sid=${sid}&path=${base}&loadprojname=proj2") ||
+    fail "a directory winprofile.ini wedged the server"
+case "${reply}" in
+"HTTP/1.0 3"*) ;;
+*) fail "loading a project did not redirect: $(firstline "${reply}")" ;;
+esac
+
+htsserver_alive || fail "the server died: $(<"${HTS_LOG}")"
+served /website/probe.txt "the server stopped answering after a project load"
+
+echo "PASS"

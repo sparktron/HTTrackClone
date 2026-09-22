@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -30,24 +30,35 @@ Please visit our Website: http://www.httrack.com
 /* Author: Xavier Roche                                         */
 /* ------------------------------------------------------------ */
 
-// Fichier réunissant l'ensemble des defines
+/** @file htsglobal.h
+ *  Foundational portability layer included by every other public header:
+ *  version strings, platform/feature switches, the HTSEXT_API export marker,
+ *  the integer/time/socket typedefs (LLint, TStamp, INTsys, T_SOC), printf
+ *  format helpers, and the file-access mode constants. */
 
 #ifndef HTTRACK_GLOBAL_DEFH
 #define HTTRACK_GLOBAL_DEFH
 
-// Version (also check external version information)
-#define HTTRACK_VERSION      "3.49-6"
-#define HTTRACK_VERSIONID    "3.49.6"
-#define HTTRACK_AFF_VERSION  "3.x"
-#define HTTRACK_LIB_VERSION  "2.0"
+/* Package version strings (the library ABI version is VERSION_INFO in
+   configure.ac, decoupled from these). VERSION is the display form, VERSIONID
+   the dotted numeric form, AFF_VERSION the short form shown in footers,
+   LIB_VERSION the data/cache format generation. */
+#define HTTRACK_VERSION "3.50-3"
+#define HTTRACK_VERSIONID "3.50.3"
+#define HTTRACK_AFF_VERSION "3.x"
+#define HTTRACK_LIB_VERSION "2.0"
 
 #ifndef HTS_NOINCLUDES
 #include <stdio.h>
 #include <stdlib.h>
 #endif
 
-// Définition plate-forme
+// Platform detection (sizes, feature macros)
 #include "htsconfig.h"
+
+// Fixed-width integer types + PRI* format macros for the LLint/TStamp typedefs
+#include <stdint.h>
+#include <inttypes.h>
 
 // WIN32 types
 #ifdef _WIN32
@@ -57,16 +68,26 @@ Please visit our Website: http://www.httrack.com
 #endif
 #endif
 
-/* GCC extension */
+/* Compiler-attribute helpers, no-ops where unsupported.
+   HTS_UNUSED: suppress unused-symbol warnings. HTS_STATIC: an unused-safe
+   static. HTS_PRINTF_FUN(fmt, arg): mark a printf-like function so the
+   compiler type-checks the format string at argument index fmt against the
+   varargs starting at arg. HTS_CHECK_RESULT: the return value carries the only
+   error signal, so dropping it is a bug; a (void) cast does not silence it. */
 #ifndef HTS_UNUSED
 #ifdef __GNUC__
-#define HTS_UNUSED __attribute__ ((unused))
-#define HTS_STATIC static __attribute__ ((unused))
-#define HTS_PRINTF_FUN(fmt, arg) __attribute__ ((format (printf, fmt, arg)))
+#define HTS_UNUSED __attribute__((unused))
+
+#define HTS_STATIC static __attribute__((unused))
+
+#define HTS_PRINTF_FUN(fmt, arg) __attribute__((format(printf, fmt, arg)))
+
+#define HTS_CHECK_RESULT __attribute__((warn_unused_result))
 #else
 #define HTS_UNUSED
 #define HTS_STATIC static
 #define HTS_PRINTF_FUN(fmt, arg)
+#define HTS_CHECK_RESULT
 #endif
 #endif
 
@@ -86,38 +107,23 @@ Please visit our Website: http://www.httrack.com
 #endif
 #ifndef S_ISREG
 #define S_ISREG(m) ((m) & _S_IFREG)
+
 #define S_ISDIR(m) ((m) & _S_IFDIR)
 #endif
 
 #else
 
+/* config.h is private: an autoconf consumer has one of its own, so only the
+   switches the installed headers read are published, in htsfeatures.h. An
+   internal build reads config.h and must not need the generated one. */
+#ifdef HTS_INTERNAL_BUILD
 #include "config.h"
+#else
+#include "htsfeatures.h"
+#endif
 
 #ifndef SETUID
 #define HTS_DO_NOT_USE_UID
-#endif
-
-#ifndef HTS_LONGLONG
-#ifdef SIZEOF_LONG_LONG
-#if SIZEOF_LONG_LONG==8
-#define HTS_LONGLONG 1
-#endif
-#endif
-
-#ifndef HTS_LONGLONG
-#ifdef __sun
-#define HTS_LONGLONG 0
-#endif
-#ifdef __osf__
-#define HTS_LONGLONG 0
-#endif
-#ifdef __linux
-#define HTS_LONGLONG 1
-#endif
-#ifdef _WIN32
-#define HTS_LONGLONG 1
-#endif
-#endif
 #endif
 
 #ifdef DLLIB
@@ -132,17 +138,27 @@ Please visit our Website: http://www.httrack.com
 #define BIGSTK
 #endif
 
-// compatibilité DOS
+// DOS-style 8.3 filenames? 1 on Windows, 0 elsewhere
 #ifdef _WIN32
 #define HTS_DOSNAME 1
 #else
 #define HTS_DOSNAME 0
 #endif
 
-// utiliser zlib?
+// zlib is mandatory: the cache is a zip and minizip calls it regardless
 #ifndef HTS_USEZLIB
-// autoload
 #define HTS_USEZLIB 1
+#elif !HTS_USEZLIB
+#error HTS_USEZLIB=0 is not a supported configuration
+#endif
+
+// brotli and zstd content codings; off unless the build opted in (configure,
+// or the Visual Studio projects, which link the vcpkg libraries)
+#ifndef HTS_USEBROTLI
+#define HTS_USEBROTLI 0
+#endif
+#ifndef HTS_USEZSTD
+#define HTS_USEZSTD 0
 #endif
 
 #ifndef HTS_INET6
@@ -168,95 +184,156 @@ Please visit our Website: http://www.httrack.com
 #define __cdecl
 #endif
 
-/* rc file */
+/* Install paths and config-file names. HTTRACKRC is the per-user rc filename,
+   HTTRACKCNF the system-wide config, HTTRACKDIR the shared data directory; the
+   ETC/BIN/LIB/PREFIX paths follow the directories configure was given. A build
+   that defines none (MSVC, or a consumer including this header standalone)
+   falls back to the literals. */
 #ifdef _WIN32
 #define HTS_HTTRACKRC "httrackrc"
 #else
 
 #ifndef HTS_ETCPATH
+#ifdef SYSCONFDIR
+#define HTS_ETCPATH SYSCONFDIR
+#else
 #define HTS_ETCPATH "/etc"
 #endif
+#endif
 #ifndef HTS_BINPATH
+#ifdef BINDIR
+#define HTS_BINPATH BINDIR
+#else
 #define HTS_BINPATH "/usr/bin"
 #endif
+#endif
 #ifndef HTS_LIBPATH
+#ifdef LIBDIR
+#define HTS_LIBPATH LIBDIR
+#else
 #define HTS_LIBPATH "/usr/lib"
 #endif
+#endif
 #ifndef HTS_PREFIX
+#ifdef PREFIX
+#define HTS_PREFIX PREFIX
+#else
 #define HTS_PREFIX "/usr"
+#endif
 #endif
 
 #define HTS_HTTRACKRC ".httrackrc"
-#define HTS_HTTRACKCNF HTS_ETCPATH"/httrack.conf"
+#define HTS_HTTRACKCNF HTS_ETCPATH "/httrack.conf"
 
 #ifdef DATADIR
-#define HTS_HTTRACKDIR DATADIR"/httrack/"
+#define HTS_HTTRACKDIR DATADIR "/httrack/"
 #else
-#define HTS_HTTRACKDIR HTS_PREFIX"/share/httrack/"
+#define HTS_HTTRACKDIR HTS_PREFIX "/share/httrack/"
 #endif
 
 #endif
 
-/* Taille max d'une URL */
+/* Maximum URL length, in bytes. Callers size URL/path string buffers to this;
+   anything longer is rejected. */
 #define HTS_URLMAXSIZE 1024
-/* Taille max ligne de commande (>=HTS_URLMAXSIZE*2) */
+/* Command-line argument cap, in bytes: an argument this long or longer is
+   rejected. A buffer holding a message built around one adds +256. */
 #define HTS_CDLMAXSIZE 1024
+/* MIME-type buffer contract (htsblk.contenttype/charset/contentencoding); holds
+   the longest registered MIME type, the Office OOXML ones reaching 73 chars */
+#define HTS_MIMETYPE_SIZE 128
+/* Capacity behind the htsblk.location pointer; the Location header is gated
+   against this, not against HTS_URLMAXSIZE */
+#define HTS_LOCATION_SIZE (HTS_URLMAXSIZE * 2)
 
-/* Copyright (C) 1998-2017 Xavier Roche and other contributors */
-#define HTTRACK_AFF_AUTHORS "[XR&CO'2014]"
-#define HTS_DEFAULT_FOOTER "<!-- Mirrored from %s%s by HTTrack Website Copier/" HTTRACK_AFF_VERSION " " HTTRACK_AFF_AUTHORS ", %s -->"
-#define HTTRACK_WEB "http://www.httrack.com"
-#define HTS_UPDATE_WEBSITE "http://www.httrack.com/update.php3?Product=HTTrack&Version=" HTTRACK_VERSIONID "&VersionStr=" HTTRACK_VERSION "&Platform=%d&Language=%s"
+/* Caps on single option arguments, in bytes, exclusive like HTS_CDLMAXSIZE.
+   They bound the value, not a buffer: these option fields are dynamic Strings.
+   Named so the front ends can check against them instead of copying them. */
+#define HTS_FOOTER_MAXSIZE 254    /* -%F */
+#define HTS_LANGISO_MAXSIZE 62    /* -%l */
+#define HTS_REFERER_MAXSIZE 254   /* -%R */
+#define HTS_FILELIST_MAXSIZE 254  /* -%L */
+#define HTS_BINDHOST_MAXSIZE 254  /* -%b */
+#define HTS_FROMEMAIL_MAXSIZE 254 /* -%E */
+
+/* Copyright (C) 1998 Xavier Roche and other contributors */
+#define HTTRACK_AFF_AUTHORS "[XR&CO]"
+/* Named fields (hts_footer_format); a "%s" anywhere would switch the template
+   back to the legacy positional model, a user's own additions included. */
+#define HTS_DEFAULT_FOOTER                                                     \
+  "<!-- Mirrored from {url} by HTTrack Website Copier/" HTTRACK_AFF_VERSION    \
+  " " HTTRACK_AFF_AUTHORS ", {date} -->"
+/* Honest crawler User-Agent; no fake OS/browser to go stale. */
+#define HTS_DEFAULT_USER_AGENT                                                 \
+  "Mozilla/5.0 (compatible; HTTrack/" HTTRACK_AFF_VERSION                      \
+  "; +https://www.httrack.com/)"
+#define HTTRACK_WEB "https://www.httrack.com"
+/* Language=%s takes the catalog basename (LANGUAGE_FILE), an ASCII identifier;
+   LANGUAGE_NAME is a localized display string in a legacy codepage (#1353). */
+#define HTS_UPDATE_WEBSITE                                                     \
+  "http://www.httrack.com/"                                                    \
+  "update.php3?Product=HTTrack&Version=" HTTRACK_VERSIONID                     \
+  "&VersionStr=" HTTRACK_VERSION "&Platform=%d&Language=%s"
 
 #define H_CRLF "\x0d\x0a"
-#define CRLF   "\x0d\x0a"
+#define CRLF "\x0d\x0a"
 #ifdef _WIN32
 #define LF "\x0d\x0a"
 #else
 #define LF "\x0a"
 #endif
 
-/* équivaut à "paramètre vide", par exemple -F (none) */
+/* Sentinel meaning "empty parameter", e.g. -F (none) */
 #define HTS_NOPARAM "(none)"
 #define HTS_NOPARAM2 "\"(none)\""
 
-/* maximum et minimum */
-#define maximum(A,B) ( (A) > (B) ? (A) : (B) )
-#define minimum(A,B) ( (A) < (B) ? (A) : (B) )
+/* Boolean flag for option fields and API yes/no returns. Int-backed, not an
+   enum: an enum makes C++ reject `field = 1` / `f(0)` on the exported fields
+   and params. Int-sized, so the httrackp layout and the ABI are unchanged. */
+#ifndef HTS_DEF_DEFSTRUCT_hts_boolean
+#define HTS_DEF_DEFSTRUCT_hts_boolean
 
-/* chaine no empty ? (and not null) */
+typedef int hts_boolean;
+#define HTS_FALSE 0
+#define HTS_TRUE 1
+#endif
+
+#ifndef HTS_DEF_DEFSTRUCT_hts_tristate
+#define HTS_DEF_DEFSTRUCT_hts_tristate
+/* Tri-state hts_boolean: HTS_DEFAULT (-1) = "unspecified" (copy_htsopt leaves
+   the target untouched); HTS_FALSE/HTS_TRUE = off/on. */
+typedef int hts_tristate;
+#define HTS_DEFAULT (-1)
+#endif
+
+/* Larger/smaller of two values. Macros: arguments are evaluated twice. */
+#define maximum(A, B) ((A) > (B) ? (A) : (B))
+
+#define minimum(A, B) ((A) < (B) ? (A) : (B))
+
+/* True when A is a non-NULL, non-empty string. */
 #define strnotempty(A) (((A) != NULL && (A)[0] != '\0'))
 
-/* optimisation inline si possible */
+/* Compile-time check, usable as an expression. */
+#define HTS_COMPILE_ASSERT(cond) ((void) sizeof(char[(cond) ? 1 : -1]))
+
+/* The same where a declaration goes, which is where a rule tying constants
+   together belongs. NAME is what the diagnostic points at. Takes a ';'. */
+#define HTS_STATIC_ASSERT(cond, name)                                          \
+  enum { hts_static_assert_##name = 1 / !!(cond) }
+
+/* 'inline' where the dialect supports it (C++), nothing in plain C. */
 #ifdef __cplusplus
 #define HTS_INLINE inline
 #else
 #define HTS_INLINE
 #endif
 
-/* thread-local storage */
-#if defined(_MSC_VER)
-#define HTS_TLS __declspec(thread)
-#elif defined(__GNUC__)
-#define HTS_TLS __thread
-#else
-/* no thread-local storage: the few users of this fall back to being as
-   unsafe as the libc functions they wrap, which is the status quo ante */
-#define HTS_TLS
-#endif
-
-/* function which never returns to its caller.
-   Marking the assert helper with this lets the compiler and the static
-   analyzer treat assertf() as a real precondition, rather than assuming
-   execution continues past a failed one. */
-#if defined(__GNUC__)
-#define HTS_NORETURN __attribute__((noreturn))
-#elif defined(_MSC_VER)
-#define HTS_NORETURN __declspec(noreturn)
-#else
-#define HTS_NORETURN
-#endif
-
+/* Marks a symbol as part of the library's public ABI: exported from
+   libhttrack and visible to callers. Symbols without it stay internal (hidden
+   under -fvisibility=hidden). Expands to dllexport when building the library,
+   dllimport when consuming it, and the visibility("default") attribute on
+   ELF. */
 #ifdef _WIN32
 #ifdef LIBHTTRACK_EXPORTS
 #define HTSEXT_API __declspec(dllexport)
@@ -265,102 +342,110 @@ Please visit our Website: http://www.httrack.com
 #endif
 #else
 /* See <http://gcc.gnu.org/wiki/Visibility> */
-#if ( ( defined(__GNUC__) && ( __GNUC__ >= 4 ) ) \
-      || ( defined(HAVE_VISIBILITY) && HAVE_VISIBILITY ) )
-#define HTSEXT_API __attribute__ ((visibility ("default")))
+#if ((defined(__GNUC__) && (__GNUC__ >= 4)) ||                                 \
+     (defined(HAVE_VISIBILITY) && HAVE_VISIBILITY))
+
+#define HTSEXT_API __attribute__((visibility("default")))
 #else
 #define HTSEXT_API
 #endif
 #endif
 
-#ifndef HTS_LONGLONG
-#ifdef HTS_NO_64_BIT
-#define HTS_LONGLONG 0
+/**
+ * Mark a function deprecated, with a message pointing at the replacement.
+ * Placed before the declaration so both the GCC/Clang attribute and the MSVC
+ * __declspec sit in a position both accept. Degrades to nothing elsewhere.
+ */
+#if defined(__GNUC__) &&                                                       \
+    (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 5))
+
+#define HTS_DEPRECATED(msg) __attribute__((deprecated(msg)))
+#elif defined(__GNUC__)
+
+#define HTS_DEPRECATED(msg) __attribute__((deprecated))
+#elif defined(_MSC_VER) && (_MSC_VER >= 1400)
+
+#define HTS_DEPRECATED(msg) __declspec(deprecated(msg))
 #else
-#define HTS_LONGLONG 1
-#endif
-#endif
-
-// long long int? (or int)
-// (and int cast for system functions like malloc() )
-
-#if HTS_LONGLONG
-#ifdef LLINT_FORMAT
-typedef LLINT_TYPE LLint;
-typedef LLINT_TYPE TStamp;
-
-#define LLintP LLINT_FORMAT
-#else
-
-#ifdef _WIN32
-typedef __int64 LLint;
-typedef __int64 TStamp;
-
-#define LLintP "%I64d"
-#elif (defined(_LP64) || defined(__x86_64__) \
-       || defined(__powerpc64__) || defined(__64BIT__))
-typedef long int LLint;
-typedef long int TStamp;
-
-#define LLintP "%ld"
-#else
-typedef long long int LLint;
-typedef long long int TStamp;
-
-#define LLintP "%lld"
+#define HTS_DEPRECATED(msg)
 #endif
 
-#endif /* HTS_LONGLONG */
-
+/* Never returns; placed before the declaration, where GCC/Clang and MSVC both
+   accept it. */
+#if defined(__GNUC__)
+#define HTS_NORETURN __attribute__((noreturn))
+#elif defined(_MSC_VER)
+#define HTS_NORETURN __declspec(noreturn)
 #else
-typedef int LLint;
-
-#define LLintP "%d"
-typedef double TStamp;
+#define HTS_NORETURN
 #endif
 
-#ifdef LFS_FLAG
+/* LLint/TStamp: signed exact-width 64-bit; -1 is a sentinel engine-wide. */
+typedef int64_t LLint;
+typedef int64_t TStamp;
+/* Full printf conversion, '%' included (PRId64 has none): "X: " LLintP. */
+#define LLintP "%" PRId64
+
+/* Integer type for file offsets/sizes passed to the C library; INTsysP is its
+   printf conversion. HTS_LFS is the large-file macro: LFS_FLAG is a configure
+   make variable carrying the -D flags, never itself defined. */
+#if defined(HTS_LFS) || defined(_MSC_VER)
 typedef LLint INTsys;
 
 #define INTsysP LLintP
-#ifdef __linux
-#define HTS_FSEEKO
-#endif
 #else
 typedef int INTsys;
 
 #define INTsysP "%d"
 #endif
 
+/* Socket-handle type. An unsigned integer wide enough for a Windows SOCKET;
+   a plain int file descriptor on POSIX. T_SOCP is its printf conversion,
+   '%' included: unsigned __int64 on Win64 must not be printed with "%d". */
 #ifdef _WIN32
 #if defined(_WIN64)
+
 typedef unsigned __int64 T_SOC;
+#define T_SOCP "%" PRIu64
 #else
 typedef unsigned __int32 T_SOC;
+#define T_SOCP "%" PRIu32
 #endif
 #else
 typedef int T_SOC;
+#define T_SOCP "%d"
 #endif
 
-/* IPV4, IPV6 and various unified structures */
+/* Buffer size for a printed network address (IPv4 or IPv6, NUL included). */
 #define HTS_MAXADDRLEN 64
+
+/* Max resolved addresses kept per host for connect fallback (dead IPv6 etc.).
+ */
+#define HTS_MAXADDRNUM 4
 
 #ifdef _WIN32
 #else
 #define __cdecl
 #endif
 
-/* mode pour mkdir ET chmod (accès aux fichiers) */
-#define HTS_PROTECT_FOLDER (S_IRUSR|S_IWUSR|S_IXUSR)
+/* Permission bits for created folders and files (mkdir and chmod).
+   PROTECT_FOLDER/FILE are owner-only. With HTS_ACCESS set (the default) the
+   ACCESS_ modes also grant group/other read; otherwise they stay owner-only. */
+#define HTS_PROTECT_FOLDER (S_IRUSR | S_IWUSR | S_IXUSR)
+#define HTS_PROTECT_FILE (S_IRUSR | S_IWUSR)
+
 #if HTS_ACCESS
-#define HTS_ACCESS_FILE (S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH)
-#define HTS_ACCESS_FOLDER (S_IRUSR|S_IWUSR|S_IXUSR|S_IRGRP|S_IXGRP|S_IROTH|S_IXOTH)
+#define HTS_ACCESS_FILE (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
+
+#define HTS_ACCESS_FOLDER                                                      \
+  (S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH)
 #else
-#define HTS_ACCESS_FILE (S_IRUSR|S_IWUSR)
-#define HTS_ACCESS_FOLDER (S_IRUSR|S_IWUSR|S_IXUSR)
+#define HTS_ACCESS_FILE (S_IRUSR | S_IWUSR)
+
+#define HTS_ACCESS_FOLDER (S_IRUSR | S_IWUSR | S_IXUSR)
 #endif
 
-/* vérifier la déclaration des variables préprocesseur */
+/* Sanity-check that the required preprocessor switches are defined */
 #ifndef HTS_DOSNAME
 #error | HTS_DOSNAME Has not been defined.
 #error | Set it to 1 if you are under DOS, 0 under Unix.
@@ -370,22 +455,26 @@ typedef int T_SOC;
 #error
 #endif
 #ifndef HTS_ACCESS
-/* Par défaut, accès à tous les utilisateurs */
+/* Default: files readable by all users */
 #define HTS_ACCESS 1
 #endif
 
 /* fflush sur stdout */
-#define io_flush { fflush(stdout); fflush(stdin); }
+#define io_flush                                                               \
+  {                                                                            \
+    fflush(stdout);                                                            \
+    fflush(stdin);                                                             \
+  }
 
 /* HTSLib */
 
-// Cache DNS, accélère les résolution d'adresses
+// Enable the DNS cache (speeds up address resolution)
 #define HTS_DNSCACHE 1
 
-// ID d'une pseudo-socket locale pour les file://
+// Pseudo-socket id standing in for a local file:// transfer
 #define LOCAL_SOCKET_ID -2
 
-// taille de chaque buffer (10 sockets 650 ko)
+// Per-connection transfer buffer size, in bytes
 #define TAILLE_BUFFER 65536
 
 #ifdef HTS_DO_NOT_USE_PTHREAD
@@ -395,7 +484,7 @@ typedef int T_SOC;
 
 #ifdef _DEBUG
 // trace mallocs
-//#define HTS_TRACE_MALLOC
+// #define HTS_TRACE_MALLOC
 #ifdef HTS_TRACE_MALLOC
 typedef unsigned long int t_htsboundary;
 
@@ -409,6 +498,7 @@ struct mlink {
   int id;
   struct mlink *next;
 };
+
 static const t_htsboundary htsboundary = 0xDEADBEEF;
 #endif
 #endif
@@ -422,7 +512,7 @@ static const t_htsboundary htsboundary = 0xDEADBEEF;
 /* Debugging                                                    */
 /* ------------------------------------------------------------ */
 
-// débuggage types
+// type-detection debug
 #define DEBUG_SHOWTYPES 0
 // backing debug
 #define BDEBUG 0
@@ -440,28 +530,28 @@ static const t_htsboundary htsboundary = 0xDEADBEEF;
 #define DEBUG_ROBOTS 0
 // debug hash
 #define DEBUG_HASH 0
-// Vérification d'intégrité
+// integrity-check debug
 #define DEBUG_CHECKINT 0
 // nbr sockets debug
 #define NSDEBUG 0
 
-// débuggage HTSLib
+// HTSLib debug
 #define HDEBUG 0
 // surveillance de la connexion
 #define CNXDEBUG 0
 // debuggage cookies
 #define DEBUG_COOK 0
-// débuggage hard..
+// heavy/low-level debug
 #define HTS_WIDE_DEBUG 0
 // debuggage deletehttp et cie
 #define HTS_DEBUG_CLOSESOCK 0
-// debug tracage mémoire
+// memory-tracing debug
 #define MEMDEBUG 0
 
 // htsmain
 #define DEBUG_STEPS 0
 
-// Débuggage de contrôle
+// Derived debug control switches
 #if HTS_DEBUG_CLOSESOCK
 #define _HTS_WIDE 1
 #endif
@@ -471,7 +561,13 @@ static const t_htsboundary htsboundary = 0xDEADBEEF;
 #if _HTS_WIDE
 extern FILE *DEBUG_fp;
 
-#define DEBUG_W(A)  { if (DEBUG_fp==NULL) DEBUG_fp=fopen("bug.out","wb"); fprintf(DEBUG_fp,":>"A); fflush(DEBUG_fp); }
+#define DEBUG_W(A)                                                             \
+  {                                                                            \
+    if (DEBUG_fp == NULL)                                                      \
+      DEBUG_fp = fopen("bug.out", "wb");                                       \
+    fprintf(DEBUG_fp, ":>" A);                                                 \
+    fflush(DEBUG_fp);                                                          \
+  }
 #undef _
 #define _ ,
 #endif

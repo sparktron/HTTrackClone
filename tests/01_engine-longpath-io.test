@@ -1,0 +1,14 @@
+#!/bin/bash
+#
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# Drives -#test=longpath: a >MAX_PATH round trip exercising hts_pathToUCS2's
+# \\?\ prefixing on Windows (#133); a positive control on POSIX.
+dir=$(mktemp -d)
+cleanup_push rm -rf "$dir"
+
+selftest_queue_base_lengths tail "-char path: OK" longpath "$dir"
+selftest_run_queued

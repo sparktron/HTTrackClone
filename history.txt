@@ -4,7 +4,15 @@ HTTrack Website Copier release history:
 
 This file lists all changes and fixes that have been made for HTTrack
 
-unreleased
+fork (sparktron/HTTrackClone)
++ Merged upstream 3.50-3. The entries below are the fork's own changes from
+  before that sync. Where upstream fixed the same bug, upstream's fix is the
+  one in the tree. The -#8 and -#9 test-bench commands are gone; upstream's
+  -#test=cookies and -#test=robots self-tests replace them.
++ Fork-only: https certificates are verified; upstream never verifies.
+  -%V0 (--insecure, --no-check-certificate) turns that off.
++ Fixed (fork-only): ProxyTrack's WebDAV listing computed offsets as NULL + n,
+  undefined behaviour that clang's UndefinedBehaviorSanitizer reports.
 + Fixed: thread safety. localtime()/gmtime()/strerror()/gethostbyname() all
   return pointers into shared static storage, and were being called from
   crawler worker threads, so concurrent calls corrupted each other's results
@@ -51,8 +59,8 @@ unreleased
 + SECURITY: https certificates are now verified (chain and hostname) against
   the system trust store, and TLS 1.2 is the minimum protocol version.
   Previously any certificate was accepted, so anyone on the network path
-  could choose what a https mirror wrote to disk. Use '-%g'
-  (--insecure, --no-check-certificate) to restore the old behaviour for a
+  could choose what a https mirror wrote to disk. Use '-%V0'
+  (--insecure, --no-check-certificate; was '-%g' before the 3.50-3 sync) to restore the old behaviour for a
   host whose certificate the local trust store does not know about.
 + Fixed: out-of-bounds read in cookie domain matching: the comparison loop
   counted down with an unsigned index and never terminated, reading off the
@@ -65,6 +73,463 @@ unreleased
 + New: -#8 test-bench command, checks cookie domain scoping
 + New: continuous integration, with gcc/clang warning gates, an
   AddressSanitizer/UndefinedBehaviorSanitizer build, and a static analyzer run
+
+3.50-3
++ Fixed: -V pasted the name of each saved page into the shell command it runs. The name comes from a crawled URL, so a page saved as a;rm -rf ~;.html ran what its name said. The name is an argument now, and $0 expands only in a plain word, inside "..." and inside '...' (#1710)
++ Fixed: --catchurl bound its capture proxy to the address the machine's host name resolves to, so anyone on the network could take the browser's slot and read the cookies it carries. It binds 127.0.0.1 now (#1701)
++ Fixed: -m did not bound a chunked response, whose length the server never announces, so the body grew for as long as the server kept sending. A failed growth then wrote past the end of the buffer (#1709)
++ Changed: the mirror footer is built with bounded writes. Nothing that reaches that buffer today can overflow it, so this is hardening (#1686)
++ Fixed: a site writing a "User-agent: httrack" group and then a "User-agent: *" group had both groups applied to it, so pages the site allows us were skipped and nothing said so. RFC 9309 makes the groups exclusive (#1702)
++ Fixed: a crawl hung forever at teardown when a front end's thread runner cut an FTP worker short (#1671)
++ Fixed: libhttrack killed the program embedding it when a peer went away mid-write, because only httrack itself ever set a SIGPIPE disposition (#1691)
++ Fixed: a run with no log file, which -Q asks for, reported zero errors however many it hit, so a front end announced success over a holed mirror (#1683)
++ Fixed: a corrupt hts-cache was repaired through a file the repair had failed to open, which crashed the crawl (#1699)
++ Fixed: the hts-isalive status dump killed the crawl when its file would not open. It falls back to stdout now (#1704)
++ Fixed: a refused allocation lost the buffer the charset converters were growing (#1703)
++ Fixed: two workers failing at the same time could print each other's error message (#1707)
++ New: a front end can read stat_transport_failures beside stat_errors, to tell a link the server refused from one whose transfer failed (#1676)
++ New: hts_set_thread_runner() is declared in an installed header, so an embedder no longer writes the prototype by hand (#1664)
++ Changed: multiple internal hardening, test and CI improvements
+
+3.50-2
++ New: a running mirror can be stopped or paused by writing hts-abort.lock or hts-stop.lock into the output directory, and a stop keeps the work done so far. The man page documents the four lock files (#1549)
++ New: the lock files work on every platform. They matter most on Windows, which has no signal to send (#1549)
++ New: --enable-ipv6 and --disable-ipv6 pin IPv6 support. It used to follow whatever the build machine had, and it changes the layout of an installed struct, so two builds of the same source disagreed without saying so (#1552)
++ Fixed: --disable-ipv6 failed to build, and on an IPv4-only build -@i2 exited 255 (#1552)
++ New: --disable-auto-features stops the build machine from deciding which optional codings and libraries are compiled in, so a packager gets the same binary from the same recipe. --enable-backtrace=yes/no/auto and --with-iconv[=DIR] pin two more of those choices (#1509)
++ New: an embedding application can ask hts_mirror_completed() whether the last mirror reached the end of its crawl. The return code of hts_main2() cannot answer that, because a mirror the user stopped returns 0 just like a finished one (#1660, #1662)
++ New: each front end needs a change of its own before it can tell a mirror the user stopped from a completed one (#1660)
++ New: an embedding application can wrap each engine worker thread in its own crash handler with hts_set_thread_runner(), and --disable-crash-test compiles out the -#c crash test, which such an application used to ship as a deliberate crash reachable from its command line (#1630)
++ New: hts_findgetsize64() returns the size of a file past 2 GB (#1546)
++ Fixed: hts_findgetsize() reported a 5 GB file as 1 GB, so a program sizing a buffer from it got a short one. It now returns -1 past 2 GB rather than a wrong number (#1546)
++ New: the shipped changecontent example plugin takes an own mode, written as --wrapper mycallback,own,OLD=NEW. The plugin then answers with a buffer of its own, so the new text may be longer than the text it replaces. html/plug.html describes both kinds of reply (#1602)
++ New: --help prints the [compiled: ...] platform line again, missing since 2012 and useful in a bug report (#1559)
++ Fixed: a crafted page could kill the crawler outright on an ordinary httrack http://host/ -O dir run. Five buffers whose width the page decides reached a helper that aborts rather than truncates (#1561)
++ Fixed: the five buffers were reached through a charset that turns one byte into three, an applet codebase, URL userinfo, a stored credential prefix and a punycode host (#1561)
++ Fixed: two out-of-memory paths killed the crawler where the rest of the engine only fails the page, and an unallocatable table of connection slots crashed instead of reporting itself (#1578, #1586)
++ Fixed: a crawled page could name a local file with >postfile:, and the engine opened that file and sent it to the server that served the page (#1600)
++ Fixed: a >postfile: request read past the end of its buffer, so bytes of the program's own stack went out on the wire (#1587)
++ Fixed: a crafted size header in httrack's own hts-cache backlog ready table wrapped the allocation that reads it to zero, so the engine wrote a guard byte outside that allocation (#1503)
++ Fixed: a response of 2 GB or more was loaded into memory although the code that reads it indexes with an int, and a file of exactly 4 GB read back for parsing was divided by a length that the same cast turned into zero (#1515)
++ Fixed: with --single-file, a page whose first byte opened a url() reference made the parser read one byte in front of the response body (#1519)
++ Fixed: a status line of "HTTP/1.1 4294967496 OK" wrapped to 200, so the page was mirrored as a successful fetch, and a reason phrase carrying a bare CR was written into hts-log.txt where it read as a line the engine wrote (#1565)
++ Fixed: about 40 KB of request headers killed the -#P URL catcher. The catcher binds to the address the host name resolves to, so another machine can reach it (#1576)
++ Fixed: the -#P URL catcher dropped a request header line longer than its buffer without a word, so it lost the cookie it was opened to capture (#1591)
++ Fixed: twenty -%X header lines killed the crawl, because nothing summed the parts of a request against the 16 KB buffer it is built in (#1579)
++ Fixed: a postprocess plugin reporting a wrong size made HTTrack save an empty page with no message, or copy heap memory past the page into the mirrored file (#1592)
++ Fixed: the shipped changecontent example plugin read past the end of the page buffer, and the plugin documentation gave preprocess's buffer rule to postprocess, which does not own its reply (#1593)
++ Fixed: ProxyTrack served one client another page's headers and body when an .arc record declared a length reaching into the record stored after it (#1526)
++ Fixed: ProxyTrack sent the uninitialised tail of its own buffer when a cache entry named a file shorter than its declared size (#1521)
++ Fixed: on a 32-bit build ProxyTrack wrote a string terminator outside an allocation sized from a forged X-Size field, and a truncated or corrupt legacy .ndx or .dat cache aborted it instead of being refused (#1517, #1569)
++ Fixed: long crawls leaked memory in four places. The parser's output buffer leaked on every bailout, and so did the cookie jar's basic-auth list, the built-in server's 32 KB request buffer, and a ZIP member record when writing the cache failed (#1564, #1528)
++ Fixed: cookies exported from a browser were ignored or sent to the wrong host. HTTrack stored them under the host with its port still attached, so a mirror of a site on :8080 lost the session (#1610)
++ Fixed: a cookies.txt domain field written with a capital letter was never sent (#1635)
++ Fixed: an IPv6 host with a zone id kept its %25 escape in the cookie jar and was dropped with no message (#1634)
++ Fixed: a cookie set for example.com was also sent to wwwexample.com, and a jar entry with an empty domain went to every host (#1640)
++ Fixed: a mirror that stopped early threw away what a resume needs. A front end's Stop button ended it as if it had finished, and --max-size and --max-time erased the byte ranges of the files left half written (#1583, #1605)
++ Fixed: a first ^C kept the partial files but deleted the data that would have resumed them. A later re-crawl then asked for a range past the end of a restored copy, got a 416 and deleted the complete file (#1597)
++ Fixed: after an aborted mirror the message told the user to erase the cache that a --continue resume needs, and the engine kept the smaller of the two cache generations, so a crawl stopped halfway lost the complete one on its next run (#1636)
++ Fixed: an hts-stop.lock left in a reused output directory paused the next mirror on its first poll, and a stop or pause written during the mirror's first second was ignored for the rest of the run (#1619)
++ Fixed: HTTrack rewrote text in a script that was never a link. new URL(x) matched the CSS url( token, so a mirrored bundle stopped parsing (#1581)
++ Fixed: a JavaScript string ending in a slash counted as a link, so split("/") became split("index-2.html"). A script link such as "/#top" is still rewritten, so it still resolves under file:// (#1612, #1618)
++ Fixed: a URL rewritten inside a script or a stylesheet was HTML-escaped, and neither JavaScript nor CSS decodes an entity, so the mirrored page broke in the browser (#1616)
++ Fixed: a consumed base element was saved with an empty attribute list, which stops an Angular application starting (#1582)
++ Fixed: a base element whose href is relative, such as "./", was read as a host name, so none of the page's own assets were fetched and the crawl still reported a clean mirror (#1599)
++ Fixed: with --replace-external, every image but .gif, .jpg and .xbm got the HTML placeholder instead of external.gif, so the browser drew a broken image. .jpeg was one of the misses, although it sits in the default filter set the GUI ships (#1609)
++ Fixed: a cached page whose stored CRC did not match went into the mirror without a word (#1525)
++ Fixed: on an update crawl --sizehack decided from the cache index alone, so a page was kept whenever its recorded length matched, and a mirrored file edited by hand was dropped and never fetched again (#1527)
++ Fixed: a mirror interrupted on one machine and resumed on another read its own resume state with the wrong word size and byte order. That state is now written in a portable form (#1547)
++ Changed: an old hts-cache/ref file is refused rather than converted, so a mirror interrupted under 3.50.1 or earlier restarts those transfers from zero after the upgrade (#1547)
++ Fixed: httrack -#C printed "No cache entry found" over any cache, because it read a new.ndx index that nothing has written since 3.31 (#1551)
++ Fixed: running httrack with no arguments and nothing on stdin never stopped asking for a project name, printing 12674 prompts and 204 MB of help text in twelve seconds. Windows was worst, because there the wizard runs even with redirected input (#1548)
++ Fixed: three long options reached the option next to the one they name. --extract-cache listed the cache instead of extracting it, --autotest mirrored the site instead of running the autocheck, and --debug-testfilters named an option that no longer exists and mirrored its two filter arguments as URLs (#1524)
++ Fixed: --updatehttrack printed the usage, mirrored nothing and exited 0 (#1557)
++ Fixed: --help and the man page documented defaults the engine does not use. The -C default is C1 and not C2, and -R and the log mode starred the wrong entry (#1520, #1544)
++ Fixed: --fast-engine and --debug-overflows promised to do something and have no effect. The alias table was the only place that described them, so nothing else could correct it (#1544)
++ Fixed: the -@ options reported an unknown option under the wrong prefix, so -@z answered "invalid option %z" (#1559)
++ Fixed: the guide page html/fcguide.html still answered "Not yet!" to the SOCKS question years after SOCKS5 and CONNECT shipped. The FAQ page was already right (#1520)
++ Fixed: a build without dlopen still told the WebHTTrack interface that plugin loading was available, so the interface offered what the build could not do (#1559)
++ Fixed: in a build without OpenSSL an https link was rewritten against the page's own host and fetched over plain HTTP, and --enable-https=auto failed to build at all when OpenSSL was absent (#1545)
++ Fixed: in a build without iconv, a page declaring charset=windows-1252 was never decoded, because the built-in tables only knew the name cp1252, and a body starting with a NUL byte crashed the same decoder (#1509)
++ Fixed: --with-brotli=DIR and --with-zstd=DIR looked only in DIR/lib, so a lib64 prefix was ignored and configure silently used a system copy instead (#1502)
++ Fixed: none of --with-brotli=DIR, --with-zstd=DIR and --with-zlib=DIR looked under a multiarch triplet, so on Debian and Ubuntu both --with-brotli=/usr and --with-zlib=/usr failed with a hard error (#1510)
++ Fixed: on FreeBSD, NetBSD and DragonFly the engine could not find its own binary path and fell back to argv[0] (#1507)
++ Fixed: building the engine sources without running configure failed on the first file, because htsglobal.h always included the generated htsfeatures.h (#1632)
++ Fixed: a plugin including only httrack-library.h did not compile, because CHAIN_FUNCTION() needs types that header did not declare, and libhttrack.pc now names the OpenSSL include directory where the compiler cannot find it alone (#1522)
++ Fixed: the Windows build pinned an OpenSSL carrying three moderate advisories, CVE-2026-18798, CVE-2026-63072 and CVE-2026-63076 (#1598, #1622)
++ Changed: the WebHTTrack interface installs under $(datadir)/httrack/html/server rather than the documentation directory, which packagers strip (#1508)
++ Changed: with the wizard on, which is the default, a link whose address and path together exceed HTS_URLMAXSIZE*2 is refused instead of aborting the mirror. The refusal reaches the log at debug level only, so a very long URL that used to be crawled is now dropped in silence (#1576)
++ Changed: the second parameter of hts_request_stop() is now keep_resume. It was called force and was ignored. Pass true to keep the resume data of a mirror you stop (#1583)
++ Changed: the signature of hts_request_stop() does not move, so an embedding application that keeps passing HTS_FALSE loses that resume data and gets no compiler warning (#1583)
++ Changed: the language catalogs ship with LF line endings. They were pinned to CRLF for readers outside this tree, and both of those readers, WinHTTrack and httrack-android, strip the CR anyway (#1655)
++ Changed: the catalogs drop two messages WinHTTrack no longer shows, LANG_F22b and LANG_F24, and gain LANG_F22s for a mirror the user stopped. The change reaches lang.def and all 30 catalogs, so translators and the other front ends see it (#1657, #1660)
++ Changed: html/library.html lists the headers that are actually installed, gives the pkg-config line and points at the libtest examples, instead of pointing at a source file nobody can build outside the tree (#1523)
++ Changed: a program built against these headers now accepts a libhttrack whose option structure has grown, where the check demanded an exact size match and refused it. The check is compiled into the program, so it helps programs built from 3.50.2 on rather than ones already installed (#1659)
++ Changed: the mismatch message now names the two sizes. It used to print version strings while it compared sizes, one taken from the library at run time and one from the caller at compile time (#1659)
++ Changed: WebHTTrack refuses to start against a library it cannot use, where it printed "** CRITICAL:" and went on serving. HTTRACK_INCOMPATIBLE_VERSIONID is deleted (#1659)
++ Changed: multiple internal test, build and CI improvements
+
+3.50-1
++ Changed: a bug-fix release with no new features. A normal mirroring run behaves exactly as 3.50-0 did, and the fixes below are in ProxyTrack, in where make install puts its files, and in WebHTTrack on macOS
++ Fixed: ProxyTrack could hand one client the tail of another client's request over its ICP port, and an address could run past the buffer that logs it. The second fires on an ICP peer's address, or on the host's own when that is a full-form IPv6 (#1495, #1497)
++ Fixed: ProxyTrack read the dates in a cache as local time, so on a host outside UTC a WebDAV listing showed every entry shifted by the machine's own offset (#1491)
++ Fixed: quitting WebHTTrack on macOS left its icon bouncing in the Dock until a force quit (#1479)
++ Fixed: make install died with ELOOP when --docdir sat under the data directory, and a --datadir spelled with "//" left the served UI's link pointing out of a staging tree at the build host (#1488, #1489)
++ Fixed: the crash symbolizer needs <spawn.h>, which Android ships only from API 28, so a build without that header now compiles it out and keeps the raw trace (#1487)
++ Changed: multiple internal build, test and CI improvements (#1482, #1483, #1484, #1486, #1490, #1494)
+
+3.50-0
++ New: this is the engine the Windows and Android front ends ship on. WinHTTrack had not been released since 3.49-2 in May 2017, so a Windows user coming from it gets everything listed under 3.49-3 to 3.49-25 below in one step. The largest of those: HTTPS against modern servers, SOCKS5 and CONNECT proxies, Brotli and Zstandard, files past 2 GB, Windows paths past 260 characters, accented and non-Latin project names and paths, WARC output, --sitemap, --single-file, --changes and --host-alias, and an --update that keeps a good local copy when the server answers with an error
++ New: --disable-example-libs skips the ten example plugins four distributions used to un-install by hand (#1470)
++ Changed: the compiled-in /etc, /usr/bin and /usr/lib follow the configure directories, so a build with its own --prefix reads its own httrack.conf (#1469)
++ Changed: the installed headers no longer include autoconf's config.h, which collided with a consumer's own. The switches they read come from a generated htsfeatures.h (#1473)
++ Changed: --htmldir defaults to $(docdir)/html, so the manual's links to the release notes, the licence and the greetings resolve where it is installed (#1477)
++ Changed: shipped text files carry LF, so rpm packagers no longer dos2unix them (#1468)
++ Fixed: an Android or Termux build no longer needs hand-patching for backtrace() and a sys/timeb.h that bionic dropped (#1466, #1467)
++ Fixed: --with-zlib=DIR looked for the library in DIR/lib and nowhere else (#1472)
++ Fixed: three configure option checks truncated their error message at a comma (#1475)
++ Changed: multiple internal documentation, test and build improvements (#1462, #1464, #1465, #1471, #1474, #1476)
+
+3.49-25
++ Fixed: the crash report printed signal numbers with their digits reversed, so hppa's SIGBUS read as "Caught signal 01" (#1450)
++ Fixed: five catalogs credited the wrong translator in the About box and Romanian fell back to the English list. The credit now comes from each catalog's own author field, and the box drops a copyright stamped 1998-2003 and a development line that named a single Windows interface (#1453, #1454)
++ Changed: AUTHORS, greetings.txt and the contact page carry one contributor roster (#1453, #1455)
++ Changed: links to httrack.com in the About box, the man pages and the documentation use https. Two dead documentation links are repointed and one is dropped, the example hosts in --help and the documentation moved to example.com off domains someone else owns, and the README names macOS and Android where it described a Windows 2000/XP/Vista/Seven release (#1457)
++ Changed: multiple internal test and build improvements (#1451, #1452, #1456)
+
+3.49-24
++ New: the engine says when it gave up. A mirror abandoned on a fatal write, a full disk or an exhausted link table returns 3 (HTS_EXIT_MIRROR_ABORTED) rather than printing "Done." and exiting 0; a mirror stopped on purpose, by --max-time, --max-size or a front end, still returns 0 (#1419, #1428)
++ New: a file kept from disk instead of fetched is named in the log at the default verbosity, where the four sites that do it used to say nothing outside debug output (#1378)
++ Fixed: a script served as text/javascript, application/javascript or as an .mjs module was saved but never scanned, so every link inside it stayed out of the mirror; only the legacy application/x-javascript spelling worked (#1377)
++ Fixed: --update deleted live files in three shapes: a page that failed on its last retry took its whole subtree with it, a hub behind a redirect took what was below it, and a page named after its content type was unlinked while the index still pointed at it (#1390, #1414, #1431)
++ Fixed: an empty or absent Content-Type was read as hypertext, so an untyped blob held the update purge back as if it carried links, and an untyped PNG, PDF or ZIP reached disk with every NUL byte rewritten to a space (#1430)
++ Fixed: a failed write read as the end of the body, so a file cut short by a full disk was stored as complete and the mirror carried on (#1391, #1417)
++ Fixed: a host that failed to resolve during a connectivity outage was cached as dead for the rest of the crawl (#1392)
++ Fixed: an option value beginning with a dash, such as --assume "-foo=text/html", aborted the run before hts-log.txt existed and named an option nothing mentions (#1429)
++ Fixed: a long option's value was glued onto its short form unread, so --long-names=yes mirrored in DOS 8.3 names, --sockets=8I0 mirrored with no index, and --sockets=1234567890123456 asked for a billion connections, each at exit 0. Values are now range-checked against the parser that reads them, and --structure=on names the default layout (#1427, #1436, #1439)
++ Fixed: --structure took its template as a URL, so it mirrored with the default layout and crawled the template (#1418)
++ Fixed: --filelist and --filterlist were refused as options that take no value, while --list and --urllist worked (#1379)
++ Changed: --structure takes on, off, a preset number or a template, and refuses everything else. The cluster tails it used to accept are now errors: --structure=8I0 mirrored with no index files at exit 0, and --structure=1L0 did what it says but cannot be told apart from it. The spellings flat, none, default, yes and -1 are refused too (#1418, #1443)
++ Changed: a bare -L selects L1, the default the help and man page already name, where it used to fall through to DOS 8.3 names (#1436)
++ Fixed: --wide-mirror and the other prefixed action aliases dropped the connection count the prefix exists to add, so --wide-mirror ran at the default four connections; a prefix on an alias whose expansion cannot carry the count now warns instead of silently ignoring it (#1424)
++ Fixed: get_ext() copied past the query string and one byte past its buffer, so a parameterised URL was typed by the wrong extension (#1435)
++ Fixed: -#C faulted on the first cache entry it listed (#1412)
++ Fixed: a bracketed IPv6 authority lost its port (#1383)
++ Fixed: a bodyless 308 drew a big-file warning it had no body to earn (#1382)
++ Fixed: the WARC index recorded offsets past 2 GB wrongly, and three writers failed silently; abandoning a zip entry reported success when nothing was truncated (#1381, #1413)
++ Fixed: htsserver refused the machine's own name, advertised URLs a browser cannot open, answered any Host, decoded a malformed percent-escape to a NUL, and accepted a posted project path climbing out of its directory (#1372, #1408, #1376, #1359)
++ Changed: the loopback bind htsserver ships with is now the server's own default rather than a literal its caller passed, and --bind stays the deliberate way to widen it; the default no longer goes through the resolver, so a host with a broken getaddrinfo starts where it used to fail (#1366)
++ Fixed: WebHTTrack served the progress panel in place of the documentation and the About box from the moment a crawl started (#1445)
++ Changed: the WebHTTrack panel drops its File and Help popups, whose file:// links no browser follows from an http: page. The top bar carries one Manual link, each pane links to its own section of the guide, and About opens from the footer; browsing an older mirror stays on webhttrack browse and its desktop entry. WinHTTrack's keyboard-accelerator markers no longer show as text, so Finnish stops spelling its help link "O&hje" (#1445)
++ Fixed: WebHTTrack could not turn its cache boxes off, wrote type-check rules it never put on the command line, and turned the header off when the browser-id box was cleared (#1385, #1422)
++ Fixed: the option-error diagnostics could be overflowed by an oversized replayed token (#1356)
++ Fixed: on Windows the strict UTF-8 converter silently substituted a lookalike character instead of reporting the loss (#1410)
++ Fixed: a translated combo list with the wrong row count selected the neighbouring option, and several catalog values had lost a placeholder or broken an escape (#1400, #1375)
++ Fixed: ProxyTrack passed a cache size no reader can hold to malloc() (#1389)
++ Fixed: WinHTTrack and WebHTTrack sent the update endpoint two different language parameters (#1361)
++ Changed: the language catalogs are UTF-8 and LANGUAGE_CHARSET is gone; Greek.txt was declared ISO-8859-7 while written in cp1253 (#1407, #1403)
++ Changed: the guide's screenshots were reshot for all three interfaces, it now covers the notification prompt Android raises when a crawl starts, and the FAQ no longer answers with Windows-only paths (#1446, #1448, #1369)
++ Changed: multiple internal hardening, test and build improvements
+
+3.49-23
++ Fixed: a header typed into the extra-headers box was sent twice, since the engine wrote its own copy of the same line; the typed line now replaces the engine's where that is safe, and the engine keeps the ones a duplicate would corrupt (#1337, #1340)
++ Fixed: rebuilding the top index truncated index.html in place, so a reader who opened it mid-rebuild got a blank or partial page (#1329)
++ Fixed: a URL added to a running mirror was recorded under a placeholder name and then dropped as a duplicate, and injecting one through htsserver crashed the engine outright (#1253)
++ Fixed: an over-long filter rule was refused with the wrong limit quoted (#1288)
++ Fixed: a crawled link long enough to fill the save-name buffer aborted the mirror under -N '<template>', and a long %[param] value in the same branch overran the buffers behind it (#1295)
++ Fixed: a line longer than its read buffer had the unread tail read back as another record, so a robots.txt rule past 1 KB could re-open the path it forbade (#1294)
++ Fixed: a scan rule's size clause kept only the first of its two bounds, so *[>1<80] applied one and dropped the other (#1303)
++ Fixed: WebHTTrack never saved or restored a proxy (#1325)
++ Fixed: WebHTTrack filed three option checkboxes under each other's keys, so a project made in WinHTTrack or on Android reopened with those three settings rotated (#1324)
++ Fixed: a combo box or a list saved by WinHTTrack read back as the neighbouring setting in WebHTTrack; a WebHTTrack project saved before this release reopens one option off once, and the next save corrects it (#1314)
++ Fixed: WebHTTrack's scan-rule list was one slot short, so its default sent --priority=7 (get HTML first) in place of --priority=3 (save all), and its last entry sent nothing (#1323)
++ Fixed: WebHTTrack passed a WARC or sitemap value to the command line even when the box owning it was cleared; the CDXJ box also greys out under a clear WARC box, which is the state where ticking it did nothing (#1335, #1336)
++ Fixed: --single-file-max-size with a value that is not a positive number enabled single-file on the built-in cap instead of refusing the run (#1335)
++ Fixed: WebHTTrack offered a mirror mode whose questions it has no way to ask (#1237)
++ Fixed: the WebHTTrack language menu named half the languages in English, and now shows each one in its own name and script (#116)
++ Changed: the macOS disk image can be named for a prerelease channel rather than only for the engine version
++ Changed: multiple internal hardening, test and build improvements
+
+3.49-22
++ New: an interactive wizard question can be answered for a whole domain rather than for the one exact host it asked about; a front end enumerates the scopes on offer through the newly exported hts_wizard_host_scope() (#1117)
++ New: the -%F footer template takes named fields ("{url}", "{date}") in place of positional "%s", so a custom footer keeps working as the list grows; hts_footer_field_ok() exports the engine's own field list, which the help text and the guide are now generated from (#1240, #1256)
++ New: the per-option argument caps are macros in htsglobal.h (HTS_FOOTER_MAXSIZE and friends), so a front end can check a value against the engine's limit instead of copying it (#1262)
++ Fixed: a wizard answer decided a single link and vanished; it now becomes a filter that outranks the rules preceding it, applies for the rest of the mirror, and is written to hts-log.txt (#1249, #1250, #1251)
++ Fixed: a link the wizard authorized was mirrored under its ".delayed" placeholder name (#1254)
++ Fixed: the interactive wizard spun forever once stdin reached EOF (#1247)
++ Fixed: the wizard silently truncated the filter it built for a long host (#1264)
++ Fixed: several buffer overflows on long values read off the wire or the command line: --assume (#1276), a cookies.txt field (#1284), a filter or URL token in the option parser (#1271), the save name the cache rebuilds under a deeper -O (#1278), a crawled link just past the naming cap (#1269), and a -%F footer that exactly filled the page buffer (#1241)
++ Fixed: a filter rule longer than the matcher's cap was stored and never matched anything, while a rule that exactly fitted was refused by one byte (#1270, #1299)
++ Fixed: a redirect between 1 KB and 2 KB was refused by a gate half the size of the buffer holding it (#1291)
++ Fixed: a robots.txt whose rules ran past 4 KB was dropped without a word (#1286)
++ Fixed: a URL longer than 1024 bytes in a -%L list was split into two links (#1289)
++ Fixed: doit.log wrote a leading quote raw and swallowed the options after it, and stripped a quoted argument twice on the way back in (#1263)
++ Fixed: the credit tag in every mirrored page was dated 2014 (#1243)
++ Fixed: the index templates and their compiled-in copies had drifted apart, so the built-in fallback wrote a different page (#1244)
++ Fixed: an abandoned WebHTTrack server never stopped, holding the macOS application open (#1236)
++ Fixed: the filter documentation described a matcher the engine does not implement (#1302)
++ Changed: every language catalog carries the strings added since 3.49, and a value left in English no longer passes the integrity test (#1255, #1260)
++ Changed: multiple internal hardening, test and build improvements
+
+3.49-21
++ New: --host-alias (-%C) folds the several hostnames of one site onto a single canonical host, so a site that answers under more than one hostname is fetched once instead of once per name (#16)
++ New: the WebHTTrack wizard can set the host-alias rules and the guide documents them for every front end; a malformed rule is refused where it can still be corrected, through a newly exported hts_host_alias_rule_ok() (#1161, #1172, #1192)
++ Fixed: any signal caught during a mirror killed every transfer in flight, so a burst of them silently truncated the mirror; a stop now ends an HTTP transfer as the user's stop rather than a fabricated receive error (#1110)
++ Fixed: stopping an FTP transfer against a silent server waited out --timeout twice, once on the data socket and again on a QUIT reply nobody was going to send (#1096)
++ Fixed: a crawl that ended early ran --update's purge against the files it had never reached, deleting good ones (#1109)
++ Fixed: a long URL overflowed the duplicate-detection key buffer (#1160)
++ Fixed: a long command line, a large doit.log or a large .httrackrc aborted the engine while it rebuilt its arguments (#1189, #1198)
++ Fixed: a scan rule beginning with a dash ended the whole run (#1179)
++ Fixed: --index=0 and --noindex enabled the index rather than disabling it, and --purge-old=1 killed the run; an option that takes no value now refuses one instead of silently dropping it (#1195, #1200)
++ Fixed: reloading a WebHTTrack project lost every zero and every cleared field, so a rate limit of 0 came back as 100 KB/s and a cleared user-agent refilled itself (#1177, #1171, #1186)
++ Fixed: the wizard kept only the last of several --strip-query rules, and its domain answers matched beyond the domain they named (#1168, #1119)
++ Fixed: the offer to resume an interrupted mirror printed the program path instead of the command line it would rerun (#1204)
++ Fixed: the build failed where getrandom() has no declaration, and the installed headers did not compile under some include orders (#1139, #1150, #1151)
++ Changed: the documentation and the WebHTTrack pages compute their copyright year instead of carrying a fixed one (#1163, #1165)
++ Changed: refreshed the guide screenshots for all three interfaces, and repaired the documentation's dark mode and its search-target tabs (#1164, #1158)
++ Changed: multiple internal hardening, build, test and CI improvements
+
+3.49-20
++ Fixed: a link to another host whose name looked like a file was scanned as a page, so one link could mirror the whole foreign site on the referring page's depth budget (#121)
++ Fixed: a size-bounded filter built both of its filter URLs wrong when the path had no leading slash (#1095)
++ Fixed: a mirror told to quit while an FTP file was being received announced the exit and then waited forever on that slot (#1106)
++ Fixed: stopping an FTP transfer closed its data socket twice, so a threaded crawl could lose another worker's connection (#1090)
++ Fixed: WebHTTrack's welcome page opened its language menu blank instead of marking the language in use (#1084)
++ Fixed: two suite tests failed on the hppa, powerpc and ppc64 Debian buildds, holding the package back on those ports (#1108)
++ Fixed: a growable string could wrap its capacity to zero instead of saturating (#1062)
++ Changed: the macOS disk image carries its architecture in its name, so an Intel user can tell before downloading that the build is for Apple Silicon (#1083)
++ Changed: refreshed the GUI guide, its screenshots, the documentation typography and the footer contrast
++ Changed: settled on one spelling of the product name across the docs and the site
++ Changed: multiple internal hardening, build, test and CI improvements
+
+3.49-19
++ Fixed: an over-long user name in an ftp:// URL was truncated at the credential boundary, so the login went to a different account (#1032)
++ Fixed: an over-long FTP path or host name aborted the process instead of failing that one link (#1019)
++ Fixed: an FTP crawl ignored --timeout and --max-time, so a server that went quiet held a slot for five minutes (#1039)
++ Fixed: an FTP crawl of a dead host took two minutes to give up, and no signal could shorten it (#1059)
++ Fixed: the engine released the transfer slots while an FTP thread was still writing to one, crashing a mirror that hit its size or time limit (#1051)
++ Fixed: Ctrl-C did not shorten a connection or a name lookup already in flight, so ending a crawl against an unreachable host took minutes (#1073)
++ Fixed: a crawl that gave up mid-loop, on the link limit or an abort, lost its WARC archive and its change report, and a WARC written past teardown was stranded in a .tmp file (#1061, #1060)
++ Fixed: a crawl that rolled back for want of data still replaced the previous WARC archive, stranding its temporary and never writing its index; a stale or unwritable index is now reported rather than left silently in place (#1053)
++ Fixed: a resume the server answered with an unusable Content-Range deleted the partial file and never fetched it again; the restart no longer spends the retry budget, and is latched to one per link (#581, #1052)
++ Fixed: a long argument to -n or -O smashed the stack through an unbounded panic message, and the growable arrays could wrap their capacity to zero (#1040)
++ Fixed: --single-file could write a reference mark longer than it reads back, leaving it in the delivered page as visible text (#1054, #1069)
++ Fixed: on a terminal with no input left, a crawl toggled between the spinner and the full panel on every pass (#1072)
++ Fixed: -%v1 ended each line with a carriage return, so the lines overwrote each other and a redirected log was unreadable; -%v2 now paints its panel only on a terminal
++ Fixed: the installed socket headers did not compile under -std=c99 without _POSIX_C_SOURCE (#1001)
++ Fixed: the 16 px application icon rendered every stem as grey (#938)
++ Fixed: the desktop files installed outside the data directory, and the AppStream metainfo declared an icon name that is not a stock one
++ Fixed: the build failed on distributions whose coreutils are not GNU's (#1042)
++ Changed: --single-file drops its own HTML and CSS scanner and reuses the crawler's parser, so it follows the same references the mirror does (#749)
++ Changed: updated Turkish translation, and repaired two mangled Polish strings (#306)
++ Changed: multiple internal hardening, build, test and CI improvements
+
+3.49-18
++ Fixed: the 3.49.17 package build failed on four architectures: the test suite's mmap interposer did not compile on armhf, powerpc or hppa, and the alternate-stack test rejected loong64's shorter backtrace (#1023)
++ Fixed: the test suite failed on a host with no ps command, such as a Fedora build root; its hang diagnostics now read /proc directly (#1021)
++ Changed: multiple internal test and CI improvements, including a cross-compile matrix covering the Debian ports architectures
+
+3.49-17
++ New: a pkg-config file, libhttrack.pc, ships with the development headers (#1018)
++ Fixed: a crawled page could read the WebHTTrack session id and drive the control panel; the id is now unguessable and cross-origin commands are refused (#877)
++ Fixed: an ftp:// link carrying encoded line breaks could append commands to the FTP control channel, and an unquoted LIST argument let a path holding a space list something else (#1010)
++ Fixed: a crawled link could inject header lines into the requests HTTrack sends (#1008)
++ Fixed: a control byte in a link made the crawler fetch a URL the page never wrote, and stripping one left the original tail glued to the result (#982, #974)
++ Fixed: the WebHTTrack progress panel rendered crawled URLs into HTML and JavaScript unescaped (#973)
++ Fixed: the WebHTTrack command box rendered its settings unescaped, so a posted value could break out of the box it was shown in (#998)
++ Fixed: the WebHTTrack settings pages interpolated values into attributes unescaped, lost a value containing a quote, and mangled a Windows path such as C:\ab (#989)
++ Fixed: a worker thread exhausting its stack died with no diagnostic (#969)
++ Fixed: a crash report named no frame of the executable on a non-PIE build, and named the dynamic loader rather than the program when launched through it (#995, #996)
++ Fixed: the crash report could hang, its symbolizer being forked from the signal handler (#968)
++ Fixed: the installed headers declared symbols the library does not export, and scoped struct addrinfo inside a parameter list (#977, #987)
++ Fixed: an install moved away from its configured prefix could not find libhttrack on macOS (#978)
++ Fixed: 3.49.16 did not build on armhf, loong64, hppa or hurd-i386 (#1015)
++ Changed: mirrored pages are served sandboxed, so a saved page can no longer script the WebHTTrack panel, and loses cookies, storage and cross-frame access (#877)
++ Changed: htsserver exits with a diagnostic rather than fall back to a guessable session id when no entropy source answers (#877)
++ Changed: an FTP file whose name contains a tab is no longer fetched (#1010)
++ Changed: on macOS, libhttrack records @rpath/libhttrack.3.dylib, so anything linked against it afterwards supplies its own rpath (#978)
++ Changed: multiple internal hardening, build, test and CI improvements
+
+3.49-16
++ New: macOS ships a signed and notarized HTTrack.app with its own icon, bundling the OpenSSL it needs so a downloaded copy launches (#890, #900, #901, #950)
++ New: the desktop icons install into the hicolor theme, scalable SVG included, so Icon=httrack resolves in a launcher (#932, #933)
++ Fixed: an unauthenticated PROPFIND overflowed the ProxyTrack DAV item buffer (#836)
++ Fixed: response headers from the server overflowed the stack buffer holding the cache header block, in both httrack and ProxyTrack (#841)
++ Fixed: a chunked response carrying trailers was rejected as "Invalid chunk" (#855)
++ Fixed: an over-long URL aborted the whole mirror inside the cache instead of reading as a miss (#935, #936)
++ Fixed: ProxyTrack could not re-read the .arc it writes, and crashed on a record whose body it could not read (#834, #929, #931)
++ Fixed: ProxyTrack logged a hashtable stats line and every PROPFIND body to stderr (#911, #918)
++ Fixed: the frozen-slot spool was written inside the mirror namespace, so it landed in the mirrored tree (#859)
++ Fixed: a stack overflow killed httrack with no diagnostic, crash reports named no frame of the executable, and on armhf they had no frames at all (#866, #889, #892)
++ Fixed: an install moved away from its configured prefix could not find its data directory, its shared library, or the html symlink (#885, #887, #894, #906)
++ Fixed: tooltips in the web GUI broke on a translation containing an apostrophe; the escaping now also covers quotes, backslashes, markup and DBCS lead bytes (#864)
++ Fixed: nine strings of the Windows GUI's option dialogs were untranslated in 26 of the 30 language files, and six language files disagreed with their own declared charset (#863, #963)
++ Fixed: the AppStream metainfo still advertised WebHTTrack 3.49.8 (#884)
++ Fixed: the installed development headers did not compile standalone (#943)
++ Fixed: configure discarded a user-supplied BASH_SHELL, resolved bash to /bin/sh on macOS, and hung on one pointing at a FIFO (#891, #895, #908, #922)
++ Changed: the masthead wordmark and the rings background are SVG, so they stay sharp on a hi-DPI screen (#910, #916)
++ Changed: multiple internal hardening, build, test and CI improvements
+
+3.49-15
++ New: --single-file rewrites each saved page with its assets inlined as data: URIs (#713)
++ New: --changes reports what a crawl added, updated or removed against the previous mirror (#714)
++ New: --sitemap and --sitemap-url ingest sitemaps, so pages nothing links to are still found (#712)
++ New: webhttrack exposes --warc-cdx, --wacz and --warc-max-size (#862)
++ Fixed: --update and --purge-old destroyed a good local copy when the re-fetch got no response, was aborted mid-read, or when the backup meant to protect it failed (#746, #748, #758, #775)
++ Fixed: an FTP re-fetch truncated the mirrored file, resumed a complete mirror with REST and spliced the old body into the new one, and a successful transfer was blanked when its backlog slot was swapped out (#771, #797, #798, #823)
++ Fixed: a chunked response cut at a chunk boundary was stored and cached as complete (#840)
++ Fixed: cache repair deleted the old cache before a rename it never checked, and the unlink-then-rename fallback could lose the destination (#779, #786, #790, #824)
++ Fixed: several backward scans from strlen(s) - 1 read before their buffer on an empty string (#730, #768, #770, #814, #821)
++ Fixed: a URL could be saved onto the engine's own temporary files, and the final path segment was never clamped (#774, #842, #852)
++ Fixed: a query-string character reference the page charset cannot represent was left unescaped, changing how the query parses (#854)
++ Fixed: a second --update pass overwrote the previous WARC and regenerated a page-less WACZ (#759)
++ Fixed: WARC output dropped URLs of 1005 bytes or more, archived nothing for a 304 revisit, and marked an engine-forced not-modified as one the server sent (#778, #785, #826, #838, #839)
++ Fixed: ProxyTrack overflowed its .arc header block, walked past the end of an .ndx buffer, trusted an unparsed offset, and crashed on a PROPFIND or on an entry with no usable Last-Modified (#793, #820, #825, #828)
++ Fixed: webhttrack leaked the session id into crawled pages, overflowed its command line so a quoted value could inject flags, let a posted project path repoint the served root, and built its redirect Location in a 256-byte stack buffer (#700, #706, #707, #710)
++ Fixed: in the web GUI, options ticked on by default could not be un-ticked, "max site size" set a per-file cap instead of the HTML one, and the mirror link on the finished page could not be followed (#708, #709, #725)
++ Fixed: htsserver labelled every PNG as image/gif and offered JPEG as a download, and an unauthenticated GET of a directory spun the server forever (#724, #875)
++ Fixed: webhttrack hung at exit when no mirror had been launched (#753)
++ Fixed: oversized cache and header fields aborted the engine or overflowed a neighbouring field instead of being clipped (#701, #715, #717, #722, #732)
++ Fixed: a -%S rules file of 4 GB or more overran the heap (#702)
++ Fixed: the CLI display did not repaint when the terminal was resized (#97)
++ Fixed: a document with no declared charset double-encoded the title lifted for the local index (#848)
++ Fixed: a fragment on an inlined reference was dropped, losing an SVG sprite selector (#766)
++ Fixed: several time helpers handed out libc's shared gmtime/localtime static rather than a reentrant breakdown (#794, #806)
++ Changed: fatal-signal backtraces name engine frames instead of a bare module and offset (#705)
++ Changed: --without-zlib is rejected at configure time rather than failing at link (#735)
++ Changed: the offline documentation gains one GUI guide with screenshots, an Android option reference, and a restructured index
++ Changed: multiple internal hardening, test and CI improvements
+
+3.49-14
++ New: WARC/1.1 archive output (--warc), with a sorted CDXJ index (--warc-cdx) and WACZ packaging (--wacz), also available from webhttrack (#668)
++ New: -%F takes named footer fields such as {url}, {lastmodified}, {mime}, {charset} and {status} instead of a fixed layout (#667)
++ New: a command-line guide organized by task ships with the offline documentation (#649)
++ Fixed: on Windows, paths beyond MAX_PATH truncated files, and mirroring into a long or non-ASCII directory silently failed (#133)
++ Fixed: the top index showed mojibake for non-ASCII project names and categories on Windows (#216)
++ Fixed: webhttrack handed the engine the web form's charset rather than UTF-8, so a non-ASCII path mirrored into a mojibake directory (#629)
++ Fixed: a non-ASCII single -O left the logs and the cache in a mangled twin directory on Windows (#630)
++ Fixed: a path-ceiling truncation dropped the .delayed marker, losing the file (#623)
++ Fixed: an oversized -%F footer aborted the crawl instead of being skipped (#669)
++ Fixed: a rejected 206 resume could loop and lose the file rather than refetch it whole (#581)
++ Fixed: default-port stripping was scheme-blind and dropped explicit ports from https and ftp URLs, and a :80 written with leading zeros mangled the host (#627, #638)
++ Fixed: -K silently reset the -c socket count (#650)
++ Fixed: signed-shift undefined behaviour in the zip-repair local-header read (#639)
++ Changed: the offline documentation drops stale facts, gains an Android help page, and documents the filter wildcards and the real long option forms
++ Changed: multiple internal hardening, test and CI improvements
+
+3.49-13
++ New: SOCKS5 proxy support, with scheme-aware -P URLs (socks5://, socks5h://, connect://) and plain HTTP tunneled through a CONNECT-only proxy (#563, #564)
++ New: decode brotli and zstd content codings, advertised over TLS only as browsers do (#556)
++ New: webhttrack exposes the engine options added since 3.49-2, among them --cookies-file, --pause and --strip-query (#587)
++ Fixed: files of 2 GB or more were mishandled on Windows and on every 32-bit build (#569)
++ Fixed: --update destroyed a good local copy when the re-fetch returned an HTTP error, was aborted by -M/-E, failed to decode, or came in short (#176, #521, #557, #562)
++ Fixed: a self-redirect cookie wall was dropped instead of being re-fetched with the cookie (#15)
++ Fixed: a stalled TLS handshake ignored --timeout, and synchronous DNS resolution could wedge a crawl past --max-time (#607, #613)
++ Fixed: -M metered saved bytes rather than received volume, and overshot its cap under a slow server (#77, #520)
++ Fixed: several network-facing overflows and denial-of-service paths in the Content-Range, chunked-transfer, cookie, filter and ProxyTrack cache parsers
++ Fixed: a failed connect did not fall back to the next address on Windows (#579)
++ Fixed: -P took an out-of-range port as a garbage port, and scanned past an IPv6 literal's closing bracket (#598, #602)
++ Fixed: reject a port outside 1..65535 wherever one is parsed (a crawled URL, the htsserver and proxytrack listen arguments, an ftp:// URL), instead of letting a bare sscanf wrap a huge value into a plausible port and silently use it (#614, #626)
++ Fixed: a configured proxy still resolved and dialed the origin itself (#592)
++ Fixed: ~/ in the -O base path was never expanded (#270)
++ Fixed: a non-ASCII -O output path was double-encoded on Windows once argv became UTF-8 (#621)
++ Fixed: files under a non-ASCII project path were saved to a mangled directory on Windows (#217)
++ Fixed: --build-top-index (-%i) and --protocol (-@i) were taken for the -i continue flag, wiping the URL list and exiting on the usage screen (#615)
++ Fixed: webhttrack ignored LC_ALL/LC_MESSAGES and picked the wrong Chinese and Portuguese (#95)
++ Fixed: webhttrack wrote its base path and httrack.ini to the filesystem root when $HOME was empty (#625)
++ Fixed: crawls on a non-default port were slowed by a per-request pre-resolve (#181)
++ Changed: Windows builds moved to Visual Studio 2022 and OpenSSL 3.x, the VS2008 project files are retired, and the binaries carry a version resource
++ Changed: removed the obsolete Java-applet (.class) parser and the dead SWF module remnants
++ Changed: multiple internal hardening, test and CI improvements (Windows and macOS crawl suites, HTML-parser fuzzing, parallel make check)
+
+3.49-12
++ New: --why explains which filter rule accepts or rejects a given URL, then exits (#505)
++ Fixed: links carrying raw UTF-8 bytes were fetched double-encoded and 404'd (#516)
++ Fixed: an uncompressed body mislabeled as gzip no longer loses the page (#515)
++ Fixed: remote stack overflow and uninitialized read in Content-Type/-Encoding parsing (#506)
++ Fixed: several over-reads and a leak in the filter, URL and IDNA parsers (#499)
++ Fixed: bound the cache-index (.ndx) parser to its buffer (#507)
++ Fixed: catastrophic backtracking on '*'-heavy filter patterns (#513)
++ Fixed: cookies.txt was created world-readable (#511)
++ Fixed: a single corrupt cache entry no longer aborts the whole mirror (#494)
++ Fixed: cache-reconcile policy was broken for zip caches (#491, #493, #495)
++ Fixed: cancelling a crawl mid type-check no longer orphans .delayed placeholders (#496)
++ Fixed: detect URLs after the first inline script and in mid-tag attributes (#497)
++ Changed: build with _FORTIFY_SOURCE and -fstack-protector-strong (#504)
++ Changed: removed the pre-3.31 (.dat/.ndx) cache import (#512)
++ Changed: multiple internal hardening and build improvements (libFuzzer harnesses, CodeQL, dead-code removal)
+
+3.49-11
++ New: parse robots.txt Allow rules and path wildcards per RFC 9309 (#452)
++ New: advertise deflate in Accept-Encoding and decode deflate responses (#450)
++ New: follow <source> and <track> media elements as embedded links (#451)
++ New: added modern web MIME types to the type/extension table (#448)
++ Fixed: enforce the -E time limit during a slow transfer instead of only between files (#481)
++ Fixed: sniff the leading bytes of a download so a misdeclared Content-Type no longer renames a correct URL extension
++ Fixed: fast transfers could be saved under their temporary .delayed placeholder name (#5, #107)
++ Fixed: follow a redirect that maps to the same saved file instead of writing a self-pointing stub (#159)
++ Fixed: several network-facing buffer overflows in the FTP, Java and HTML parsers
++ Fixed: the htsjava plugin could not be loaded (hidden entry points, stale library name)
++ Fixed: HTML-escape truncation and a cache-buffer leak in the parser
++ Changed: modernized the default User-Agent to an honest HTTrack identifier (#449)
++ Changed: decode the full WHATWG set of HTML named character references (#443)
++ Changed: refreshed stale HTTP status, proxy-port and TLS-floor constants (#453)
++ Changed: multiple internal hardening, build, test and CI improvements
+
+3.49-10
++ New: --cookies-file to preload a Netscape cookies.txt before crawling (#215)
++ New: --pause to space out file downloads by a random delay (#185)
++ New: --strip-query to drop selected query keys from the dedup naming (#112)
++ Changed: split the -%u URL hacks into independent --keep-www-prefix, --keep-double-slashes and --keep-query-order toggles (#271)
++ Fixed: follow a redirect Location after dropping its #fragment, instead of requesting the fragment and polluting the saved name (#204)
++ Fixed: escaped brackets inside a *[...] filter character class (#148)
++ Fixed: honor the server's Content-Range when resuming a partial download, instead of appending overlapping bytes (#198)
++ Fixed: abort the download as soon as the response type is excluded by -mime:, instead of fetching then discarding the body (#58)
++ Fixed: keep size-based filter rules neutral until the file size is known (#143)
++ Fixed: stop the mirror with a clean fatal error on a cache write failure, instead of crashing (#174, #219)
++ Fixed: stop the 412/416 partial re-get loop on --continue and --update (#206)
++ Fixed: keep an unrecognized URL tail instead of mangling it to .html (#115)
++ Fixed: honor --tolerant (-%B) on a broken Content-Length, and fix an out-of-bounds read it exposed (#32, #41)
++ Fixed: fall back to the next resolved address when a connection fails or stalls, instead of hanging on a dead IPv6 address
++ Fixed: report why a -%L URL list could not be loaded (#49)
++ Changed: multiple internal hardening, build and CI improvements
+
+3.49-9
++ Fixed: file-type detection from the Content-Type header: trust a declared type over a binary URL extension, honor --assume under the delayed type check, and keep a known extension against a bogus or empty Content-Type (#267, #29, #56)
++ Fixed: an uninitialized-buffer read when the Content-Type is empty (#411)
++ Fixed: restored C++ source-compatibility of the installed headers so reverse dependencies (httraqt) build again (#413)
++ Changed: multiple internal build, packaging and test-harness improvements
+
+3.49-8
++ New: tunnel HTTPS downloads through the configured HTTP proxy via CONNECT (#85)
++ New: parse every candidate URL in <img> and <source> srcset lists (#326)
++ Changed: dropped the obsolete OpenSSL linking exception (OpenSSL 3.0+ is Apache-2.0 and GPL-compatible); httrack is now plain GPLv3-or-later
++ Fixed: several out-of-bounds reads in the HTML/CSS parser on hostile input (#94, #396)
++ Fixed: stored XSS via an unescaped URL in the generated page footer (#165)
++ Fixed: hardened buffer copies throughout the engine against overflow
++ Fixed: capture conditional CSS @import URLs (#94)
++ Fixed: don't crawl xmlns namespace declarations as links (#191)
++ Fixed: don't mistake the method argument of XMLHttpRequest.open for a URL (#218)
++ Fixed: percent-encode parentheses when rewriting CSS url() targets (#163)
++ Fixed: collapse ../ in file:// URLs and widen relative-link handling (#137, #162)
++ Fixed: drop the obsolete $Version/$Path attributes from the request Cookie header, per RFC 6265 (#151)
++ Fixed: keep empty quoted arguments when reloading doit.log for --update/--continue (#106)
++ Fixed: raise the User-Agent and custom-header length limits (#152)
++ Fixed: abort on a long log path (lock-file buffer too small) (#183)
++ Fixed: race in lazy mutex initialization (#297)
++ Fixed: sub-second mtime precision when comparing local files on POSIX (#383)
++ Fixed: modernize OpenSSL TLS initialization for the 3.x to 4.x transition (#308)
++ Fixed: in-place changes made by the postprocess callback were not applied (Roman Sęk)
++ Fixed: "preffered" typo in the help text and man page (yosinn1-blip)
++ Fixed: corrections and updates of the Russian translation (German Aizek)
++ Fixed: corrections and updates of the Danish translation (scootergrisen)
++ Fixed: link libhtsjava and the libtest examples directly against libc
++ New: documented the public library API headers and typed the option fields as named enums
++ Fixed: numerous build, packaging, CI and test-coverage improvements (out-of-tree builds, sanitizer/distcheck CI, shell and Python linting, AppStream metainfo)
+
+3.49-7
++ Fixed: keep generated config.h architecture-independent (Debian #1133728)
++ Fixed: man page rendered the -%! warning as bogus options (Debian #1061053)
 
 3.49-6
 + Fixed: puny_decode CVE-2017-14062

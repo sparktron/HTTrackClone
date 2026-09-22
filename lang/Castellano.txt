@@ -5,9 +5,7 @@ Castellano
 LANGUAGE_ISO
 es
 LANGUAGE_AUTHOR
-Juan Pablo Barrio Lera  (Universidad de LeÛn) \r\n
-LANGUAGE_CHARSET
-ISO-8859-1
+Juan Pablo Barrio Lera  (Universidad de Le√≥n) \r\n
 LANGUAGE_WINDOWSID
 Spanish (Spain, Modern Sort)
 OK
@@ -25,7 +23,7 @@ Haga click para confirmar
 Click to get help!
 Haga click para obtener ayuda
 Click to return to previous screen
-Haga click para volver atr·s
+Haga click para volver atr√°s
 Click to go to next screen
 Haga click para pasar a la siguiente pantalla
 Hide password
@@ -33,33 +31,33 @@ Ocultar palabra clave
 Save project
 Guardar proyecto
 Close current project?
-øCerrar el proyecto actual?
+¬øCerrar el proyecto actual?
 Delete this project?
-øBorrar este proyecto?
+¬øBorrar este proyecto?
 Delete empty project %s?
-øBorrar el proyecto vacÌo %s?
+¬øBorrar el proyecto vac√≠o %s?
 Action not yet implemented
-AcciÛn a˙n no implementada
+Acci√≥n a√∫n no implementada
 Error deleting this project
 Error al borrar este proyecto
 Select a rule for the filter
 Escoja una regla para el filtro
 Enter keywords for the filter
-Escriba aquÌ una palabra clave para el filtro
+Escriba aqu√≠ una palabra clave para el filtro
 Cancel
 Cancelar
 Add this rule
-AÒadir esta regla
+A√±adir esta regla
 Please enter one or several keyword(s) for the rule
-Escriba una o m·s palabras clave para la regla
+Escriba una o m√°s palabras clave para la regla
 Add Scan Rule
-AÒadir un filtro
+A√±adir un filtro
 Criterion
 Escoger una regla
 String
 Escribir una palabra clave
 Add
-AÒadir
+A√±adir
 Scan Rules
 Filtros
 Use wildcards to exclude or include URLs or links.\nYou can put several scan strings on the same line.\nUse spaces as separators.\n\nExample: +*.zip -www.*.com -www.*.edu/cgi-bin/*.cgi
@@ -69,41 +67,41 @@ Excluir enlaces
 Include link(s)
 Aceptar enlaces
 Tip: To have ALL GIF files included, use something like +www.someweb.com/*.gif. \n(+*.gif / -*.gif will include/exclude ALL GIFs from ALL sites)
-Consejo: Si desea aceptar todos los ficheros GIF de un sitio, utilice algo similar a +www.monweb.com/*.gif\n(+*.gif / -*.gif autorizar· TODOS los ficheros GIF en TODOS los sitios)
+Consejo: Si desea aceptar todos los ficheros GIF de un sitio, utilice algo similar a +www.monweb.com/*.gif\n(+*.gif / -*.gif autorizar√° TODOS los ficheros GIF en TODOS los sitios)
 Save prefs
 Guardar preferencias
 Matching links will be excluded:
-Los enlaces que sigan esta regla ser·n prohibidos
+Los enlaces que sigan esta regla ser√°n prohibidos
 Matching links will be included:
-Los lugares que sigan esta regla ser·n aceptados
+Los lugares que sigan esta regla ser√°n aceptados
 Example:
 Ejemplo:
 gif\r\nWill match all GIF files
-gif\r\nDetectar· todos los ficheros gif (o ficheros GIF)
+gif\r\nDetectar√° todos los ficheros gif (o ficheros GIF)
 blue\r\nWill find all files with a matching 'blue' sub-string such as 'bluesky-small.jpeg'
-blue\r\nDetectar· todos los ficheros que contengan la palabra blue, como 'bluesky-small.jpeg'\r\n
+blue\r\nDetectar√° todos los ficheros que contengan la palabra blue, como 'bluesky-small.jpeg'\r\n
 bigfile.mov\r\nWill match the file 'bigfile.mov', but not 'bigfile2.mov'
-bigfile.mov\r\nDetectar· el fichero 'bigfile.mov', pero no 'bigfile2.mov'
+bigfile.mov\r\nDetectar√° el fichero 'bigfile.mov', pero no 'bigfile2.mov'
 cgi\r\nWill find links with folder name matching sub-string 'cgi' such as /cgi-bin/somecgi.cgi
-cgi\r\nDetectar· los enlaces con nombre de ruta que incluya 'cgi', como /cgi-bin/somecgi.cgi\r\n
+cgi\r\nDetectar√° los enlaces con nombre de ruta que incluya 'cgi', como /cgi-bin/somecgi.cgi\r\n
 cgi-bin\r\nWill find links with folder name matching whole 'cgi-bin' string (but not cgi-bin-2, for example)
-cgi-bin\r\nDetectar· los enlaces con nombre de ruta que incluya 'cgi-bin' (pero no cgi-bin-2, por ejemplo)\r\n
+cgi-bin\r\nDetectar√° los enlaces con nombre de ruta que incluya 'cgi-bin' (pero no cgi-bin-2, por ejemplo)\r\n
 someweb.com\r\nWill find links with matching sub-string such as www.someweb.com, private.someweb.com etc.
-someweb.com\r\nDetectar· enlaces como www.someweb.com, private.someweb.com, etc.\r\n
+someweb.com\r\nDetectar√° enlaces como www.someweb.com, private.someweb.com, etc.\r\n
 someweb\r\nWill find links with matching folder sub-string such as www.someweb.com, www.someweb.edu, private.someweb.otherweb.com etc.
-someweb\r\nDetectar· enlaces como www.someweb.com, www.someweb.edu, private.someweb.otherweb.com, etc.\r\n
+someweb\r\nDetectar√° enlaces como www.someweb.com, www.someweb.edu, private.someweb.otherweb.com, etc.\r\n
 www.someweb.com\r\nWill find links matching whole 'www.someweb.com' sub-string (but not links such as private.someweb.com/..)
-www.someweb.com\r\nDetectar· enlaces como www.someweb.com/... (pero no private.someweb.com/ y similares)\r\n
+www.someweb.com\r\nDetectar√° enlaces como www.someweb.com/... (pero no private.someweb.com/ y similares)\r\n
 someweb\r\nWill find any links with matching sub-string such as www.someweb.com/.., www.test.abc/fromsomeweb/index.html, www.test.abc/test/someweb.html etc.
-someweb\r\nDetectar· enlaces como www.someweb.com/.., www.test.abc/fromsomeweb/index.html, www.test.abc/test/someweb.html, etc.\r\n
+someweb\r\nDetectar√° enlaces como www.someweb.com/.., www.test.abc/fromsomeweb/index.html, www.test.abc/test/someweb.html, etc.\r\n
 www.test.com/test/someweb.html\r\nWill only find the 'www.test.com/test/someweb.html' file. Note that you have to type the complete path (URL + site path)
-www.test.com/test/someweb.html\r\nDetectar· ˙nicamente www.test.com/test/someweb.html. Note que deber· introducir a la vez la direcciÛn (www.xxx.yyy) y la ruta (/test/someweb.html)\r\n
+www.test.com/test/someweb.html\r\nDetectar√° √∫nicamente www.test.com/test/someweb.html. Note que deber√° introducir a la vez la direcci√≥n (www.xxx.yyy) y la ruta (/test/someweb.html)\r\n
 All links will match
-Todos los enlaces ser·n autorizados/prohibidos
+Todos los enlaces ser√°n autorizados/prohibidos
 Add exclusion filter
-AÒadir un filtro de exclusiÛn
+A√±adir un filtro de exclusi√≥n
 Add inclusion filter
-AÒadir un filtro de inclusiÛn
+A√±adir un filtro de inclusi√≥n
 Existing filters
 Filtros adicionales
 Cancel changes
@@ -113,19 +111,19 @@ Guardar preferencias como valores por defecto
 Click to confirm
 Haga click para confirmar
 No log files in %s!
-°No hay ficheros de auditorÌa en %s!
+¬°No hay ficheros de auditor√≠a en %s!
 No 'index.html' file in %s!
-°No hay fichero index.html en %s!
+¬°No hay fichero index.html en %s!
 Click to quit WinHTTrack Website Copier
 Haga click para salir de WinHTTrack Website Copier
 View log files
-Ver fichero de auditorÌa
+Ver fichero de auditor√≠a
 Browse HTML start page
-Hojear la p·gina inicial
+Hojear la p√°gina inicial
 End of mirror
 Fin del volcado
 View log files
-Ver fichero de auditorÌa
+Ver fichero de auditor√≠a
 Browse Mirrored Website
 Hojear la Web
 New project...
@@ -133,11 +131,11 @@ Nuevo proyecto...
 View error and warning reports
 Ver errores y mensajes
 View report
-Ver informe de auditorÌa
+Ver informe de auditor√≠a
 Close the log file window
-Cerrar la ventana de auditorÌa
+Cerrar la ventana de auditor√≠a
 Info type:
-Tipo de informaciÛn:
+Tipo de informaci√≥n:
 Errors
 Errores
 Infos
@@ -147,35 +145,35 @@ Buscar
 Find a word
 Encontrar una palabra
 Info log file
-Fichero de auditorÌa
+Fichero de auditor√≠a
 Warning/Errors log file
-Fichero de auditorÌa de avisos/errores
+Fichero de auditor√≠a de avisos/errores
 Unable to initialize the OLE system
 Imposible inicializar el sistema OLE
 WinHTTrack could not find any interrupted download file cache in the specified folder!
-No hay cachÈ en el directorio indicado\nWinHTTrack no puede encontrar el volcado interrumpido
+No hay cach√© en el directorio indicado\nWinHTTrack no puede encontrar el volcado interrumpido
 Could not connect to provider
-Imposible establecer la conexiÛn
+Imposible establecer la conexi√≥n
 receive
-recepciÛn
+recepci√≥n
 request
-peticiÛn
+petici√≥n
 connect
-conexiÛn
+conexi√≥n
 search
-b˙squeda
+b√∫squeda
 ready
 listo
 error
 error
 Receiving files..
-RecepciÛn de ficheros
+Recepci√≥n de ficheros
 Parsing HTML file..
 Recorriendo fichero HTML
 Purging files..
 Vaciando ficheros..
 Loading cache in progress..
-Ejecutando la carga del cachÈ..
+Ejecutando la carga del cach√©..
 Parsing HTML file (testing links)..
 Recorriendo fichero HTML (comprobando enlaces)
 Pause - Toggle [Mirror]/[Pause download] to resume operation
@@ -186,58 +184,58 @@ scanning
 recorriendo
 Waiting for scheduled time..
 Esperando a la hora especificada para comenzar
+Transferring data..
+Transfiriendo datos..
 Connecting to provider
-ConexiÛn con el proveedor
+Conexi√≥n con el proveedor
 [%d seconds] to go before start of operation
 Volcado en espera [%d segundos]
 Site mirroring in progress [%s, %s bytes]
-Volcado en ejecuciÛn [%s, %s bytes]
+Volcado en ejecuci√≥n [%s, %s bytes]
 Site mirroring finished!
-°Copia del sitio finalizada!
+¬°Copia del sitio finalizada!
 A problem occurred during the mirroring operation\n
 Ha ocurrido un problema durante el volcado\n
 \nDuring:\n
 \nDurante:\n
 \nSee the log file if necessary.\n\nClick FINISH to quit WinHTTrack Website Copier.\n\nThanks for using WinHTTrack!
-Ver el fichero de auditorÌa si es necesario.\n\nPulse OK para salir de WinHTTrack Website Copier.\n\n°Gracias por usar WinHTTrack!
+Ver el fichero de auditor√≠a si es necesario.\n\nPulse OK para salir de WinHTTrack Website Copier.\n\n¬°Gracias por usar WinHTTrack!
 Mirroring operation complete.\nClick Exit to quit WinHTTrack.\nSee log file(s) if necessary to ensure that everything is OK.\n\nThanks for using WinHTTrack!
-El volcado ha finalizado.\nPulse OK para salir de WinHTTrack\n\nConsulte los ficheros de auditorÌa para verificar que todo ha salido bien\n\n°Gracias por utilizar WinHTTrack!
-* * MIRROR ABORTED! * *\r\nThe current temporary cache is required for any update operation and only contains data downloaded during the present aborted session.\r\nThe former cache might contain more complete information; if you do not want to lose that information, you have to restore it and delete the current cache.\r\n[Note: This can easily be done here by erasing the hts-cache/new.* files]\r\n\r\nDo you think the former cache might contain more complete information, and do you want to restore it?
-* * °COPIA INTERRUMPIDA! * *\r\nEs necesario el cache temporal actual para cualquier operaciÛn de actualizaciÛn y solamente contiene datos bajados durante la presente sesiÛn abortada.\r\nEl antiguo cache puede contener datos m·s completos; si vd. no desea perder dichos datos, deber· que restaurarlo y excluir el cache actual.\r\n[Nota: Esto puede hacerse f·cilmente aquÌ excluyendo el hts-cache/nuevo.* ficheros]\r\n\r\nøCree que el antiguo cache puede contener datos m·s completos, y desea restaurarlo?
+El volcado ha finalizado.\nPulse OK para salir de WinHTTrack\n\nConsulte los ficheros de auditor√≠a para verificar que todo ha salido bien\n\n¬°Gracias por utilizar WinHTTrack!
 * * MIRROR ERROR! * *\r\nHTTrack has detected that the current mirror is empty. If it was an update, the previous mirror has been restored.\r\nReason: the first page(s) either could not be found, or a connection problem occurred.\r\n=> Ensure that the website still exists, and/or check your proxy settings! <=
-* * °ERROR DE VOLCADO! * *\r\nHTTrack ha detectado que el volcado actual est· vacÌo. Si se trataba de una actualizaciÛn, el volcado anterior ha sido recuperado.\r\nRazÛn: no se ha(n) encontrado la(s) primera(s) p·gina(s), o ha habido un problema de conexiÛn.\r\n=> Aseg˙rese de que el sitio web existe a˙n, y/o compruebe los ajustes de su proxy! <=
+* * ¬°ERROR DE VOLCADO! * *\r\nHTTrack ha detectado que el volcado actual est√° vac√≠o. Si se trataba de una actualizaci√≥n, el volcado anterior ha sido recuperado.\r\nRaz√≥n: no se ha(n) encontrado la(s) primera(s) p√°gina(s), o ha habido un problema de conexi√≥n.\r\n=> Aseg√∫rese de que el sitio web existe a√∫n, y/o compruebe los ajustes de su proxy! <=
+Mirroring operation stopped before the end.\nThe files already downloaded are kept.\nSee log file(s) if necessary.\n\nThanks for using WinHTTrack!
+Mirroring operation stopped before the end.\nThe files already downloaded are kept.\nSee log file(s) if necessary.\n\nThanks for using WinHTTrack!
 \n\nTip: Click [View log file] to see warning or error messages
-\n\nConsejo: Pulse [Ver ficheros auditorÌa] para ver los errores y mensajes
-Error deleting a hts-cache/new.* file, please do it manually
-Error al excluir un hts-cache/nuevo.* fichero; por favor, h·galo manualmente
+\n\nConsejo: Pulse [Ver ficheros auditor√≠a] para ver los errores y mensajes
 Do you really want to quit WinHTTrack Website Copier?
-øDesea realmente salir de WinHTTrack Website Copier?
+¬øDesea realmente salir de WinHTTrack Website Copier?
 - Mirroring Mode -\n\nEnter address(es) in URL box
 - Modo de volcado -\n\nRellene la(s) direccion(es) en la lista de URLs.
 - Interactive Wizard Mode (questions) -\n\nEnter address(es) in URL box
-- Modo de volcado semiautom·tico (con preguntas); rellene la(s) direccion(es) en la lista de URLs.
+- Modo de volcado semiautom√°tico (con preguntas); rellene la(s) direccion(es) en la lista de URLs.
 - File Download Mode -\n\nEnter file address(es) in URL box
 - Modo de telecarga de ficheros; rellene la(s) direccion(es) de los ficheros en la lista de URLs.
 - Link Testing Mode -\n\nEnter Web address(es) with links to test in URL box
-- Modo de comprobaciÛn de enlaces -\n\nRellene la(s) direccion(es) de las p·ginas con enlaces a comprobar en el recuadro de URL.
+- Modo de comprobaci√≥n de enlaces -\n\nRellene la(s) direccion(es) de las p√°ginas con enlaces a comprobar en el recuadro de URL.
 - Update Mode -\n\nVerify address(es) in URL box, check parameters if necessary then click on 'NEXT' button
-- Modo de actualizaciÛn/continuaciÛn de volcado -\n\nVerifique la(s) direccion(es) de la lista de URLs, y luego pulse el botÛn 'SIGUIENTE' y verifique los par·metros.
+- Modo de actualizaci√≥n/continuaci√≥n de volcado -\n\nVerifique la(s) direccion(es) de la lista de URLs, y luego pulse el bot√≥n 'SIGUIENTE' y verifique los par√°metros.
 - Resume Mode (Interrupted Operation) -\n\nVerify address(es) in URL box, check parameters if necessary then click on 'NEXT' button
-- Modo de continuaciÛn de volcado -\n\nVerifique la(s) direccion(es) de la lista de URLs, y luego pulse el botÛn 'SIGUIENTE' y verifique los par·metros.
+- Modo de continuaci√≥n de volcado -\n\nVerifique la(s) direccion(es) de la lista de URLs, y luego pulse el bot√≥n 'SIGUIENTE' y verifique los par√°metros.
 Log files Path
 Ruta de ficheros log
 Path
 Ruta
 - Links List Mode -\n\nUse URL box to enter address(es) of page(s) containing links to mirror
-Modo de volcado de enlaces; rellene las direcciones de las p·ginas que contengan los enlaces a volcar en la lista de URLs.
+Modo de volcado de enlaces; rellene las direcciones de las p√°ginas que contengan los enlaces a volcar en la lista de URLs.
 New project / Import?
 Nuevo proyecto / importar ?
 Choose criterion
-Escoja una acciÛn
+Escoja una acci√≥n
 Maximum link scanning depth
-Profundidad m·xima
+Profundidad m√°xima
 Enter address(es) here
-Escriba aquÌ las direcciones
+Escriba aqu√≠ las direcciones
 Define additional filtering rules
 Definir filtros adicionales
 Proxy Name (if needed)
@@ -247,7 +245,7 @@ Puerto del proxy
 Define proxy settings
 Definir las preferencias del proxy
 Use standard HTTP proxy as FTP proxy
-Usar el proxy HTTP est·ndar como proxy FTP
+Usar el proxy HTTP est√°ndar como proxy FTP
 Path
 Ruta
 Select Path
@@ -267,7 +265,7 @@ Haga click para continuar
 Click to define options
 Haga click para definir las opciones
 Click to add a URL
-Haga click para aÒadir una URL
+Haga click para a√±adir una URL
 Load URL(s) from text file
 Cargar URL(s) desde fichero de texto
 WinHTTrack preferences (*.opt)|*.opt||
@@ -275,23 +273,23 @@ Preferencias de WinHTTrack (*.opt)|*.opt||
 Address List text file (*.txt)|*.txt||
 Fichero de texto de Lista de Direcciones (*txt)|*.txt||
 File not found!
-°Fichero no encontrado!
+¬°Fichero no encontrado!
 Do you really want to change the project name/path?
-øDesea realmente cambiar el nombre/ruta del proyecto?
+¬øDesea realmente cambiar el nombre/ruta del proyecto?
 Load user-default options?
-øCargar las opciones de usuario por defecto?
+¬øCargar las opciones de usuario por defecto?
 Save user-default options?
-øGuardar las opciones de usuario por defecto?
+¬øGuardar las opciones de usuario por defecto?
 Reset all default options?
-øPasar todas las opciones a sus valores por defecto?
+¬øPasar todas las opciones a sus valores por defecto?
 Welcome to WinHTTrack!
 Bienvenido a WinHTTrack Website Copier!
 Action:
-AcciÛn
+Acci√≥n
 Max Depth
-Profundidad m·xima:
+Profundidad m√°xima:
 Maximum external depth:
-Profundidad externa m·xima:
+Profundidad externa m√°xima:
 Filters (refuse/accept links) :
 Filtros (rehusar/aceptar enlaces) :
 Paths
@@ -307,15 +305,15 @@ Definir las opciones..
 Project name
 Nombre del proyecto
 Add a URL...
-AÒadir...
+A√±adir...
 Web Addresses: (URL)
-DirecciÛn Web: (URL)
+Direcci√≥n Web: (URL)
 Stop WinHTTrack?
-øDetener WinHTTrack?
+¬øDetener WinHTTrack?
 No log files in %s!
-°No hay ficheros de auditorÌa en %s!
+¬°No hay ficheros de auditor√≠a en %s!
 Pause Download?
-øPoner en pausa la transferencia?
+¬øPoner en pausa la transferencia?
 Stop the mirroring operation
 Detener el volcado
 Minimize to System Tray
@@ -333,7 +331,7 @@ Tiempo:
 Connections:
 Conexiones:
 Running:
-En ejecuciÛn:
+En ejecuci√≥n:
 Hide
 Ocultar
 Transfer rate
@@ -345,7 +343,7 @@ Informaciones
 Files written:
 Ficheros escritos:
 Files updated:
-Ficheros puestos al dÌa:
+Ficheros puestos al d√≠a:
 Errors:
 Errores:
 In progress:
@@ -353,73 +351,81 @@ En progreso:
 Follow external links
 Recuperar ficheros incluso bajo enlaces externos
 Test all links in pages
-Comprobar todos los enlaces de las p·ginas
+Comprobar todos los enlaces de las p√°ginas
 Try to ferret out all links
 Intentar detectar todos los enlaces
 Download HTML files first (faster)
-Bajar ficheros HTML primero (m·s r·pido)
+Bajar ficheros HTML primero (m√°s r√°pido)
 Choose local site structure
 Escoger la estructura local de ficheros
 Set user-defined structure on disk
 Definir la estructura del sitio en el disco
 Use a cache for updates and retries
-Utilizar un cachÈ para actualizaciones y reintentos
+Utilizar un cach√© para actualizaciones y reintentos
 Do not update zero size or user-erased files
-No volver a descargar ficheros ya existentes con tamaÒo nulo o que hayan sido borrados por el usuario
+No volver a descargar ficheros ya existentes con tama√±o nulo o que hayan sido borrados por el usuario
 Create a Start Page
-Generar p·gina de inicio
+Generar p√°gina de inicio
 Create a word database of all html pages
-Crear una base de datos de palabras de todas las p·ginas HTML
+Crear una base de datos de palabras de todas las p√°ginas HTML
+Build a complete RFC822 mail (MHT/EML) archive of the mirror
+Crear un archivo de correo RFC822 (MHT/EML) completo de la copia
 Create error logging and report files
-Generar ficheros de auditorÌa para los errores y mensajes
+Generar ficheros de auditor√≠a para los errores y mensajes
 Generate DOS 8-3 filenames ONLY
-Generar ˙nicamente ficheros con nombres cortos 8-3
+Generar √∫nicamente ficheros con nombres cortos 8-3
 Generate ISO9660 filenames ONLY for CDROM medias
 Generar nombres de fichero ISO9660 SOLO para soportes CDROM
 Do not create HTML error pages
 No generar ficheros de error html
 Select file types to be saved to disk
-SelecciÛn de los tipos de fichero a guardar
+Selecci√≥n de los tipos de fichero a guardar
 Select parsing direction
-SelecciÛn de la direcciÛn del volcado
+Selecci√≥n de la direcci√≥n del volcado
 Select global parsing direction
-SelecciÛn de la direcciÛn global del volcado
+Selecci√≥n de la direcci√≥n global del volcado
 Setup URL rewriting rules for internal links (downloaded ones) and external links (not downloaded ones)
-Configurar reglas de regrabaciÛn de URLs para enlaces internos (los bajados) y enlaces externos (los no bajados)
+Configurar reglas de regrabaci√≥n de URLs para enlaces internos (los bajados) y enlaces externos (los no bajados)
 Max simultaneous connections
-N˙mero m·ximo de conexiones
+N√∫mero m√°ximo de conexiones
 File timeout
-Tiempo muerto m·ximo para un fichero
+Tiempo muerto m√°ximo para un fichero
 Cancel all links from host if timeout occurs
 Anular todos los enlaces de un dominio en caso de tiempo muerto
 Minimum admissible transfer rate
-Tasa de transferencia mÌnima tolerada
+Tasa de transferencia m√≠nima tolerada
 Cancel all links from host if too slow
 Anular todos los enlaces de un dominio en caso de transferencia demasiado lenta
 Maximum number of retries on non-fatal errors
-N˙mero m·ximo de reintentos en caso de error no fatal
+N√∫mero m√°ximo de reintentos en caso de error no fatal
 Maximum size for any single HTML file
-TamaÒo m·ximo para una p·gina html
+Tama√±o m√°ximo para una p√°gina html
 Maximum size for any single non-HTML file
-TamaÒo m·ximo para un fichero
+Tama√±o m√°ximo para un fichero
 Maximum amount of bytes to retrieve from the Web
-TamaÒo total m·ximo para el volcado
+Tama√±o total m√°ximo para el volcado
 Make a pause after downloading this amount of bytes
 Hacer una pausa antes de descargar esta cantidad de bytes
 Maximum duration time for the mirroring operation
-Tiempo total m·ximo para el volcado
+Tiempo total m√°ximo para el volcado
 Maximum transfer rate
-Tasa de transferencia m·xima
+Tasa de transferencia m√°xima
 Maximum connections/seconds (avoid server overload)
-N∫ m·ximo de conexiones/segundo (evitar sobrecarga de servidor)
+N¬∫ m√°ximo de conexiones/segundo (evitar sobrecarga de servidor)
 Maximum number of links that can be tested (not saved!)
-N˙mero m·ximo de enlaces que pueden ser comprobados (°no grabados!)
+N√∫mero m√°ximo de enlaces que pueden ser comprobados (¬°no grabados!)
 Browser identity
 Identidad del navegador
 Comment to be placed in each HTML file
-Pie de p·gina colocado en cada fichero HTML
+Pie de p√°gina colocado en cada fichero HTML
+Languages accepted by the browser
+Idiomas aceptados por el navegador
+Additional HTTP headers to be sent in each requests
+Cabeceras HTTP adicionales a enviar en cada petici√≥n
+HTTP referer to be sent for initial URLs
+Referer HTTP a enviar para las URL iniciales
 Back to starting page
-Volver a la primera p·gina
+Volver a la primera p√°gina
 Save current preferences as default values
 Guardar preferencias como valores por defecto
 Click to continue
@@ -429,63 +435,65 @@ Haga click para cancelar
 Follow local robots rules on sites
 Seguir las reglas locales de los robots sobre los sitios
 Links to non-localised external pages will produce error pages
-Las p·ginas externas (no capturadas) apuntar·n a p·ginas de error
+Las p√°ginas externas (no capturadas) apuntar√°n a p√°ginas de error
 Do not erase obsolete files after update
-No borrar los ficheros antiguos tras una puesta al dÌa
+No borrar los ficheros antiguos tras una puesta al d√≠a
 Accept cookies?
-øAceptar las cookies enviadas?
+¬øAceptar las cookies enviadas?
 Check document type when unknown?
-øVerificar el tipo de documento cuando es desconocido?
+¬øVerificar el tipo de documento cuando es desconocido?
 Parse java applets to retrieve included files that must be downloaded?
-øAnalizar los applets Java para recuperar los ficheros incluidos?
+¬øAnalizar los applets Java para recuperar los ficheros incluidos?
 Store all files in cache instead of HTML only
 Forzar el almacenaje de todos los ficheros en el cache y no solamente los HTML
 Log file type (if generated)
-Tipo de fichero de auditorÌa generado
+Tipo de fichero de auditor√≠a generado
 Maximum mirroring depth from root address
-Profundidad m·xima de volcado desde las primeras direcciones
+Profundidad m√°xima de volcado desde las primeras direcciones
 Maximum mirroring depth for external/forbidden addresses (0, that is, none, is the default)
 Maximum mirroring depth for external/fodbidden addresses (0, that is, none, is the default)
 Create a debugging file
-Crear un fichero de depuraciÛn
+Crear un fichero de depuraci√≥n
 Use non-standard requests to get round some server bugs
 Intentar evitar los fallos de algunos servidores empleando peticiones no estandarizadas
 Use old HTTP/1.0 requests (limits engine power!)
-Usar peticiones del antiguo HTTP/1.0 (°limita la potencia del motor!)
+Usar peticiones del antiguo HTTP/1.0 (¬°limita la potencia del motor!)
 Attempt to limit retransfers through several tricks (file size test..)
-Intentar limitar las retransferencias mediante varios trucos (comprobaciÛn de tamaÒo de ficheros, ...)
+Intentar limitar las retransferencias mediante varios trucos (comprobaci√≥n de tama√±o de ficheros, ...)
 Attempt to limit the number of links by skipping similar URLs (www.foo.com==foo.com, http=https ..)
-Intentar limitar el n˙mero de enlaces descartando URLs similares (www.foo.com==foo.com, http=https ..)
+Intentar limitar el n√∫mero de enlaces descartando URLs similares (www.foo.com==foo.com, http=https ..)
 Write external links without login/password
 Grabar enlaces externos sin login/password
 Write internal links without query string
-Grabar enlaces externos sin cadena de peticiÛn
+Grabar enlaces externos sin cadena de petici√≥n
 Get non-HTML files related to a link, eg external .ZIP or pictures
-Capturar los ficheros no html prÛximos (ej: ficheros ZIP situados en el exterior)
+Capturar los ficheros no html pr√≥ximos (ej: ficheros ZIP situados en el exterior)
 Test all links (even forbidden ones)
 Comprobar todos los enlaces (incluso los no permitidos)
 Try to catch all URLs (even in unknown tags/code)
-Intentar detectar todos los enlaces (incluso los tags desconocidos / cÛdigo javascript)
+Intentar detectar todos los enlaces (incluso los tags desconocidos / c√≥digo javascript)
 Get HTML files first!
-°Recibir ficheros HTML primero!
+¬°Recibir ficheros HTML primero!
 Structure type (how links are saved)
-Tipo de estructura (forma en la que ser·n guardados los enlaces)
+Tipo de estructura (forma en la que ser√°n guardados los enlaces)
 Use a cache for updates
-Utilizar un cache para la puesta al dÌa
+Utilizar un cache para la puesta al d√≠a
 Do not re-download locally erased files
 No volver a descargar ficheros borrados localmente
 Make an index
-Hacer un Ìndice
+Hacer un √≠ndice
 Make a word database
 Elaborar una base de datos de palabras
+Build a mail archive
+Crear un archivo de correo
 Log files
-Ficheros auditorÌa
+Ficheros auditor√≠a
 DOS names (8+3)
 Nombres DOS (8+3)
 ISO9660 names (CDROM)
 Nombres ISO9660 (CDROM)
 No error pages
-Sin p·ginas de error
+Sin p√°ginas de error
 Primary Scan Rule
 Filtro primario
 Travel mode
@@ -493,25 +501,31 @@ Modo de recorrido
 Global travel mode
 Modo de recorrido global
 These options should be modified only exceptionally
-Normalmente estas opciones no deberÌan ser modificadas
+Normalmente estas opciones no deber√≠an ser modificadas
 Activate Debugging Mode (winhttrack.log)
-Activar el modo de depuraciÛn (winhttrack.log)
+Activar el modo de depuraci√≥n (winhttrack.log)
 Rewrite links: internal / external
 Volver a grabar enlaces: internos / externos
 Flow control
 Control de flujo
 Limits
-LÌmites
+L√≠mites
 Identity
 Identidad
 HTML footer
-Pie de p·gina HTML
+Pie de p√°gina HTML
+Languages
+Idiomas
+Additional HTTP Headers
+Cabeceras HTTP adicionales
+Default referer URL
+URL de referer por defecto
 N# connections
-N∫ de conexiones
+N¬∫ de conexiones
 Abandon host if error
 Abandonar host en caso de error
 Minimum transfer rate (B/s)
-Tasa de transferencia mÌnima (B/s)
+Tasa de transferencia m√≠nima (B/s)
 Abandon host if too slow
 Abandonar host si es muy lento
 Configure
@@ -523,27 +537,27 @@ Intervalo(s)
 Persistent connections (Keep-Alive)
 Conexiones persistentes (mantener activas)
 Reduce connection time and type lookup time using persistent connections
-Reduzca tiempo de conexiÛn y b˙squeda de tipos mediante las conexiones persistentes
+Reduzca tiempo de conexi√≥n y b√∫squeda de tipos mediante las conexiones persistentes
 Retries
 Reintentos
 Size limit
-LÌmite de tamaÒo
+L√≠mite de tama√±o
 Max size of any HTML file (B)
-TamaÒo m·ximo html
+Tama√±o m√°ximo html
 Max size of any non-HTML file
-TamaÒo m·ximo otro
+Tama√±o m√°ximo otro
 Max site size
-TamaÒo m·ximo del sitio
+Tama√±o m√°ximo del sitio
 Max time
-Tiempo m·ximo
+Tiempo m√°ximo
 Save prefs
 Guardar preferencias
 Max transfer rate
-Velocidad m·xima
+Velocidad m√°xima
 Follow robots.txt
 Seguir robots.txt
 No external pages
-Sin p·ginas externas
+Sin p√°ginas externas
 Do not purge old files
 No eliminar ficheros antiguos
 Accept cookies
@@ -563,15 +577,15 @@ Trucos para URLs (unir URLs similares)
 Force old HTTP/1.0 requests (no 1.1)
 Forzar peticiones HTTP/1.0 anterior (no 1.1)
 Max connections / seconds
-N∫ m·x. conexiones / segundos
+N¬∫ m√°x. conexiones / segundos
 Maximum number of links
-N˙mero m·ximo de enlaces
+N√∫mero m√°ximo de enlaces
 Pause after downloading..
 Suspender tras copiar...
 Hide passwords
 Ocultar palabra clave
 Hide query strings
-Ocultar cadenas de peticiÛn
+Ocultar cadenas de petici√≥n
 Links
 Enlaces
 Build
@@ -581,43 +595,43 @@ Experto
 Flow Control
 Control de flujo
 Limits
-LÌmites
+L√≠mites
 Browser ID
 Identidad
 Scan Rules
 Filtros
 Spider
-AraÒa (spider)
+Ara√±a (spider)
 Log, Index, Cache
-AuditorÌa, Õndice, Cache
+Auditor√≠a, √çndice, Cache
 Proxy
 Proxy
 MIME Types
 Tipos MIME
 Do you really want to quit WinHTTrack Website Copier?
-øDesea realmente salir de WinHTTrack Website Copier?
+¬øDesea realmente salir de WinHTTrack Website Copier?
 Do not connect to a provider (already connected)
-no conectar con proveedor (conexiÛn ya establecida)
+no conectar con proveedor (conexi√≥n ya establecida)
 Do not use remote access connection
-No utilizar conexiÛn de acceso remoto
+No utilizar conexi√≥n de acceso remoto
 Schedule the mirroring operation
 Programar un volcado
 Quit WinHTTrack Website Copier
 Salir de WinHTTrack Website Copier
 Back to starting page
-Volver a la primera p·gina
+Volver a la primera p√°gina
 Click to start!
 Haga click para comenzar
 No saved password for this connection!
-øNo hay palabra clave guardada para esta conexiÛn!
+¬øNo hay palabra clave guardada para esta conexi√≥n!
 Can not get remote connection settings
-Imposible obtener los par·metros de conexiÛn
+Imposible obtener los par√°metros de conexi√≥n
 Select a connection provider
-Seleccione aquÌ un proveedor con el cual conectar
+Seleccione aqu√≠ un proveedor con el cual conectar
 Start
 COMENZAR
 Please adjust connection parameters if necessary,\nthen press FINISH to launch the mirroring operation.
-Puede comenzar el volcado pulsando la tecla COMENZAR,\no definir m·s opciones de conexiÛn
+Puede comenzar el volcado pulsando la tecla COMENZAR,\no definir m√°s opciones de conexi√≥n
 Save settings only, do not launch download now.
 Grabar solamente configuraciones, no cargar o bajar ahora.
 On hold
@@ -631,15 +645,15 @@ Proveedor de Internet
 Connect to this provider
 Conectar con este proveedor
 Disconnect when finished
-Desconectar al terminar la operaciÛn
+Desconectar al terminar la operaci√≥n
 Disconnect modem on completion
 Desconectar el modem al terminar
-\r\n(Please notify us of any bug or problem)\r\n\r\nDevelopment:\r\nInterface (Windows): Xavier Roche\r\nSpider: Xavier Roche\r\nJavaParserClasses: Yann Philippot\r\n\r\n(C)1998-2003 Xavier Roche and other contributors\r\nMANY THANKS for translation tips to:\r\nRobert Lagadec (rlagadec@yahoo.fr)
-\r\n(notifÌquenos fallos o problemas)\r\n\r\nDesarrollo:\r\nInterface (Windows): Xavier Roche\r\nMotor: Xavier Roche\r\nJavaParserClasses: Yann Philippot\r\n\r\n(C)1998-2003 Xavier Roche and other contributors\r\nMANY THANKS for Spanish translations to:\r\nJuan Pablo Barrio Lera (Universidad de LeÛn)
+\r\n(Please notify us of any bug or problem)\r\n\r\nDevelopment:\r\nEngine and interfaces: Xavier Roche\r\nCode, documentation and packaging: many contributors\r\n\r\n(C) Xavier Roche and other contributors\r\nMANY THANKS for English translations to:\r\nXavier Roche, Robert Lagadec
+\r\n(notif√≠quenos fallos o problemas)\r\n\r\nDesarrollo:\r\nInterface (Windows): Xavier Roche\r\nMotor: Xavier Roche\r\n\r\n(C) Xavier Roche and other contributors\r\nMANY THANKS for Spanish translations to:\r\nJuan Pablo Barrio Lera (Universidad de Le√≥n)
 About WinHTTrack Website Copier
 Acerca de...
 Please visit our Web page
-°Visite nuestra p·gina Web!
+¬°Visite nuestra p√°gina Web!
 Wizard query
 Pregunta del asistente
 Your answer:
@@ -655,7 +669,7 @@ Ignorar directorio
 Ignore domain
 Ignorar dominio
 Catch this page only
-Coger sÛlo esta p·gina
+Coger s√≥lo esta p√°gina
 Mirror site
 Volcar el sitio
 Mirror domain
@@ -671,7 +685,7 @@ Ficheros
 Options
 Opciones
 Log
-AuditorÌa
+Auditor√≠a
 Window
 Ventanas
 Help
@@ -683,7 +697,7 @@ Salir
 Modify options
 Modificar las opciones
 View log
-Ver fichero de auditorÌa
+Ver fichero de auditor√≠a
 View error log
 Ver fichero de error
 View file transfers
@@ -707,7 +721,7 @@ Opciones
 Mirror
 Copia del sitio
 Log
-AuditorÌa
+Auditor√≠a
 Window
 Ventanas
 Help
@@ -745,39 +759,39 @@ Guardar &como...
 User-defined structure
 Estructura local de ficheros
 %n\tName of file without file type (ex: image)\r\n%N\tName of file including file type (ex: image.gif)\r\n%t\tFile type only (ex: gif)\r\n%p\tPath [without ending /] (ex: /someimages)\r\n%h\tHost name (ex: www.someweb.com)\r\n%M\tMD5 URL (128 bits, 32 ascii bytes)\r\n%Q\tMD5 query string (128 bits, 32 ascii bytes)\r\n%q\tMD5 small query string (16 bits, 4 ascii bytes)\r\n\r\n%s?\tShort name (ex: %sN)
-%n\tNombre de fichero sin ext. (ej: image)\r\n%N\tNombre de fichero con extensiÛn (ej: image.gif)\r\n%t\tExtensiÛn (ex: gif)\r\n%p\tRuta [sin / al final] (ej: /someimages)\r\n%h\tNombre del servidor (ej: www.someweb.com)\r\n%M\tURL MD5 (128 bits, 32 ascii bytes)\r\n%Q\tquery string MD5 (128 bits, 32 ascii bytes)\r\n%q\tsmall query string MD5 (16 bits, 4 ascii bytes)\r\n\r\n%s?\tVersiÛn corta DOS (ej: %sN)\r\n
+%n\tNombre de fichero sin ext. (ej: image)\r\n%N\tNombre de fichero con extensi√≥n (ej: image.gif)\r\n%t\tExtensi√≥n (ex: gif)\r\n%p\tRuta [sin / al final] (ej: /someimages)\r\n%h\tNombre del servidor (ej: www.someweb.com)\r\n%M\tURL MD5 (128 bits, 32 ascii bytes)\r\n%Q\tquery string MD5 (128 bits, 32 ascii bytes)\r\n%q\tsmall query string MD5 (16 bits, 4 ascii bytes)\r\n\r\n%s?\tVersi√≥n corta DOS (ej: %sN)\r\n
 Example:\t%h%p/%n%q.%t\n->\t\tc:\\mirror\\www.someweb.com\\someimages\\image.gif
 Ejemplo:\t%h%p/%n%q.%t\n->\t\tc:\\mirror\\www.someweb.com\\someimages\\image.gif\r\n
 Proxy settings
 Preferencias del proxy
 Proxy address:
-DirecciÛn del proxy
+Direcci√≥n del proxy
 Proxy port:
 Puerto del proxy
 Authentication (only if needed)
-IdentificaciÛn (si es necesaria)
+Identificaci√≥n (si es necesaria)
 Login
 Login
 Password
 Pass
 Enter proxy address here
-Escriba aquÌ la direcciÛn del proxy
+Escriba aqu√≠ la direcci√≥n del proxy
 Enter proxy port here
-Escriba aquÌ el puerto del proxy
+Escriba aqu√≠ el puerto del proxy
 Enter proxy login
 Escriba el nombre del usuario del proxy
 Enter proxy password
 Escriba la palabra clave de acceso al proxy
 Enter project name here
-Escriba aquÌ el nombre del proyecto
+Escriba aqu√≠ el nombre del proyecto
 Enter saving path here
-Escriba aquÌ la ruta donde ser· grabado el proyecto
+Escriba aqu√≠ la ruta donde ser√° grabado el proyecto
 Select existing project to update
-Seleccione aquÌ un proyecto existente para actualizarlo
+Seleccione aqu√≠ un proyecto existente para actualizarlo
 Click here to select path
-Haga click aquÌ para seleccionar la ruta
+Haga click aqu√≠ para seleccionar la ruta
 Select or create a new category name, to sort your mirrors in categories
-Seleccionar o crear un nuevo nombre de categorÌa, o clasificar los volcados en categorÌas
+Seleccionar o crear un nuevo nombre de categor√≠a, o clasificar los volcados en categor√≠as
 HTTrack Project Wizard...
 Asistente para proyectos de HTTrack
 New project name:
@@ -789,19 +803,19 @@ Nombre del proyecto:
 Base path:
 Ruta base:
 Project category:
-CategorÌa del proyecto:
+Categor√≠a del proyecto:
 C:\\My Web Sites
 C:\\Mis lugares Web
 Type a new project name, \r\nor select existing project to update/resume
-Escriba el nombre de un nuevo proyecto, \r\no seleccione un proyecto existente para ponerle al dÌa o continuar\r\n\r\n
+Escriba el nombre de un nuevo proyecto, \r\no seleccione un proyecto existente para ponerle al d√≠a o continuar\r\n\r\n
 New project
 Nuevo proyecto
 Insert URL
-Insertar direcciÛn URL
+Insertar direcci√≥n URL
 URL:
-DirecciÛn URL
+Direcci√≥n URL
 Authentication (only if needed)
-IdentificaciÛn (si es necesaria)
+Identificaci√≥n (si es necesaria)
 Login
 Login
 Password
@@ -811,53 +825,53 @@ Formularios o URL complejas:
 Capture URL...
 Capturar URL...
 Enter URL address(es) here
-Escriba aquÌ la direcciÛn URL
+Escriba aqu√≠ la direcci√≥n URL
 Enter site login
 Escriba el nombre de usuario del lugar
 Enter site password
 Escriba la palabra clave de acceso al lugar
 Use this capture tool for links that can only be accessed through forms or javascript code
-Use esta herramienta para capturar enlaves que solamente puedan ser accedidos a travÈs de formularios o enlaces javascript
+Use esta herramienta para capturar enlaves que solamente puedan ser accedidos a trav√©s de formularios o enlaces javascript
 Choose language according to preference
-Seleccione aquÌ su idioma
+Seleccione aqu√≠ su idioma
 Catch URL!
-°Capturar URL!
+¬°Capturar URL!
 Please set temporary browser proxy settings to the following values (Copy/Paste Proxy Address and Port).\nThen click on the Form SUBMIT button in your browser page, or click on the specific link you want to capture.
-Por favor, disponga temporalmente sus preferencias de proxy en el navegador en los siguientes valores (cortar/pegar la direcciÛn y puerto del proxy). Luego, en el navegador, pulse el botÛn de envÌo del formulario o en el enlace concreto que quiera capturar.
+Por favor, disponga temporalmente sus preferencias de proxy en el navegador en los siguientes valores (cortar/pegar la direcci√≥n y puerto del proxy). Luego, en el navegador, pulse el bot√≥n de env√≠o del formulario o en el enlace concreto que quiera capturar.
 This will send the desired link from your browser to WinHTTrack.
-Esto capturar· el enlace deseado desde su navegador hasta HTTrack.
+Esto capturar√° el enlace deseado desde su navegador hasta HTTrack.
 ABORT
 CANCELAR
 Copy/Paste the temporary proxy parameters here
-Copie y pegue aquÌ las preferencias temporales del proxy
+Copie y pegue aqu√≠ las preferencias temporales del proxy
 Cancel
 Cancelar
 Unable to find Help files!
-°Imposible localizar ficheros de ayuda!
+¬°Imposible localizar ficheros de ayuda!
 Unable to save parameters!
-°Imposible guardar los par·metros!
+¬°Imposible guardar los par√°metros!
 Please drag only one folder at a time
-No deposite m·s que una carpeta
+No deposite m√°s que una carpeta
 Please drag only folders, not files
-Deposite sÛlo una carpeta, no un fichero
+Deposite s√≥lo una carpeta, no un fichero
 Please drag folders only
-Deposite sÛlo una carpeta
+Deposite s√≥lo una carpeta
 Select user-defined structure?
-øSeleccionar estructura definible por el usuario?
+¬øSeleccionar estructura definible por el usuario?
 Please ensure that the user-defined-string is correct,\notherwise filenames will be bogus!
-Aseg˙rese de que la cadena de usuario es correcta\n°Si no lo es, los nombres de ficheros ser·n errÛneos!\r\n\r\n
+Aseg√∫rese de que la cadena de usuario es correcta\n¬°Si no lo es, los nombres de ficheros ser√°n err√≥neos!\r\n\r\n
 Do you really want to use a user-defined structure?
-øDesea realmente seleccionar la estructura definible por el usuario?
+¬øDesea realmente seleccionar la estructura definible por el usuario?
 Too manu URLs, cannot handle so many links!!
-Demasiadas URLs. °es imposible manejar tantos enlaces!
+Demasiadas URLs. ¬°es imposible manejar tantos enlaces!
 Not enough memory, fatal internal error..
-Memoria insuficiente; error interno crÌtico.
+Memoria insuficiente; error interno cr√≠tico.
 Unknown operation!
-°OperaciÛn desconocida!
+¬°Operaci√≥n desconocida!
 Add this URL?\r\n
-øAÒadir esta URL?\r\n
+¬øA√±adir esta URL?\r\n
 Warning: main process is still not responding, cannot add URL(s)..
-Aviso: el proceso principal no responde a˙n; imposible aÒadir las URLs.
+Aviso: el proceso principal no responde a√∫n; imposible a√±adir las URLs.
 Type/MIME associations
 Asociaciones de tipo/MIME
 File types:
@@ -865,33 +879,33 @@ Tipos de fichero:
 MIME identity:
 MIME identity
 Select or modify your file type(s) here
-Seleccione o modifique sus tipos de fichero aquÌ
+Seleccione o modifique sus tipos de fichero aqu√≠
 Select or modify your MIME type(s) here
-Seleccione o modifique sus tipos MIME aquÌ
+Seleccione o modifique sus tipos MIME aqu√≠
 Go up
-Ir m·s arriba
+Ir m√°s arriba
 Go down
-Ir m·s abajo
+Ir m√°s abajo
 File download information
 Informaciones sobre los ficheros bajados
 Freeze Window
 Congelar la ventana
 More information:
-M·s informaciones
+M√°s informaciones
 Welcome to WinHTTrack Website Copier!\n\nPlease click on the NEXT button to\n\n- start a new project\n- or resume a partial download
-°Bienvenido al WinHTTrack Website Copier!\n\nPor favor, pulse el botÛn AVANZAR para\n\niniciar un nuevo proyecto o volver a un proyecto parcialmente realizado.
+¬°Bienvenido al WinHTTrack Website Copier!\n\nPor favor, pulse el bot√≥n AVANZAR para\n\niniciar un nuevo proyecto o volver a un proyecto parcialmente realizado.
 File names with extension:\nFile names containing:\nThis file name:\nFolder names containing:\nThis folder name:\nLinks on this domain:\nLinks on domains containing:\nLinks from this host:\nLinks containing:\nThis link:\nALL LINKS
-Nombres de fichero con extensiÛn:\nNombres de fichero conteniendo:\nNombre de este fichero:\nNombres de carpeta conteniendo:\nNombre de esta carpeta:\nEnlaces de este domÌnio:\nEnlaces en domÌnios conteniendo:\nEnlaces de este servidor:\nEnlaces conteniendo:\nEste enlace:\nTODOS LOS ENLACES
+Nombres de fichero con extensi√≥n:\nNombres de fichero conteniendo:\nNombre de este fichero:\nNombres de carpeta conteniendo:\nNombre de esta carpeta:\nEnlaces de este dom√≠nio:\nEnlaces en dom√≠nios conteniendo:\nEnlaces de este servidor:\nEnlaces conteniendo:\nEste enlace:\nTODOS LOS ENLACES
 Show all\nHide debug\nHide infos\nHide debug and infos
 Mostrar todo\nOcultar errores\nOcultar informaciones\nOcultar errores e informaciones
 Site-structure (default)\nHtml in web/,       images/other files in web/images/\nHtml in web/html,   images/other in web/images\nHtml in web/,       images/other in web/\nHtml in web/,       images/other in web/xxx, where xxx is the file extension\nHtml in web/html,   images/other in web/xxx\nSite-structure, without www.domain.xxx/\nHtml in site_name/, images/other files in site_name/images/\nHtml in site_name/html, images/other in site_name/images\nHtml in site_name/, images/other in site_name/\nHtml in site_name/, images/other in site_name/xxx\nHtml in site_name/html, images/other in site_name/xxx\nAll files in web/, with random names (gadget !)\nAll files in site_name/, with random names (gadget !)\nUser-defined structure..
-Estructura del sitio (por defecto)\nHtml en la web/,       im·genes/otros archivos en la web/im·genes/\nHtml en la web/html,   im·genes/otros en la web/im·genes\nHtml en la web/,       im·genes/otros en la web/\nHtml en la web/,       im·genes/otros en la web/xxx, donde xxx es la extensiÛn del fichero\nHtml en la web/html,   im·genes/otros en la web/xxx\nEstructura del sitio, sin www.dominio.xxx/\nHtml en nombre_del_sitio/, im·genes/otros en nombre_del_sitio/im·genes/\nHtml en nombre_del_sitio/html, im·genes/otros en nombre_del_sitio/im·genes\nHtml en nombre_del_sitio/, im·genes/otros en nombre_del_sitio/\nHtml en nombre_del_sitio/, im·genes/otros en nombre_del_sitio/xxx\nHtml en nombre_del_sitio/html, im·genes/otros en nombre_del_sitio/xxx\nTodos los ficheros en la web/, con nombres aleatorios (gadget !)\nTodos los ficheros en nombre_del_sitio/, con nombres aleatorios (gadget !)\nEstructura definida por el usuario..
+Estructura del sitio (por defecto)\nHtml en la web/,       im√°genes/otros archivos en la web/images/\nHtml en la web/html,   im√°genes/otros en la web/images\nHtml en la web/,       im√°genes/otros en la web/\nHtml en la web/,       im√°genes/otros en la web/xxx, donde xxx es la extensi√≥n del fichero\nHtml en la web/html,   im√°genes/otros en la web/xxx\nEstructura del sitio, sin www.domain.xxx/\nHtml en site_name/, im√°genes/otros en site_name/images/\nHtml en site_name/html, im√°genes/otros en site_name/images\nHtml en site_name/, im√°genes/otros en site_name/\nHtml en site_name/, im√°genes/otros en site_name/xxx\nHtml en site_name/html, im√°genes/otros en site_name/xxx\nTodos los ficheros en la web/, con nombres aleatorios (gadget !)\nTodos los ficheros en site_name/, con nombres aleatorios (gadget !)\nEstructura definida por el usuario..
 Just scan\nStore html files\nStore non html files\nStore all files (default)\nStore html files first
-Solamente analizar\nAlmacenar ficheroos html\nAlmacenar ficheros, no html\nAlmacenar todos los ficheros (por omisiÛn)\nAlmacenar ficheros html primero
+Solamente analizar\nAlmacenar ficheroos html\nAlmacenar ficheros, no html\nAlmacenar todos los ficheros (por omisi√≥n)\nAlmacenar ficheros html primero
 Stay in the same directory\nCan go down (default)\nCan go up\nCan both go up & down
-Permanecer en el mismo directorio\nPermite ir hacia abajo (por omisiÛn)\nPermite ir hacia arriba\nPermite ir hacia arriba & hacia abajo
+Permanecer en el mismo directorio\nPermite ir hacia abajo (por omisi√≥n)\nPermite ir hacia arriba\nPermite ir hacia arriba & hacia abajo
 Stay on the same address (default)\nStay on the same domain\nStay on the same top level domain\nGo everywhere on the web
-Permanecer en la misma direcciÛn (por omisiÛn)\nPermanecer en el mismo domÌnio\nPermanecer en el mismo domÌnio de nivel superior\nIr a todos los lugares de la Web
+Permanecer en la misma direcci√≥n (por omisi√≥n)\nPermanecer en el mismo dom√≠nio\nPermanecer en el mismo dom√≠nio de nivel superior\nIr a todos los lugares de la Web
 Never\nIf unknown (except /)\nIf unknown
 Nunca\nSi es desconocido (excepto /)\nSi es desconocido
 no robots.txt rules\nrobots.txt except wizard\nfollow robots.txt rules
@@ -899,9 +913,9 @@ ninguna regla para robots.txt\nexcepto asistente robots.txt\nseguir reglas robot
 normal\nextended\ndebug
 normal\nextendido\ncorregir
 Download web site(s)\nDownload web site(s) + questions\nGet individual files\nDownload all sites in pages (multiple mirror)\nTest links in pages (bookmark test)\n* Continue interrupted download\n* Update existing download
-Copiar sitio(s) de la Web\nCopiar sitio(s) interactivos de la Web (preguntas)\nRecibir ficheros especÌficos\nCopiar todas las p·ginas del sitio (copia m˙ltiple)\nComprobar enlaces en las p·ginas (probar marcadores)\n* Continuar proyecto interrumpido\n* Actualizar proyecto existente
+Copiar sitio(s) de la Web\nCopiar sitio(s) interactivos de la Web (preguntas)\nRecibir ficheros espec√≠ficos\nCopiar todas las p√°ginas del sitio (copia m√∫ltiple)\nComprobar enlaces en las p√°ginas (probar marcadores)\n* Continuar proyecto interrumpido\n* Actualizar proyecto existente
 Relative URI / Absolute URL (default)\nAbsolute URL / Absolute URL\nAbsolute URI / Absolute URL\nOriginal URL / Original URL
-URI relativa / URL absoluta (por omisiÛn)\nURL Absoluta / URL absoluta\nURI absoluta / URL absoluta\nURL original / URL original
+URI relativa / URL absoluta (por omisi√≥n)\nURL Absoluta / URL absoluta\nURI absoluta / URL absoluta\nURL original / URL original
 Open Source offline browser
 Navegador offline Open Source
 Website Copier/Offline Browser. Copy remote websites to your computer. Free.
@@ -919,7 +933,7 @@ URLs
 Warning
 Aviso
 Your browser does not currently support javascript. For better results, please use a javascript-aware browser.
-Su navegador no soporta javascript. Obtendr· mejores resultados si usa un navegador que admita javascript.
+Su navegador no soporta javascript. Obtendr√° mejores resultados si usa un navegador que admita javascript.
 Thank you
 Gracias
 You can now close this window
@@ -928,3 +942,111 @@ Server terminated
 Servidor desconectado
 A fatal error has occurred during this mirror
 Ha ocurrido un error fatal durante esta copia
+View Documentation
+Ver la documentaci√≥n
+Go To HTTrack Website
+Ir al sitio web de HTTrack
+Go To HTTrack Forum
+Ir al foro de HTTrack
+View License
+Ver la licencia
+Beware: you local browser might be unable to browse files with embedded filenames
+Atenci√≥n: puede que su navegador local no pueda abrir archivos con nombres de archivo incrustados
+Recreated HTTrack internal cached resources
+Recursos internos en cach√© de HTTrack recreados
+Could not create internal cached resources
+No se han podido crear los recursos internos en cach√©
+Could not get the system external storage directory
+No se ha podido acceder al almacenamiento externo del sistema
+Could not write to:
+No se ha podido escribir en:
+Read-only media (SDCARD)
+Soporte de solo lectura (SDCARD)
+No storage media (SDCARD)
+No hay soporte de almacenamiento (SDCARD)
+HTTrack may not be able to download websites until this problem is fixed
+Puede que HTTrack no pueda descargar sitios web mientras no se corrija este problema
+HTTrack: mirror '%s' stopped!
+HTTrack: ¬°el volcado ¬´%s¬ª se ha detenido!
+Click on this notification to restart the interrupted mirror
+Pulse esta notificaci√≥n para reanudar el volcado interrumpido
+HTTrack: could not save profile for '%s'!
+HTTrack: ¬°no se ha podido guardar el perfil de ¬´%s¬ª!
+Proxy type:
+Tipo de proxy:
+Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request through a CONNECT tunnel, for CONNECT-only proxies like Tor's HTTPTunnelPort. SOCKS5: default port 1080.
+Protocolo del proxy. HTTP: proxy est√°ndar. HTTP (t√∫nel CONNECT): env√≠a cada petici√≥n a trav√©s de un t√∫nel CONNECT, para proxys que solo admiten CONNECT como el HTTPTunnelPort de Tor. SOCKS5: puerto predeterminado 1080.
+Load cookies from file:
+Cargar cookies desde un archivo:
+Preload cookies from a Netscape cookies.txt file before crawling.
+Precargar cookies desde un archivo Netscape cookies.txt antes de comenzar la descarga.
+Pause between files:
+Pausa entre archivos:
+Random delay between file downloads, in seconds. Use MIN:MAX for a random range (e.g. 2:8).
+Retardo aleatorio entre descargas de archivos, en segundos. Use MIN:MAX para un rango aleatorio (p. ej. 2:8).
+Keep the www. prefix (do not merge www.host with host)
+Mantener el prefijo www. (no combinar www.host con host)
+Do not treat www.host and host as the same site.
+No tratar www.host y host como el mismo sitio.
+Keep double slashes in URLs
+Mantener las barras dobles en las URL
+Do not collapse duplicate slashes in URLs.
+No colapsar las barras duplicadas en las URL.
+Keep the original query-string order
+Mantener el orden original de la query string
+Do not reorder query-string parameters when deduplicating URLs.
+No reordenar los par√°metros de la query string al deduplicar las URL.
+Strip query keys:
+Eliminar claves de query string:
+Comma-separated query keys to drop from the saved-file naming (e.g. sid,utm_source).
+Claves de query string, separadas por comas, que se eliminar√°n del nombre de los archivos guardados (p. ej. sid,utm_source).
+Write a WARC archive of the crawl
+Escribir un archivo WARC del rastreo
+Also save every fetched response into an ISO-28500 WARC/1.1 archive, next to the mirror.
+Guardar tambi√©n cada respuesta descargada en un archivo WARC/1.1 ISO-28500, junto a la r√©plica.
+WARC archive name:
+Nombre del archivo WARC:
+Optional base name for the WARC archive; leave blank to auto-name it under the output directory.
+Nombre base opcional para el archivo WARC; d√©jelo en blanco para nombrarlo autom√°ticamente en el directorio de salida.
+Report what changed since the previous mirror
+Informar de los cambios desde la copia anterior
+Also write hts-changes.json listing what this crawl left new, changed, unchanged and gone compared to the previous mirror.
+Escribir tambi√©n hts-changes.json con la lista de lo que esta captura deja como nuevo, modificado, sin cambios o desaparecido respecto a la copia anterior.
+Inline assets as data: URIs (self-contained pages)
+Incrustar los recursos como URI data: (p√°ginas aut√≥nomas)
+Once the mirror is finished, rewrite every saved page with its stylesheets, scripts, images and fonts embedded, so a page can also be opened on its own.
+Una vez terminada la copia, reescribir cada p√°gina guardada con sus hojas de estilo, scripts, im√°genes y fuentes incrustadas, de modo que una p√°gina tambi√©n pueda abrirse por s√≠ sola.
+Largest inlined asset (bytes):
+Tama√±o m√°ximo del recurso incrustado (bytes):
+An asset above this size keeps an ordinary link; leave blank for the 10485760-byte default.
+Un recurso mayor que este tama√±o conserva un enlace normal; d√©jelo vac√≠o para el valor predeterminado de 10485760 bytes.
+Seed the crawl from the site's sitemap
+Iniciar el rastreo desde el mapa del sitio
+Read the site's sitemap (robots.txt Sitemap: lines, then /sitemap.xml) and add every URL it lists as a start URL.
+Leer el mapa del sitio (l√≠neas Sitemap: de robots.txt, luego /sitemap.xml) y a√±adir como direcci√≥n inicial cada URL que incluya.
+Sitemap address:
+Direcci√≥n del mapa del sitio:
+Address of a sitemap to read instead of probing the site; leave blank to probe robots.txt then /sitemap.xml.
+Direcci√≥n de un mapa del sitio que leer en lugar de sondear el sitio; d√©jelo vac√≠o para sondear robots.txt y luego /sitemap.xml.
+Write a CDXJ index of the WARC archive
+Escribir un √≠ndice CDXJ del archivo WARC
+Also write a sorted CDXJ index listing every record in the WARC archive, for replay tools.
+Escribir tambi√©n un √≠ndice CDXJ ordenado con todos los registros del archivo WARC, para las herramientas de reproducci√≥n.
+Package the crawl as a WACZ file
+Empaquetar el rastreo en un archivo WACZ
+Bundle the WARC archive, its CDXJ index and the mirrored pages into a single WACZ file; implies the WARC archive and the CDXJ index.
+Agrupar el archivo WARC, su √≠ndice CDXJ y las p√°ginas de la r√©plica en un √∫nico archivo WACZ; implica el archivo WARC y el √≠ndice CDXJ.
+WARC segment size limit:
+Tama√±o m√°ximo de segmento WARC:
+Start a new WARC segment once the current one grows past this many bytes; leave blank or 0 to keep a single file.
+Empezar un nuevo segmento WARC cuando el actual supere este n√∫mero de bytes; d√©jelo en blanco o 0 para un solo archivo.
+Host aliases:
+Alias de host:
+Other hostnames serving this same site, folded onto one, one rule per line (e.g. www2.example.com,m.example.com=example.com).
+Otros nombres de host que sirven este mismo sitio, unificados en uno solo, una regla por l√≠nea (p. ej. www2.example.com,m.example.com=example.com).
+Mirror %s and every host below it
+Volcar %s y todos los hosts por debajo
+Ignore %s and every host below it
+Ignorar %s y todos los hosts por debajo
+Manual
+Manual

@@ -1,0 +1,36 @@
+#!/bin/bash
+#
+# A frozen backlog slot spools to disk under a path_html-derived name when -p0
+# is in force, into a buffer sized from the save name instead; -N '%n' shortens
+# the save name enough to overrun it. -Z pins that a slot really was spooled,
+# so a build with neither fortify nor ASan still tests something.
+
+set -e
+# shellcheck source=tests/crawllib.sh
+. "${0%"${0##*/}"}./crawllib.sh"
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/httrack_spool.XXXXXX") || exit 1
+cleanup() {
+    rm -rf "$tmpdir"
+}
+cleanup_push cleanup
+
+local_server_start
+
+require_httrack
+
+rc=0
+local_crawl --log "${tmpdir}/log" -O "${tmpdir}/out" --quiet --disable-security-limits --robots=0 --timeout=30 --retries=0 -Z -p0 -N '%n' -c4 "http://127.0.0.1:${SRV_PORT}/bakname/index.html" || rc=$?
+test "$rc" -eq 0 ||
+    fail_dump "httrack exited $rc" "${tmpdir}/log"
+
+enginelog="${tmpdir}/out/hts-log.txt"
+test -r "$enginelog" || fail "no engine log at $enginelog"
+moved=$(count_matching_lines 'slots ready moved to background' "$enginelog")
+test "$moved" -gt 0 || fail "no slot was ever spooled, so the name was never built"
+serr=$(count_matching_lines 'serialize error' "$enginelog")
+test "$serr" -eq 0 || {
+    echo "the spool refused to write:"
+    grep 'serialize error' "$enginelog"
+    exit 1
+}

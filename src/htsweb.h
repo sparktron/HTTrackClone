@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -35,25 +35,9 @@ Please visit our Website: http://www.httrack.com
 
 #include "htsglobal.h"
 #include "htscore.h"
+#include "htsstats.h"
 
-#define NStatsBuffer     14
 #define MAX_LEN_INPROGRESS 40
-
-typedef struct t_StatsBuffer {
-  char name[1024];
-  char file[1024];
-  char state[256];
-  char url_sav[HTS_URLMAXSIZE * 2];     // pour cancel
-  char url_adr[HTS_URLMAXSIZE * 2];
-  char url_fil[HTS_URLMAXSIZE * 2];
-  LLint size;
-  LLint sizetot;
-  int offset;
-  //
-  int back;
-  //
-  int actived;                  // pour disabled
-} t_StatsBuffer;
 
 typedef struct t_InpInfo {
   int ask_refresh;

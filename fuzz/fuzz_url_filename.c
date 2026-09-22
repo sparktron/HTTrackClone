@@ -1,12 +1,12 @@
+#define HTS_INTERNAL_BYTECODE
 #include "htsname.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-extern void url_savename_refname(const char *adr, const char *fil,
-                                 char *filename);
-extern void url_savename_addstr(char *destination, const char *source);
+/* Prototypes come from htsname.h only: a private copy here once hid an
+   upstream signature change and turned into a harness crash. */
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   char *host;
@@ -37,7 +37,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   memset(filename, 0, capacity);
 
   url_savename_refname(host, path, filename);
-  url_savename_addstr(filename, path);
+  url_savename_addstr(filename, capacity, path);
 
   free(host);
   free(path);

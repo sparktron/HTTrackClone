@@ -1,0 +1,82 @@
+#!/bin/bash
+# Issue #198: on a resumed download the server may answer the Range with a 206
+# that starts *before* the offset we asked for (block-aligned ranges). httrack
+# must honor the returned Content-Range, not blindly append, or the overlap
+# bytes get duplicated and the file grows (corrupt PDFs). Pass 1 interrupts
+# flaky.bin mid-body (partial + temp-ref); pass 2 resumes against a 206 that
+# backs up 8 bytes. The result must equal the same bytes fetched whole (full.bin).
+set -eu
+
+# shellcheck source=tests/crawllib.sh
+. "${0%"${0##*/}"}./crawllib.sh"
+
+root=$(nativepath "${testdir}/server-root")
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/httrack_198.XXXXXX") || exit 1
+crawlpid=
+cleanup() {
+    if test -n "$crawlpid"; then kill -9 "$crawlpid" 2>/dev/null || true; fi
+    rm -rf "$tmpdir"
+}
+cleanup_push cleanup
+
+# OVERLAP_COUNTER gets a byte per flaky.bin request so pass 1 knows when to interrupt.
+counter="${tmpdir}/hits"
+resumed="${tmpdir}/resumed" # gets a byte when the server serves a resume 206
+local_server_start --env OVERLAP_COUNTER="$counter" --env OVERLAP_RESUMED="$resumed" --root "$root"
+
+require_httrack
+out="${tmpdir}/crawl"
+common=(-O "$out" --quiet --disable-security-limits --robots=0 --timeout=30 --retries=0 -c1)
+refdir="${out}/hts-cache/ref"
+
+# pass 1: interrupt once flaky.bin's prefix is streaming (partial + temp-ref).
+# The stop is hts-abort.lock, the file a running engine polls for (436). No
+# signal a WSL2 shell sends reaches a native httrack.exe, so every backend takes
+# that path and the Linux leg exercises what Windows runs.
+printf '[pass 1: interrupt flaky.bin] ..\t'
+httrack "${common[@]}" "${BASEURL}/overlap/index.html" >"${tmpdir}/log1" 2>&1 &
+crawlpid=$!
+wait_until "test -s '$counter' && test -e '${out}/hts-in_progress.lock'" \
+    "the crawl never reached flaky.bin"
+# The engine honours a request only when it is newer than its own progress lock,
+# in whole seconds, so wait one out before writing it.
+sleep 1.1
+write_lock_request "$out" hts-abort.lock "$crawlpid"
+# This 10s wait stays inside --timeout=30, so the fetch is still stalled.
+wait_until "test ! -e '${out}/hts-abort.lock'" \
+    "10s on, the engine had not read the stop request" 100
+# Unwinding a transfer cut mid-socket takes a while, as it does in 436.
+wait_until "! kill -0 '$crawlpid' 2>/dev/null" "the engine never shut down" 900
+wait "$crawlpid" 2>/dev/null || true
+crawlpid=
+test -n "$(find "$refdir" -name '*.ref' 2>/dev/null)" || fail "no temp-ref survived pass 1; cannot drive the resume"
+echo "OK (temp-ref present)"
+
+# pass 2: --continue -> resume Range -> 206 that starts 8 bytes early.
+printf '[pass 2: resume flaky.bin] ..\t'
+local_crawl --log "${tmpdir}/log2" "${common[@]}" --continue "${BASEURL}/overlap/index.html" || true
+echo "OK"
+
+# Guard against a silent full re-download: the byte-compare below only tests the
+# fix if pass 2 actually went through the resume Range -> 206 path.
+printf '[resume path was exercised] ..\t'
+if ! test -s "$resumed"; then
+    echo "FAIL: pass 2 never triggered a resume 206; the overlap fix was not exercised"
+    exit 1
+fi
+echo "OK"
+
+printf '[resumed file is not corrupted] ..\t'
+dir=$(find "$out" -maxdepth 1 -type d -name '127.0.0.1*' | head -1)
+flaky="${dir}/overlap/flaky.bin"
+full="${dir}/overlap/full.bin"
+if ! test -f "$flaky" || ! test -f "$full"; then
+    echo "FAIL: flaky.bin or full.bin missing after pass 2"
+    exit 1
+fi
+if ! cmp -s "$flaky" "$full"; then
+    echo "FAIL: resumed flaky.bin ($(wc -c <"$flaky")) != full.bin ($(wc -c <"$full")); overlap duplicated"
+    exit 1
+fi
+echo "OK ($(wc -c <"$flaky") bytes, byte-identical)"

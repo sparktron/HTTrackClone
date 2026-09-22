@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -61,12 +61,22 @@ typedef struct lien_adrfilsave lien_adrfilsave;
 
 /* définitions globales */
 #include "htsglobal.h"
+#include "htsdate.h"
+#include "htsurlport.h"
 
 /* basic net definitions */
 #include "htsbase.h"
 #include "htsbasenet.h"
 #include "htsnet.h"
 #include "htsdefines.h"
+
+#ifndef _WIN32
+#include <signal.h>
+#include <time.h>
+#if defined(THREADS)
+#include <pthread.h>
+#endif
+#endif
 
 /* readdir() */
 #ifndef _WIN32
@@ -80,6 +90,12 @@ typedef struct lien_adrfilsave lien_adrfilsave;
 // Attention, définition existante également dans le shell
 // (à modifier avec celle-ci)
 #define POSTTOK "?>post"
+
+/* Is this Location free of the >post: tokens? A redirect naming one makes the
+   engine send a local file back to whoever chose the value, so every place
+   that fills a location has to refuse it, the cache and a resume ref
+   included. */
+hts_boolean hts_location_is_safe(const char *location);
 
 #include "htsopt.h"
 
@@ -147,12 +163,84 @@ struct OLD_htsblk {
 #define HTS_DEF_FWSTRUCT_t_dnscache
 typedef struct t_dnscache t_dnscache;
 #endif
+// One DNS cache record, stored as a coucal value keyed by hostname.
 struct t_dnscache {
-  struct t_dnscache *next;
-  const char *iadr;
-  size_t host_length;                   // length ; (4 or 16) ; 0 for error
-  char host_addr[HTS_MAXADDRLEN];
+  // resolved addresses, in resolver (RFC 6724) order; host_count==0 means the
+  // name does not resolve (negative cache). host_count<=HTS_MAXADDRNUM.
+  int host_count;
+  size_t host_length[HTS_MAXADDRNUM]; // sockaddr length of each (16 or 28)
+  char host_addr[HTS_MAXADDRNUM][HTS_MAXADDRLEN];
+  // mtime_local() past which a negative record must be resolved again, and
+  // when it was stored; both 0 on a positive one, which never expires
+  TStamp expiry;
+  TStamp stored;
+  int failures; // consecutive failed resolves, which lengthen the next wait
 };
+
+/* Break t down as UTC into the caller's buffer, HTS_FALSE if that failed.
+   gmtime()'s static is shared, and both the engine and ProxyTrack convert on
+   worker threads. */
+static HTS_INLINE HTS_UNUSED hts_boolean hts_gmtime(time_t t,
+                                                    struct tm *tmbuf) {
+#ifdef _WIN32
+  /* Microsoft's gmtime_s takes the destination first, unlike C11 Annex K. */
+  return gmtime_s(tmbuf, &t) == 0 ? HTS_TRUE : HTS_FALSE;
+#else
+  return gmtime_r(&t, tmbuf) != NULL ? HTS_TRUE : HTS_FALSE;
+#endif
+}
+
+/* Break t down as local time into the caller's buffer, HTS_FALSE if that
+   failed. localtime()'s static is shared, same rationale as hts_gmtime(). */
+static HTS_INLINE HTS_UNUSED hts_boolean hts_localtime(time_t t,
+                                                       struct tm *tmbuf) {
+#ifdef _WIN32
+  return localtime_s(tmbuf, &t) == 0 ? HTS_TRUE : HTS_FALSE;
+#else
+  return localtime_r(&t, tmbuf) != NULL ? HTS_TRUE : HTS_FALSE;
+#endif
+}
+
+/* Capacity the hts_strerror() callers pass; a longer message is clipped. */
+#define HTS_STRERROR_SIZE 128
+
+/* 0 where the build found no reentrant form and kept plain strerror(). */
+#if defined(_MSC_VER) || defined(HAVE_STRERROR_R)
+#define HTS_STRERROR_REENTRANT 1
+#else
+#define HTS_STRERROR_REENTRANT 0
+#endif
+
+/* Write the message for errno value err into buf, and return buf. strerror()
+   answers with a buffer the caller does not own: glibc reuses a per-thread one
+   and frees it at thread exit, and POSIX allows one shared static. */
+const char *hts_strerror(int err, char *buf, size_t size);
+
+/* A modification time at the finest resolution this build can read. Compare it
+   only against another value hts_file_mtime() produced, because the epoch is
+   the platform's. */
+typedef struct hts_filetime_t {
+  int64_t sec;  /* not a time_t: Windows counts from 1601, so never print it */
+  int32_t nsec; /* 0 where neither the build nor the filesystem is finer */
+  /* S_ISREG, except on Windows, where every non-directory counts as one. */
+  hts_boolean is_plain_file;
+} hts_filetime_t;
+
+/* Read FILE's modification time into WHEN. False if it can not be read, and
+   WHEN is then untouched. */
+hts_boolean hts_file_mtime(const char *file, hts_filetime_t *when);
+
+/* Is A a plain file stamped strictly later than B? False unless both can be
+   read. Sub-second where the platform gives it, so a request made in the second
+   a mirror started still sorts after that mirror's hts-in_progress.lock.
+   Exported because httrack.c links the library and sees only exported
+   symbols. */
+HTSEXT_API hts_boolean hts_file_is_newer(const char *a, const char *b);
+
+/* Move FILE's modification time SECONDS back, keeping the fraction, which the
+   utimes fallback rounds down to the microsecond. False if the stamp could not
+   be read or written, and FILE then keeps the time it had. */
+hts_boolean hts_file_backdate(const char *file, int seconds);
 
 /* Library internal definictions */
 #ifdef HTS_INTERNAL_BYTECODE
@@ -169,41 +257,130 @@ HTSEXT_API const char* hts_version(void);
 // fonctions unix/winsock
 int hts_read(htsblk * r, char *buff, int size);
 
-//int HTS_TOTAL_RECV_CHECK(int var);
 LLint check_downloadable_bytes(int rate);
 
 HTSEXT_API int hts_uninit_module(void);
 
 // fonctions principales
-T_SOC http_fopen(httrackp * opt, const char *adr, const char *fil, htsblk * retour);
 T_SOC http_xfopen(httrackp * opt, int mode, int treat, int waitconnect,
                   const char *xsend, const char *adr, const char *fil, htsblk * retour);
 int http_sendhead(httrackp * opt, t_cookie * cookie, int mode, const char *xsend,
                   const char *adr, const char *fil,
                   const char *referer_adr, const char *referer_fil,
                   htsblk * retour);
+/* Build the request "Cookie:" header line for stored cookies matching
+   domain/path into dst (NUL-terminated), wrapping the logic http_sendhead()
+   uses. A port in domain is ignored (see cookie_host). Returns cookies
+   emitted. */
+int http_cookie_header(t_cookie *cookie, const char *domain, const char *path,
+                       char *dst, size_t dst_size);
 
-//int newhttp(char* iadr,char* err=NULL);
+/* True if the raw CRLF-separated custom request-header block starts a line with
+   `field_name`, given without the trailing colon (which is tolerated). */
+hts_boolean http_headers_have_field(const char *headers,
+                                    const char *field_name);
+
+/* True when the response stored no body and no status excuses it: a redirect to
+   follow, or the 412/416 whose stale resume partial the parser re-gets. */
+hts_boolean hts_body_missing_unexpectedly(const htsblk *r);
+
+/* Append the custom header block to dst (capacity dst_size), dropping any line
+   whose field dst carries plus its folded continuations. Aborts on overflow. */
+void http_append_custom_headers(char *dst, size_t dst_size,
+                                const char *headers);
+
+/* Append the raw remainder of a >postfile: body into buffer (capacity
+   buffer_size) at write position pos, and return the new position. Clips to
+   the room left, and always leaves a NUL at the position returned: the request
+   block is read back with strlen() by the WARC stash, the sendhead callback
+   and sendc(). A NUL inside the file ends the request there. */
+size_t http_postfile_body(char *buffer, size_t buffer_size, size_t pos,
+                          FILE *fp);
+
+/* Switch soc between blocking and non-blocking mode; false on failure, with
+   errno (WSAGetLastError() on Windows) set. */
+hts_boolean socket_set_nonblocking(T_SOC soc, hts_boolean nonblocking);
+/* Pending-connect result for a non-blocking socket reported ready by select():
+   0 = connected, >0 = the connect errno (refused, unreachable, ...), -1 if the
+   probe itself failed. A failed connect is reported ready as well (writable on
+   posix, exception set on winsock), so this is how success is told from failure
+   without blocking. */
+int connect_socket_error(T_SOC soc);
+
 T_SOC newhttp(httrackp * opt, const char *iadr, htsblk * retour, int port,
               int waitconnect);
+/* Like newhttp(), but connect to the addr_index-th resolved address of the host
+   (0-based) instead of always the first; *addr_count, if non-NULL, is set to
+   the total resolved addresses. newhttp() == newhttp_addr(...,0,NULL). Used by
+   the slot scheduler to try the next address when a connect fails (dead IPv6
+   etc.). */
+T_SOC newhttp_addr(httrackp *opt, const char *iadr, htsblk *retour, int port,
+                   int waitconnect, int addr_index, int *addr_count);
+/* Clips the formatted failure reason into r->msg, which also round-trips
+   through the cache as X-StatusMessage. Leaves r->statuscode to the caller. */
+#define htsblk_failf(R, ...)                                                   \
+  slprintfbuff_clip((R)->msg, sizeof((R)->msg), __VA_ARGS__)
+
 HTS_INLINE void deletehttp(htsblk * r);
 HTS_INLINE int deleteaddr(htsblk * r);
 HTS_INLINE void deletesoc(T_SOC soc);
-HTS_INLINE void deletesoc_r(htsblk * r);
-htsblk http_test(httrackp * opt, const char *adr, const char *fil, char *loc);
+HTS_INLINE void deletesoc_r(htsblk *r);
 int check_readinput(htsblk * r);
 int check_readinput_t(T_SOC soc, int timeout);
+int check_writeinput_t(T_SOC soc, int timeout);
+
+/* TRUE if str[0..len) holds no byte below ' '. A control byte in a value the
+   client puts on a protocol line (an FTP command, a CONNECT authority, a
+   SOCKS5 host) smuggles a line or a field of its own. */
+hts_boolean hts_is_control_free_sized(const char *str, size_t len);
+
+/* Same over a NUL-terminated string. */
+hts_boolean hts_is_control_free(const char *str);
+
+/* TRUE if host[0..len) is an IPv4 literal: digits and dots, at least one dot.
+   Such a host has no domain structure to reverse or to widen into. */
+hts_boolean hts_host_is_ipv4(const char *host, size_t len);
+
+/* TRUE if this -P proxy name (which keeps its scheme) is a SOCKS5 proxy. */
+hts_boolean hts_proxy_is_socks(const char *name);
+
+/* TRUE if this -P proxy name is a "connect://" CONNECT-only proxy (#564). */
+hts_boolean hts_proxy_is_connect(const char *name);
+
 void treathead(t_cookie * cookie, const char *adr, const char *fil, htsblk * retour,
                char *rcvd);
 void treatfirstline(htsblk * retour, const char *rcvd);
 
 // sous-fonctions
+/* Buffer http_xfread1() fills in its line modes, and so the ceiling on any
+   blank-line-terminated block it reads: a header section or a chunk trailer
+   section. Overrunning it fails the transfer. */
+#define HTS_LINE_BLOCK_SIZE 8192
+/* http_xfread1() read modes: a positive bufl reads at most that many raw bytes,
+   anything else reads CR-stripped lines into the HTS_LINE_BLOCK_SIZE buffer. */
+#define HTS_XFREAD_LINE_BLOCK 0 /* lines up to a blank one (header/trailer) */
+#define HTS_XFREAD_LINE (-1)    /* one line, stopping at the first LF */
 LLint http_xfread1(htsblk * r, int bufl);
-HTS_INLINE SOCaddr* hts_dns_resolve2(httrackp * opt, const char *iadr,
-                                     SOCaddr *const addr, 
-                                     const char **error);
-HTS_INLINE SOCaddr* hts_dns_resolve(httrackp * opt, const char *iadr,
-                                    SOCaddr *const addr);
+/* Does an in-memory body of this size fit? r->adr is indexed with an int
+   downstream and its allocations add a trailing NUL, so every producer of
+   r->size must refuse where http_xfread1() does. */
+hts_boolean hts_inmem_size_fits(LLint size);
+/* Cached resolver: fill out[0..count-1] with up to max addresses for iadr (in
+   resolver order), returning the count (0 = does not resolve, negative-cached).
+   Resolves once per host; later calls read the DNS cache. Must hold no lock
+   (brackets opt->state.lock itself, never across the resolve). A miss resolves
+   on a worker thread bounded by opt->timeout and cut short by a mirror stop;
+   either reports 0, uncached. */
+int hts_dns_resolve_all(httrackp *opt, const char *iadr, SOCaddr *out, int max,
+                        const char **error);
+/* Like hts_dns_resolve_all(), with the wait bounded by timeout seconds (<= 0:
+   unbounded) and cut short as soon as *cancel, if given, is raised. */
+int hts_dns_resolve_all_bounded(httrackp *opt, const char *iadr, SOCaddr *out,
+                                int max, int timeout,
+                                const volatile hts_boolean *cancel,
+                                const char **error);
+HTS_INLINE SOCaddr *hts_dns_resolve2(httrackp *opt, const char *iadr,
+                                     SOCaddr *const addr, const char **error);
 HTSEXT_API SOCaddr* hts_dns_resolve_nocache2(const char *const hostname, 
                                               SOCaddr *const addr,
                                               const char **error);
@@ -214,43 +391,56 @@ HTSEXT_API int check_hostname_dns(const char *const hostname);
 int ftp_available(void);
 
 #if HTS_DNSCACHE
-void hts_cache_free(t_dnscache *const cache);
-t_dnscache *hts_cache(httrackp * opt);
+/* Return opt's DNS cache hashtable (hostname -> t_dnscache record), creating it
+   on first use. Records are owned by the table and freed on coucal_delete. */
+coucal hts_cache(httrackp *opt);
 #endif
+
+/* How long a name that did not resolve stays negative-cached, and the ceiling
+   the wait doubles up to. */
+#define HTS_DNS_NEGATIVE_TTL_MS 60000
+#define HTS_DNS_NEGATIVE_TTL_MAX_MS 900000
+/* Wait before asking again, after this many consecutive failures (>= 1). */
+int hts_dns_negative_wait_ms(int failures);
+/* Test-only: shorten the first wait so a self-test need not wait a minute. */
+void hts_dns_set_negative_ttl_ms(int ms);
+/* Consecutive failed resolves recorded for host, 0 if it is not cached or
+   resolves. Test-only: nothing in the engine reads it back. */
+int hts_dns_negative_failures(httrackp *opt, const char *host);
+/* Test-only: move one cached negative record's stamps by ms, so a self-test
+   outlasts a wait (positive) or steps behind them (negative), no sleeps. */
+void hts_dns_test_move_clock(httrackp *opt, const char *host, TStamp ms);
 
 // outils divers
 HTS_INLINE TStamp time_local(void);
 
 void sec2str(char *s, TStamp t);
 
-/* Reentrant localtime()/gmtime().
-   The plain versions return a pointer into shared static storage, and these
-   are called from crawler worker threads, so concurrent calls corrupt each
-   other's results. Return NULL on failure, like the originals.
-   'buffer' must be supplied by the caller. */
-struct tm *hts_localtime_r(const time_t *t, struct tm *buffer);
-struct tm *hts_gmtime_r(const time_t *t, struct tm *buffer);
-
-/* Reentrant strerror().
-   POSIX does not require strerror() to be thread-safe, and these messages are
-   formatted from crawler worker threads. Formats into a small per-thread
-   buffer, so the returned pointer stays valid until this thread calls it
-   again -- which makes it a drop-in for strerror() at a call site that uses
-   the result immediately. */
-HTSEXT_API const char *hts_strerror(int err);
-
 void time_gmt_rfc822(char *s);
 void time_local_rfc822(char *s);
-struct tm *convert_time_rfc822(struct tm *buffer, const char *s);
+
+/* Current UTC time as "YYYY-MM-DDThh:mm:ssZ". */
+void hts_now_iso8601(char out[32]);
+
 int set_filetime(const char *file, struct tm *tm_time);
 int set_filetime_rfc822(const char *file, const char *date);
+/* File mtime as a UTC time_t, or (time_t) -1 if it can not be read. */
+time_t get_filetime(const char *file);
 int get_filetime_rfc822(const char *file, char *date);
 HTS_INLINE void time_rfc822(char *s, struct tm *A);
 HTS_INLINE void time_rfc822_local(char *s, struct tm *A);
 
 HTS_INLINE int sendc(htsblk * r, const char *s);
-int finput(T_SOC fd, char *s, int max);
-int binput(char *buff, char *s, int max);
+/* Returns the advance past the line's terminator. Unlike binput_line(), "max"
+   excludes the NUL: "s" must hold max + 1 bytes. */
+int binput(const char *buff, char *s, int max);
+/* Read one line, from a buffer up to "end" or from a socket, consuming it whole
+   even when it does not fit "s". HTS_TRUE means it was cut: the value is not
+   what was written, so drop it rather than parse a prefix of it.
+   binput_line() reports the advance through *offset. */
+hts_boolean binput_line(const char *buff, const char *end, char *s, int max,
+                        int *offset);
+hts_boolean finput_line(T_SOC fd, char *s, int max);
 int linput(FILE * fp, char *s, int max);
 int linputsoc(T_SOC soc, char *s, int max);
 int linputsoc_t(T_SOC soc, char *s, int max, int timeout);
@@ -260,18 +450,18 @@ void rawlinput(FILE * fp, char *s, int max);
 const char *strstrcase(const char *s, const char *o);
 int ident_url_absolute(const char *url, lien_adrfil *adrfil);
 void fil_simplifie(char *f);
-int is_unicode_utf8(const char *buffer, const size_t size);
 void map_characters(unsigned char *buffer, unsigned int size,
                     unsigned int *map);
 int ishtml(httrackp * opt, const char *urlfil);
 int ishtml_ext(const char *a);
 int ishttperror(int err);
 
-int get_userhttptype(httrackp * opt, char *s, const char *fil);
-/* Smallest buffer any caller hands to give_mimext() for s. The longest
-   extension in hts_mime[] is 7 characters. */
-#define GIVE_MIMEXT_MIN_SIZE 16
-void give_mimext(char *s, const char *st);
+/* Write fil's --assume type into s (capacity ssize, NUL included); too long a
+   value is clipped, not fatal. True if a rule matched, s then holding its
+   value, which "--assume cgi=" leaves empty. */
+hts_boolean get_userhttptype(httrackp *opt, char *s, size_t ssize,
+                             const char *fil);
+int give_mimext(char *s, size_t ssize, const char *st);
 
 int may_bogus_multiple(httrackp * opt, const char *mime, const char *filename);
 int may_unknown2(httrackp * opt, const char *mime, const char *filename);
@@ -279,20 +469,85 @@ int may_unknown2(httrackp * opt, const char *mime, const char *filename);
 const char *strrchr_limit(const char *s, char c, const char *limit);
 char *jump_protocol(char *source);
 const char *jump_protocol_const(const char *source);
+
+/* Split a -P proxy argument "[scheme://][user:pass@]host[:port]" into the proxy
+   host string (scheme and any user:pass kept, for later stripping and auth),
+   written NUL-terminated into name[name_size] (truncated to fit), and the port
+   in *port. The port defaults by scheme: 1080 for socks5/socks5h, else 8080. */
+void hts_parse_proxy(const char *arg, char *name, size_t name_size, int *port);
 void code64(unsigned char *a, int size_a, unsigned char *b, int crlf);
 
-#define copychar(catbuff,a) concat(catbuff,(a),NULL)
-
-char *convtolower(char *catbuff, size_t size, const char *a);
+char *convtolower(char *catbuff, size_t catbuffsize, const char *a);
 void hts_lowcase(char *s);
-void hts_replace(char *s, char from, char to);
 int multipleStringMatch(const char *s, const char *match);
 
 void fprintfio(FILE * fp, const char *buff, const char *prefix);
 
-#ifdef _WIN32
+/* A write to a socket whose peer is gone raises SIGPIPE, and the default
+   action kills the process. The library must not install a handler, because
+   the process belongs to whoever embedded us. Three steps leave the host's
+   signals alone, and each covers what the others cannot:
+     - HTS_MSG_NOSIGNAL on every send() we issue. Absent on macOS.
+     - SO_NOSIGPIPE on every socket we write to. Absent on Linux, and the only
+       one that reaches OpenSSL, which writes with write(2).
+     - the mask below, around the OpenSSL calls that write. */
+#ifdef MSG_NOSIGNAL
+#define HTS_MSG_NOSIGNAL MSG_NOSIGNAL
 #else
-int sig_ignore_flag(int setflag);  // flag ignore
+#define HTS_MSG_NOSIGNAL 0
+#endif
+
+void socket_set_nosigpipe(T_SOC soc);
+
+/* Windows raises no SIGPIPE. Elsewhere this arm is Darwin, which has no
+   sigtimedwait and does have SO_NOSIGPIPE, so the socket already covers it. */
+#if defined(_WIN32) || !defined(HAVE_SIGTIMEDWAIT)
+typedef struct {
+  int unused;
+} sigpipe_mask;
+
+static HTS_INLINE HTS_UNUSED void sigpipe_hold(sigpipe_mask *m) { (void) m; }
+
+static HTS_INLINE HTS_UNUSED void sigpipe_release(sigpipe_mask *m) { (void) m; }
+#else
+#if defined(THREADS)
+#define HTS_SIGMASK(how, set, old) pthread_sigmask(how, set, old)
+#else
+#define HTS_SIGMASK(how, set, old) sigprocmask(how, set, old)
+#endif
+
+/* Thread mask only, so the host's handler and disposition are untouched. */
+typedef struct {
+  sigset_t mask;   /* what to put back */
+  int held;        /* the mask above is ours to restore */
+  int was_pending; /* the host had one queued already, so leave it alone */
+} sigpipe_mask;
+
+static HTS_INLINE HTS_UNUSED void sigpipe_hold(sigpipe_mask *m) {
+  sigset_t block, pending;
+
+  m->held = 0;
+  m->was_pending =
+      sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE) == 1;
+  if (sigemptyset(&block) == 0 && sigaddset(&block, SIGPIPE) == 0 &&
+      HTS_SIGMASK(SIG_BLOCK, &block, &m->mask) == 0)
+    m->held = 1;
+}
+
+static HTS_INLINE HTS_UNUSED void sigpipe_release(sigpipe_mask *m) {
+  sigset_t ours;
+  struct timespec now = {0, 0};
+
+  if (!m->held)
+    return;
+  /* Take back the one our own write queued, or nothing. sigtimedwait() with a
+     zero timeout cannot block, where sigwait() hangs for good if another
+     thread takes a process-directed SIGPIPE first. */
+  if (!m->was_pending && sigemptyset(&ours) == 0 &&
+      sigaddset(&ours, SIGPIPE) == 0)
+    (void) sigtimedwait(&ours, NULL, &now);
+  (void) HTS_SIGMASK(SIG_SETMASK, &m->mask, NULL);
+}
 #endif
 
 void cut_path(char *fullpath, char *path, size_t path_size, char *pname,
@@ -300,10 +555,11 @@ void cut_path(char *fullpath, char *path, size_t path_size, char *pname,
 int fexist(const char *s);
 int fexist_utf8(const char *s);
 
-/*LLint fsize(const char* s);    */
-off_t fpsize(FILE * fp);
-off_t fsize(const char *s);
-off_t fsize_utf8(const char *s);
+/* File size in bytes, -1 if absent or not a regular file. LLint, not off_t:
+   the latter is a 32-bit long on MSVC, truncating any file of 2GB or more. */
+LLint fpsize(FILE *fp);
+LLint fsize(const char *s);
+LLint fsize_utf8(const char *s);
 
 // Threads
 typedef void *(*beginthread_type) (void *);
@@ -340,16 +596,12 @@ void *hts_get_callback(t_hts_htmlcheck_callbacks * callbacks,
 #define CBSTRUCT(OPT) ((t_hts_htmlcheck_callbacks*) ((OPT)->callbacks_fun))
 #define GET_USERCALLBACK(OPT, NAME) ( CBSTRUCT(OPT)-> NAME .fun )
 #define GET_USERARG(OPT, NAME) ( CBSTRUCT(OPT)-> NAME .carg )
-#define GET_USERDEF(OPT, NAME) ( \
-  (CBSTRUCT(OPT) != NULL && CBSTRUCT(OPT)-> NAME .fun != NULL) \
-	? ( GET_USERARG(OPT, NAME) ) \
-	: ( default_callbacks. NAME .carg ) \
-)
-#define GET_CALLBACK(OPT, NAME) ( \
-  (CBSTRUCT(OPT) != NULL && CBSTRUCT(OPT)-> NAME .fun != NULL) \
-	? ( GET_USERCALLBACK(OPT, NAME ) ) \
-  : ( default_callbacks. NAME .fun ) \
-)
+/* True when a front end registered its own NAME callback */
+#define HAS_CALLBACK(OPT, NAME)                                                \
+  (CBSTRUCT(OPT) != NULL && CBSTRUCT(OPT)->NAME.fun != NULL)
+#define GET_CALLBACK(OPT, NAME)                                                \
+  (HAS_CALLBACK(OPT, NAME) ? (GET_USERCALLBACK(OPT, NAME))                     \
+                           : (default_callbacks.NAME.fun))
 
 /* Predefined macros */
 #define RUN_CALLBACK_NOARG(OPT, NAME) GET_CALLBACK(OPT, NAME)(GET_USERARG(OPT, NAME))
@@ -360,21 +612,9 @@ void *hts_get_callback(t_hts_htmlcheck_callbacks * callbacks,
 #define RUN_CALLBACK4(OPT, NAME, ARG1, ARG2, ARG3, ARG4) GET_CALLBACK(OPT, NAME)(GET_USERARG(OPT, NAME), OPT, ARG1, ARG2, ARG3, ARG4)
 #define RUN_CALLBACK5(OPT, NAME, ARG1, ARG2, ARG3, ARG4, ARG5) GET_CALLBACK(OPT, NAME)(GET_USERARG(OPT, NAME), OPT, ARG1, ARG2, ARG3, ARG4, ARG5)
 #define RUN_CALLBACK6(OPT, NAME, ARG1, ARG2, ARG3, ARG4, ARG5, ARG6) GET_CALLBACK(OPT, NAME)(GET_USERARG(OPT, NAME), OPT, ARG1, ARG2, ARG3, ARG4, ARG5, ARG6)
-#define RUN_CALLBACK7(OPT, NAME, ARG1, ARG2, ARG3, ARG4, ARG5, ARG6, ARG7) GET_CALLBACK(OPT, NAME)(GET_USERARG(OPT, NAME), OPT, ARG1, ARG2, ARG3, ARG4, ARG5, ARG6, ARG7)
-#define RUN_CALLBACK8(OPT, NAME, ARG1, ARG2, ARG3, ARG4, ARG5, ARG6, ARG7, ARG8) GET_CALLBACK(OPT, NAME)(GET_USERARG(OPT, NAME), OPT, ARG1, ARG2, ARG3, ARG4, ARG5, ARG6, ARG7, ARG8)
-
-/*
-#define GET_CALLBACK(OPT, NAME, ARG) ( \
-  ( \
-    ( ARG ) = GET_USERDEF(OPT, NAME), \
-    ( \
- 	    (CBSTRUCT(OPT) != NULL && CBSTRUCT(OPT)-> NAME .fun != NULL) \
-	    ? ( GET_USERCALLBACK(OPT, NAME ) ) \
-      : ( default_callbacks. NAME .fun ) \
-    ) \
-  ) \
-)
-*/
+#define RUN_CALLBACK7(OPT, NAME, ARG1, ARG2, ARG3, ARG4, ARG5, ARG6, ARG7)     \
+  GET_CALLBACK(OPT, NAME)(GET_USERARG(OPT, NAME), OPT, ARG1, ARG2, ARG3, ARG4, \
+                          ARG5, ARG6, ARG7)
 
 /* UTF-8 aware FILE API */
 #ifndef HTS_DEF_FILEAPI
@@ -383,7 +623,8 @@ void *hts_get_callback(t_hts_htmlcheck_callbacks * callbacks,
      HTSEXT_API FILE *hts_fopen_utf8(const char *path, const char *mode);
 
 #define STAT hts_stat_utf8
-     typedef struct _stat STRUCT_STAT;
+     /* _stat64: _stat's st_size is a 32-bit long, even in x64 builds */
+     typedef struct _stat64 STRUCT_STAT;
      HTSEXT_API int hts_stat_utf8(const char *path, STRUCT_STAT * buf);
 
 #define UNLINK hts_unlink_utf8
@@ -424,7 +665,6 @@ void *hts_get_callback(t_hts_htmlcheck_callbacks * callbacks,
 #define PATH_SEPARATOR '/'
 #endif
 
-/* Spaces: CR,LF,TAB,FF */
 #define  is_space(c)      ( ((c)==' ') || ((c)=='\"') || ((c)==10) || ((c)==13) || ((c)==9) || ((c)==12) || ((c)==11) || ((c)=='\'') )
 #define  is_realspace(c)  ( ((c)==' ')                || ((c)==10) || ((c)==13) || ((c)==9) || ((c)==12) || ((c)==11)                )
 #define  is_taborspace(c) ( ((c)==' ')                                          || ((c)==9)                             )
@@ -480,26 +720,51 @@ HTS_STATIC int strcmpnocase(const char *a, const char *b) {
 #define snprintf _snprintf
 #endif
 
+/* MSVC ships these POSIX functions under other names. Kept out of the installed
+   headers: they would rewrite the same identifiers in a consumer's own code. */
+#ifdef _MSC_VER
+#define fseeko _fseeki64
+#define ftello _ftelli64
+#define timegm _mkgmtime
+#endif
+
 #define strfield2(f,s) ( (strlen(f)!=strlen(s)) ? 0 : (strfield(f,s)) )
 
 // is this MIME an hypertext MIME (text/html), html/js-style or other script/text type?
 #define HTS_HYPERTEXT_DEFAULT_MIME "text/html"
+/* Sentinel stored when the server declared no Content-Type. It is html-ish
+   for every type test (so a typeless response still parses/stores as today),
+   but the naming code (wire_patches_ext) treats it as "no declared type" and
+   keeps the URL extension. It rides the cache, so updates name consistently. */
+#define HTS_UNKNOWN_MIME "unknown/unknown"
+/* Map the no-declared-type sentinel back to a real type for any header or
+   record we EMIT or PERSIST, so "unknown/unknown" never reaches a consumer
+   (a served Content-Type, a ProxyTrack .arc record, ...). */
+#define hts_effective_mime(m)                                                  \
+  (strfield2((m), HTS_UNKNOWN_MIME) ? HTS_HYPERTEXT_DEFAULT_MIME : (m))
 
-#define is_html_mime_type(a) \
-  ( (strfield2((a),"text/html")!=0)\
-  || (strfield2((a),"application/xhtml+xml")!=0) \
+#define is_html_mime_type(a)                                                   \
+  ((strfield2((a), "text/html") != 0) ||                                       \
+   (strfield2((a), "application/xhtml+xml") != 0) ||                           \
+   (strfield2((a), HTS_UNKNOWN_MIME) !=                                        \
+    0) /* no declared type: treat as html */                                   \
   )
-#define is_hypertext_mime__(a) \
-  ( \
-  is_html_mime_type(a)\
-  || (strfield2((a),"application/x-javascript")!=0) \
-  || (strfield2((a),"text/css")!=0) \
-  /*|| (strfield2((a),"text/vnd.wap.wml")!=0)*/ \
-  || (strfield2((a),"image/svg+xml")!=0) \
-  || (strfield2((a),"image/svg-xml")!=0) \
-  /*|| (strfield2((a),"audio/x-pn-realaudio")!=0) */\
-  || (strfield2((a),"application/x-authorware-map")!=0) \
-  )
+/* Every JavaScript type we link-scan: IANA's text/javascript, which is what
+   servers send and what our own table emits for .mjs, plus the legacy
+   application spellings .js still maps to. */
+#define is_javascript_mime_type(a)                                             \
+  ((strfield2((a), "text/javascript") != 0) ||                                 \
+   (strfield2((a), "application/javascript") != 0) ||                          \
+   (strfield2((a), "application/x-javascript") != 0) ||                        \
+   (strfield2((a), "application/ecmascript") != 0))
+#define is_hypertext_mime__(a)                                                 \
+  (is_html_mime_type(a) || is_javascript_mime_type(a) ||                       \
+   (strfield2((a), "text/css") !=                                              \
+    0) /*|| (strfield2((a),"text/vnd.wap.wml")!=0)*/                           \
+   || (strfield2((a), "image/svg+xml") != 0) ||                                \
+   (strfield2((a), "image/svg-xml") !=                                         \
+    0) /*|| (strfield2((a),"audio/x-pn-realaudio")!=0) */                      \
+   || (strfield2((a), "application/x-authorware-map") != 0))
 #define may_be_hypertext_mime__(a) \
    (\
      (strfield2((a),"audio/x-pn-realaudio")!=0) \
@@ -519,8 +784,25 @@ HTS_STATIC int is_hypertext_mime(httrackp * opt, const char *mime,
     char guessed[256];
 
     guessed[0] = '\0';
-    guess_httptype(opt, guessed, file);
+    if (!guess_httptype_sized(opt, guessed, sizeof(guessed), file))
+      return 0;
     return is_hypertext_mime__(guessed);
+  }
+  return 0;
+}
+
+// check if (mime, file) is JavaScript, guessing from the extension as above
+HTS_STATIC int is_javascript_mime(httrackp *opt, const char *mime,
+                                  const char *file) {
+  if (is_javascript_mime_type(mime))
+    return 1;
+  if (file != NULL && file[0] != '\0' && may_unknown(opt, mime)) {
+    char guessed[256];
+
+    guessed[0] = '\0';
+    if (!guess_httptype_sized(opt, guessed, sizeof(guessed), file))
+      return 0;
+    return is_javascript_mime_type(guessed);
   }
   return 0;
 }
@@ -534,7 +816,8 @@ HTS_STATIC int may_be_hypertext_mime(httrackp * opt, const char *mime,
     char guessed[256];
 
     guessed[0] = '\0';
-    guess_httptype(opt, guessed, file);
+    if (!guess_httptype_sized(opt, guessed, sizeof(guessed), file))
+      return 0;
     return may_be_hypertext_mime__(guessed);
   }
   return 0;
@@ -549,7 +832,8 @@ HTS_STATIC int compare_mime(httrackp * opt, const char *mime, const char *file,
     char guessed[256];
 
     guessed[0] = '\0';
-    guess_httptype(opt, guessed, file);
+    if (!guess_httptype_sized(opt, guessed, sizeof(guessed), file))
+      return 0;
     return strfield2(guessed, reference);
   }
   return 0;
@@ -558,18 +842,35 @@ HTS_STATIC int compare_mime(httrackp * opt, const char *mime, const char *file,
 #endif
 
 // returns (size_t) -1 upon error
-static HTS_UNUSED size_t off_t_to_size_t(off_t o) {
+static HTS_UNUSED size_t llint_to_size_t(LLint o) {
   const size_t so = (size_t) o;
-  if ((off_t) so == o) {
+  if ((LLint) so == o) {
     return so;
   } else {
     return (size_t) -1;
   }
 }
 
+/* Capacity for @p used bytes plus @p extra more plus @p slack spare;
+   (size_t) -1 if the total exceeds (size_t) -2 or @p extra is negative
+   (llint_to_size_t() would map that to a huge valid-looking size). */
+static HTS_UNUSED size_t llint_grow_size_t(size_t used, LLint extra,
+                                           size_t slack) {
+  const size_t max = (size_t) -2; /* (size_t) -1 is the error value */
+  const size_t e = extra >= 0 ? llint_to_size_t(extra) : (size_t) -1;
+
+  if (e == (size_t) -1 || used > max || slack > max - used ||
+      e > max - used - slack) {
+    return (size_t) -1;
+  }
+  return used + e + slack;
+}
+
 /* dirent() compatibility */
 #ifdef _WIN32
-#define HTS_DIRENT_SIZE 256
+/* Holds a UTF-8 d_name: MAX_PATH (260) UTF-16 units expand to <=3 bytes each.
+   Windows-only struct, ABI free to break. */
+#define HTS_DIRENT_SIZE 1024
 struct dirent {
   ino_t d_ino;                  /* ignored */
   off_t d_off;                  /* ignored */

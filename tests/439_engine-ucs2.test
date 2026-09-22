@@ -1,0 +1,53 @@
+#!/bin/bash
+#
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# UCS2 to UTF-8 re-encoding (driven by 'httrack -#test=ucs2').
+
+# Every BMP code unit, plus a BOM and an unpaired surrogate.
+assert_selftest "ucs2: OK" ucs2 run
+
+# An output the process cannot allocate must come back as a NULL the caller
+# fails the page on, not as an abort. The cap is RLIMIT_AS, so hosts where it
+# is advisory report a skip; ASan needs telling to return NULL rather than die.
+rc=0
+out=$(ASAN_OPTIONS="${ASAN_OPTIONS-}${ASAN_OPTIONS:+:}allocator_may_return_null=1" \
+    httrack -O /dev/null -#test=ucs2 oom 2>&1) || rc=$?
+test "$rc" -eq 0 || fail "-#test=ucs2 oom: exited $rc, output: $out"
+case "$out" in
+"ucs2: oom OK") ;;
+*skipped*)
+    echo "SKIP: $out" >&2
+    ;;
+*)
+    fail "expected the failed allocation to be reported, got: $out"
+    ;;
+esac
+
+# The same starvation against the UCS4 re-encoder (-#test=ucs4-oom), whose
+# growth aborts rather than handing the caller a short buffer.
+ulimit -c 0 # a deliberate abort must not litter the box with cores
+# The flag below is load-bearing: without it the refused mmap is ASan's own
+# fatal error, and the run then hangs instead of aborting.
+rc=0
+out=$(ASAN_OPTIONS="${ASAN_OPTIONS-}${ASAN_OPTIONS:+:}allocator_may_return_null=1" \
+    httrack -O /dev/null -#test=ucs4-oom 2>&1) || rc=$?
+case "$out" in
+*"failed at"*htscharset.c*)
+    test "$rc" -ne 0 || fail "the assert fired but the run exited 0"
+    ;;
+*"returned instead of aborting"*)
+    fail "$out"
+    ;;
+*skipped*)
+    echo "SKIP: $out" >&2
+    ;;
+*)
+    fail "expected the refused growth to abort, got: $out"
+    ;;
+esac
+
+exit 0

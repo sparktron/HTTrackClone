@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -33,11 +33,6 @@ Please visit our Website: http://www.httrack.com
 /* ------------------------------------------------------------ */
 
 #include "htsglobal.h"
-
-/* Capacity of the base / codebase / first-link buffers the caller hands to
-   the parser. They arrive as bare char*, so sizeof() at the write site
-   measures the pointer; name the size once and use it on both sides. */
-#define HTSPARSE_URLBUFF_SIZE (HTS_URLMAXSIZE * 2)
 
 /* Forward definitions */
 #ifndef HTS_DEF_FWSTRUCT_htsblk
@@ -63,7 +58,7 @@ struct htsmoduleStructExtended {
 
   /* Error handling */
   int *error_;
-  int *exit_xh_;
+  volatile int *exit_xh_;
   int *store_errpage_;
 
   /* Structural */
@@ -71,7 +66,6 @@ struct htsmoduleStructExtended {
   char ***filters_;
   robots_wizard *robots_;
   hash_struct *hash_;
-  //int *lien_max_;
 
   /* Base & codebase */
   char *base;
@@ -112,6 +106,60 @@ struct htsmoduleStructExtended {
 */
 int htsparse(htsmoduleStruct * str, htsmoduleStructExtended * stre);
 
+/* Strip a default ":80" (any spelling) from an absolute link's authority, in
+   place into a buffer of the given size. */
+void hts_strip_default_port(char *lien, size_t size);
+
+/*
+  Does a quoted string the dirty parser found look like a link? "str" and "len"
+  are the string as the source spells it. "lastc" is the first non-blank byte
+  after its closing quote, and "inscript" says it sits in JavaScript or CSS,
+  not in a tag attribute. The verdict is taken on what the cut at '#' and '?'
+  leaves, so "/#top" is judged as "/". A string of HTS_URLMAXSIZE bytes or more
+  is refused, a length the parser never offers.
+*/
+hts_boolean hts_dirty_link_is_url(httrackp *opt, const char *str, size_t len,
+                                  char lastc, hts_boolean inscript);
+
+/* A link the script scanner found, as an offset and a length from the cursor
+   it was given. "unquoted_end" is the byte an unquoted CSS url() operand stops
+   at, and '\0' when the operand was quoted. All three fields are zero when the
+   scanner found nothing. */
+typedef struct hts_js_link {
+  int offset;
+  int length;
+  char unquoted_end;
+} hts_js_link;
+
+/*
+  Does the script or CSS at "cursor" hand a URL to .src, .location, .href,
+  .open, .replace, .link, url() or import? "buffer" is the first byte of the
+  document, which the keyword tests read backwards from. "in_tag" says the
+  script is an attribute value such as onclick="...", and "tag_lastc" the quote
+  that attribute is written with. "in_css" lets url() take an unquoted operand.
+  Fills "link" and answers true when a URL was found.
+*/
+hts_boolean hts_js_scan_link(httrackp *opt, const char *cursor,
+                             const char *buffer, hts_boolean in_tag,
+                             char tag_lastc, hts_boolean in_css,
+                             hts_js_link *link);
+
+/*
+  May the dirty parser take the in-tag quoted value at "quote" for a link?
+  "tag_start" is the tag's first byte, the '<'. False when the quote is not an
+  attribute value. Also false for the attribute names that never carry one:
+  hts_nodetect (id, name and friends) and an xmlns declaration.
+*/
+hts_boolean hts_dirty_attr_detectable(const char *quote, const char *tag_start);
+
+/*
+  Finds the attribute name owning the quoted value at "quote" inside the tag
+  starting at "tag_start", spanning [name, *nend). Returns NULL when the quote
+  is not an attribute value, and leaves *nend unspecified when it does.
+*/
+const char *hts_dirty_attr_name(const char *quote, const char *tag_start,
+                                const char **nend);
+
 /*
   Check for 301,302.. errors ("moved") and handle them; re-isuue requests, make
   rediretc file, handle filters considerations..
@@ -120,6 +168,50 @@ int htsparse(htsmoduleStruct * str, htsmoduleStructExtended * stre);
 */
 int hts_mirror_check_moved(htsmoduleStruct * str,
                            htsmoduleStructExtended * stre);
+
+/*
+  Non-zero if a redirect (cur_adr,cur_fil)->(moved_adr,moved_fil) saves to the
+  same local file, so it must be followed rather than turned into a
+  self-pointing "moved" stub (#159). Mirrors the savename: scheme+userinfo
+  stripped, www kept (www dedup is the crawl layer's job), path
+  slash/query-normalized per the URL-hack flags. Not hash_url_equals: that keys
+  on the dedup hash, which folds www and never collapses http<->https.
+*/
+hts_boolean hts_redirect_same_savefile(httrackp *opt, const char *cur_adr,
+                                       const char *cur_fil,
+                                       const char *moved_adr,
+                                       const char *moved_fil);
+
+/*
+  Did a postprocess-html callback's reply come out of the engine's own storage?
+  "html" is what it returned, "buffer" and "capa" the storage. Any pointer
+  inside it edited that storage in place, at offset "html - buffer": a reply
+  skipping a BOM comes back at buffer+3 and is no less in place than one at
+  buffer itself. The engine must move such bytes down rather than append them
+  onto themselves.
+*/
+hts_boolean hts_postprocess_reply_inplace(const char *html, const char *buffer,
+                                          size_t capa);
+
+/*
+  Can a postprocess-html callback's reply be applied? "html" and "len" are what
+  it returned, "buffer", "size" and "capa" what it was handed. An in-place reply
+  holds only the bytes the engine gave it, counted from its own offset. A reply
+  carrying its own buffer is bounded by that buffer instead. Neither may report
+  a negative count, which an int "len" allows.
+*/
+hts_boolean hts_postprocess_reply_ok(const char *html, int len,
+                                     const char *buffer, size_t size,
+                                     size_t capa);
+
+/*
+  Take the pending request NAME (HTS_ABORT_LOCKNAME or HTS_PAUSE_LOCKNAME) in
+  the output directory, deleting the file, and answer whether the mirror must
+  act on it. True only for a request newer than this run's own
+  hts-in_progress.lock and deletable, so neither one inherited from an earlier
+  run nor one the engine cannot remove ever reaches the mirror.
+*/
+hts_boolean hts_take_lock_request(httrackp *opt, const char *name);
 
 /*
   Process user intercations: pause, add link, delete link..
@@ -166,28 +258,5 @@ int hts_wait_delayed(htsmoduleStruct * str, lien_adrfilsave *afs,
 #define ENGINE_SAVE_CONTEXT_BASE() \
   /* Apply changes */ \
   * str->ptr_ = ptr
-
-#define WAIT_FOR_AVAILABLE_SOCKET() do { \
-  int prev = opt->state._hts_in_html_parsing; \
-  while(back_pluggable_sockets_strict(sback, opt) <= 0) { \
-    opt->state._hts_in_html_parsing = 6; \
-    /* Wait .. */ \
-    back_wait(sback,opt,cache,0); \
-    /* Transfer rate */ \
-    engine_stats(); \
-    /* Refresh various stats */ \
-    HTS_STAT.stat_nsocket=back_nsoc(sback); \
-    HTS_STAT.stat_errors=fspc(opt,NULL,"error"); \
-    HTS_STAT.stat_warnings=fspc(opt,NULL,"warning"); \
-    HTS_STAT.stat_infos=fspc(opt,NULL,"info"); \
-    HTS_STAT.nbk=backlinks_done(sback,opt->liens,opt->lien_tot,ptr); \
-    HTS_STAT.nb=back_transferred(HTS_STAT.stat_bytes,sback); \
-    /* Check */ \
-    if (!RUN_CALLBACK7(opt, loop, sback->lnk, sback->count, -1,ptr,opt->lien_tot,(int) (time_local()-HTS_STAT.stat_timestart),&HTS_STAT)) { \
-      return -1; \
-    } \
-  } \
-  opt->state._hts_in_html_parsing = prev; \
-} while(0)
 
 #endif

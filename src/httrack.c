@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -45,6 +45,9 @@ Please visit our Website: http://www.httrack.com
 #include "htsdefines.h"
 #include "httrack.h"
 #include "htslib.h"
+#include "htscharset.h"
+#include "htsbacktrace.h"
+#include "htsthread.h"
 
 /* Static definitions */
 static int fexist(const char *s);
@@ -54,7 +57,6 @@ static int linput(FILE * fp, char *s, int max);
 #include "htswrap.h"
 
 /* specific definitions */
-//#include "htsbase.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,11 +70,14 @@ static int linput(FILE * fp, char *s, int max);
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #endif
-#include <ctype.h>
-#if (defined(__linux) && defined(HAVE_EXECINFO_H))
-#include <execinfo.h>
-#define USES_BACKTRACE
+#ifdef HAVE_SYS_IOCTL_H
+#include <sys/ioctl.h>
 #endif
+#ifdef _WIN32
+#include <io.h>    /* _isatty, _setmode */
+#include <fcntl.h> /* _O_BINARY */
+#endif
+#include <ctype.h>
 /* END specific definitions */
 
 static void __cdecl htsshow_init(t_hts_callbackarg * carg);
@@ -185,6 +190,52 @@ static void vt_home(void) {
   printf("%s%s", VT_RESET, VT_GOTOXY("1", "0"));
 }
 
+/* Last known terminal geometry; the defaults are the classic VT100 size. */
+static int term_cols = 80;
+static int term_rows = 24;
+
+/* The library's hts_stdout_isterminal() is hidden by -fvisibility=hidden. */
+static hts_boolean stdout_isterminal(void) {
+#ifdef _WIN32
+  return _isatty(_fileno(stdout)) ? HTS_TRUE : HTS_FALSE;
+#else
+  return isatty(fileno(stdout)) ? HTS_TRUE : HTS_FALSE;
+#endif
+}
+
+/* Returns HTS_TRUE if the terminal size changed since the last call. */
+static hts_boolean vt_size_refresh(void) {
+  int cols = 0;
+  int rows = 0;
+
+#ifdef _WIN32
+  CONSOLE_SCREEN_BUFFER_INFO info;
+  const HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
+
+  if (console != INVALID_HANDLE_VALUE &&
+      GetConsoleScreenBufferInfo(console, &info)) {
+    cols = info.srWindow.Right - info.srWindow.Left + 1;
+    rows = info.srWindow.Bottom - info.srWindow.Top + 1;
+  }
+#elif defined(TIOCGWINSZ)
+  struct winsize ws;
+
+  if (ioctl(fileno(stdout), TIOCGWINSZ, &ws) == 0) {
+    cols = ws.ws_col;
+    rows = ws.ws_row;
+  }
+#endif
+  if (cols <= 0)
+    cols = 80;
+  if (rows <= 0)
+    rows = 24;
+  if (cols == term_cols && rows == term_rows)
+    return HTS_FALSE;
+  term_cols = cols;
+  term_rows = rows;
+  return HTS_TRUE;
+}
+
 //
 
 /*
@@ -193,20 +244,35 @@ static void vt_home(void) {
 */
 #define STYLE_STATVALUES VT_BOLD
 #define STYLE_STATTEXT   VT_UNBOLD
-#define STYLE_STATRESET  VT_UNBOLD
-#define NStatsBuffer     14
-#define MAX_LEN_INPROGRESS 40
+#define STYLE_STATRESET VT_UNBOLD
+/* Rows the stats block and "Current job" take above the in-progress list. */
+#define NStatsHeaderRows 7
 
 static int use_show;
 static httrackp *global_opt = NULL;
 
 static void signal_handlers(void);
 
+#ifdef _WIN32
+/* Windows opens stdout in text mode, so every \n leaves as \r\n. A shell
+   reading that pipe sees the CR: MSYS folds it away, a Linux one under WSL2
+   does not, and the test suite then compares against a byte it never wrote.
+   Set by tests/ci-windows-suite.sh, so nothing changes for anyone else. */
+static void hts_binary_stdio(void) {
+  if (getenv("HTS_BINARY_STDIO") != NULL) {
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+  }
+}
+#endif
+
 int main(int argc, char **argv) {
   int ret = 0;
   httrackp *opt;
 
 #ifdef _WIN32
+  hts_binary_stdio();
+  hts_argv_utf8(&argc, &argv);
   {
     WORD wVersionRequested;     // requested version WinSock API
     WSADATA wsadata;            // Windows Sockets API data
@@ -228,16 +294,19 @@ int main(int argc, char **argv) {
   signal_handlers();
   hts_init();
 
-  // Check version compatibility
-  if (hts_sizeof_opt() != sizeof(httrackp)) {
+  /* hts_create_opt() allocates the library's size, so a bigger caller would
+     run past it, but a smaller one only touches the prefix it knows. */
+  if (sizeof(httrackp) > hts_sizeof_opt()) {
     fprintf(stderr,
-      "incompatible current httrack library version %s, expected version %s",
-      hts_version(), HTTRACK_VERSIONID);
+            "this httrack %s needs an option structure of %lu bytes, but "
+            "library version %s has %lu\n",
+            HTTRACK_VERSIONID, (unsigned long) sizeof(httrackp), hts_version(),
+            (unsigned long) hts_sizeof_opt());
     abortLog("incompatible httrack library version, please update both httrack and its library");
   }
 
   opt = global_opt = hts_create_opt();
-  assert(opt->size_httrackp == sizeof(httrackp));
+  assert(opt->size_httrackp >= sizeof(httrackp));
 
   CHAIN_FUNCTION(opt, init, htsshow_init, NULL);
   CHAIN_FUNCTION(opt, uninit, htsshow_uninit, NULL);
@@ -268,8 +337,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "* %s\n", hts_errmsg(opt));
   }
   global_opt = NULL;
+  htsthread_wait(); /* pending threads still read opt */
   hts_free_opt(opt);
-  htsthread_wait();             /* wait for pending threads */
   hts_uninit();
 
 #ifdef _WIN32
@@ -288,8 +357,10 @@ static void __cdecl htsshow_uninit(t_hts_callbackarg * carg) {
 }
 static int __cdecl htsshow_start(t_hts_callbackarg * carg, httrackp * opt) {
   use_show = 0;
-  if (opt->verbosedisplay == 2) {
+  /* Cursor addressing needs a screen; the ENTER toggle re-enters here. */
+  if (opt->verbosedisplay == HTS_VERBOSE_FULL && stdout_isterminal()) {
     use_show = 1;
+    (void) vt_size_refresh();
     vt_clear();
   }
   return 1;
@@ -395,6 +466,10 @@ static int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_b
 
     prev_mytime = mytime;
 
+    /* A resize leaves stale wrapped text on screen: repaint everything. */
+    if (vt_size_refresh())
+      vt_clear();
+
     st[0] = '\0';
     qsec2str(st, stat_time);
     vt_home();
@@ -434,6 +509,13 @@ static int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_b
       //
       t_StatsBuffer StatsBuffer[NStatsBuffer];
 
+      /* Keep the frame within the terminal, or it scrolls the stats away. */
+      const int nstats =
+          min(NStatsBuffer, max(0, term_rows - NStatsHeaderRows));
+      /* URL budget: half the width, i.e. the historical 40 at 80 columns. */
+      const int maxurl =
+          min((int) sizeof(StatsBuffer[0].name) - 1, max(16, term_cols / 2));
+
       {
         int i;
 
@@ -448,14 +530,14 @@ static int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_b
         }
       }
       for(k = 0; k < 2; k++) {  // 0: lien en cours 1: autres liens
-        for(j = 0; (j < 3) && (index < NStatsBuffer); j++) {    // passe de priorité
+        for (j = 0; (j < 3) && (index < nstats); j++) { // passe de priorité
           int _i;
 
-          for(_i = 0 + k; (_i < max(back_max * k, 1)) && (index < NStatsBuffer); _i++) {        // no lien
+          for (_i = 0 + k; (_i < max(back_max * k, 1)) && (index < nstats);
+               _i++) {                                  // no lien
             int i = (back_index + _i) % back_max;       // commencer par le "premier" (l'actuel)
 
-            if (back[i].status >= 0) {  // signifie "lien actif"
-              // int ok=0;  // OPTI
+            if (back[i].status >= 0) { // signifie "lien actif"
               ok = 0;
               switch (j) {
               case 0:          // prioritaire
@@ -527,16 +609,14 @@ static int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_b
                   }
                 }
 
-                if ((l = (int) strlen(s)) < MAX_LEN_INPROGRESS)
+                if ((l = (int) strlen(s)) < maxurl)
                   strcpybuff(StatsBuffer[index].name, s);
                 else {
                   // couper
                   StatsBuffer[index].name[0] = '\0';
-                  strncatbuff(StatsBuffer[index].name, s,
-                              MAX_LEN_INPROGRESS / 2 - 2);
+                  strncatbuff(StatsBuffer[index].name, s, maxurl / 2 - 2);
                   strcatbuff(StatsBuffer[index].name, "...");
-                  strcatbuff(StatsBuffer[index].name,
-                             s + l - MAX_LEN_INPROGRESS / 2 + 2);
+                  strcatbuff(StatsBuffer[index].name, s + l - maxurl / 2 + 2);
                 }
 
                 if (back[i].r.totalsize >= 0) { // taille prédéfinie
@@ -597,7 +677,7 @@ static int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_b
       {
         int i;
 
-        for(i = 0; i < NStatsBuffer; i++) {
+        for (i = 0; i < nstats; i++) {
           if (strnotempty(StatsBuffer[i].state)) {
             printf(VT_CLREOL " %s - \t%s%s \t%s / \t%s", StatsBuffer[i].state,
                    StatsBuffer[i].name, StatsBuffer[i].file, int2bytes(&strc,
@@ -650,10 +730,28 @@ static const char *__cdecl htsshow_query3(t_hts_callbackarg * carg,
          "5 Mirror this link (useful)\n"
          "6 Mirror all links located on the same domain as this link\n" "\n",
          question);
+  /* the domain scopes are host-dependent, so the engine enumerates them */
+  {
+    char scope[HTS_URLMAXSIZE];
+    int k;
+
+    for (k = 0; hts_wizard_host_scope(question, k, scope, sizeof(scope)); k++)
+      printf("%d Mirror %s and every host below it\n",
+             HTS_WIZARD_SCOPE_INCLUDE + k, scope);
+    for (k = 0; hts_wizard_host_scope(question, k, scope, sizeof(scope)); k++)
+      printf("%d Ignore %s and every host below it\n",
+             HTS_WIZARD_SCOPE_EXCLUDE + k, scope);
+    if (k != 0)
+      printf("\n");
+  }
   do {
     printf(">> ");
     io_flush;
     linput(stdin, line, 200);
+    /* linput() reports neither EOF nor a read error, so an unanswerable prompt
+       would spin here; a closed stdin sets only ferror */
+    if (!strnotempty(line) && (feof(stdin) || ferror(stdin)))
+      strcpybuff(line, "*"); /* refuse this link and ask nothing more */
   } while(!strnotempty(line));
   printf("ok..\n");
   return line;
@@ -669,9 +767,24 @@ static int __cdecl htsshow_check_mime(t_hts_callbackarg * carg, httrackp * opt,
 }
 static void __cdecl htsshow_pause(t_hts_callbackarg * carg, httrackp * opt,
                                   const char *lockfile) {
-  while(fexist(lockfile)) {
+  String abortlock = STRING_EMPTY, progress = STRING_EMPTY;
+
+  /* Strings, because a truncated path would leave a paused engine polling one
+     nothing can create. */
+  StringCopy(abortlock, StringBuff(opt->path_log));
+  StringCat(abortlock, HTS_ABORT_LOCKNAME);
+  StringCopy(progress, StringBuff(opt->path_log));
+  StringCat(progress, "hts-in_progress.lock");
+  /* Leaving the wait is all this has to do, because the engine takes the
+     request at its next check. hts_file_is_newer() is the staleness rule
+     hts_take_lock_request() applies, or a request an earlier run left would
+     defeat the pause. */
+  while (fexist(lockfile) &&
+         !hts_file_is_newer(StringBuff(abortlock), StringBuff(progress))) {
     Sleep(1000);
   }
+  StringFree(progress);
+  StringFree(abortlock);
 }
 static void __cdecl htsshow_filesave(t_hts_callbackarg * carg, httrackp * opt,
                                      const char *file) {
@@ -719,11 +832,12 @@ static int __cdecl htsshow_receiveheader(t_hts_callbackarg * carg,
 
 /* *** Various functions *** */
 
+/* Note: utf-8 */
 static int fexist(const char *s) {
-  struct stat st;
+  STRUCT_STAT st;
 
   memset(&st, 0, sizeof(st));
-  if (stat(s, &st) == 0) {
+  if (STAT(s, &st) == 0) {
     if (S_ISREG(st.st_mode)) {
       return 1;
     }
@@ -773,28 +887,7 @@ static void sig_finish(int code) {      // finir et quitter
   fprintf(stderr, "\nExit requested to engine (signal %d)\n", code);
 }
 
-#ifdef _WIN32
-#if 0
-static void sig_ask(int code) { // demander
-  char s[256];
-
-  signal(code, sig_term);       // quitter si encore
-  printf("\nQuit program/Interrupt/Cancel? (Q/I/C) ");
-  fflush(stdout);
-  scanf("%s", s);
-  if ((s[0] == 'y') || (s[0] == 'Y') || (s[0] == 'o') || (s[0] == 'O')
-      || (s[0] == 'q') || (s[0] == 'Q'))
-    exit(0);                    // quitter
-  else if ((s[0] == 'i') || (s[0] == 'I')) {
-    if (global_opt != NULL) {
-      // ask for stop
-      global_opt->state.stop = 1;
-    }
-  }
-  signal(code, sig_ask);        // remettre signal
-}
-#endif
-#else
+#ifndef _WIN32
 static void sig_doback(int blind);
 static void sig_back(int code) {        // ignorer et mettre en backing 
   if (global_opt != NULL && !global_opt->background_on_suspend) {
@@ -809,36 +902,6 @@ static void sig_back(int code) {        // ignorer et mettre en backing
   }
 }
 
-#if 0
-static void sig_ask(int code) { // demander
-  char s[256];
-
-  signal(code, sig_term);       // quitter si encore
-  printf
-    ("\nQuit program/Interrupt/Background/bLind background/Cancel? (Q/I/B/L/C) ");
-  fflush(stdout);
-  scanf("%s", s);
-  if ((s[0] == 'y') || (s[0] == 'Y') || (s[0] == 'o') || (s[0] == 'O')
-      || (s[0] == 'q') || (s[0] == 'Q'))
-    exit(0);                    // quitter
-  else if ((s[0] == 'b') || (s[0] == 'B') || (s[0] == 'a') || (s[0] == 'A'))
-    sig_doback(0);              // arrière plan
-  else if ((s[0] == 'l') || (s[0] == 'L'))
-    sig_doback(1);              // arrière plan
-  else if ((s[0] == 'i') || (s[0] == 'I')) {
-    if (global_opt != NULL) {
-      // ask for stop
-      printf("finishing pending transfers.. please wait\n");
-      global_opt->state.stop = 1;
-    }
-    signal(code, sig_ask);      // remettre signal
-  } else {
-    printf("cancel..\n");
-    signal(code, sig_ask);      // remettre signal
-  }
-}
-#endif
-
 static void sig_brpipe(int code) {      // treat if necessary
   signal(code, sig_brpipe);
 }
@@ -852,7 +915,7 @@ static void sig_doback(int blind) {     // mettre en backing
   if (global_opt != NULL) {
     // suppress logging and asking lousy questions
     global_opt->quiet = 1;
-    global_opt->verbosedisplay = 0;
+    global_opt->verbosedisplay = HTS_VERBOSE_NONE;
   }
 
   if (!blind)
@@ -879,55 +942,23 @@ static void sig_doback(int blind) {     // mettre en backing
 #undef FD_ERR
 #define FD_ERR 2
 
-static void print_backtrace(void) {
-#ifdef USES_BACKTRACE
-  void *stack[256];
-  const int size = backtrace(stack, sizeof(stack)/sizeof(stack[0]));
-  if (size != 0) {
-    backtrace_symbols_fd(stack, size, FD_ERR);
-  }
-#else
-  const char msg[] = "No stack trace available on this OS :(\n";
-  if (write(FD_ERR, msg, sizeof(msg) - 1) != sizeof(msg) - 1) {
-    /* sorry GCC */
-  }
-#endif
-}
-
-static size_t print_num(char *buffer, int num) {
-  size_t i, j;
-  if (num < 0) {
-    *(buffer++) = '-';
-    num = -num;
-  }
-  for(i = 0 ; num != 0 || i == 0 ; i++, num /= 10) {
-    buffer[i] = '0' + ( num % 10 );
-  }
-  for(j = 0 ; j < i ; j++) {
-    const char c = buffer[i - j - 1];
-    buffer[i - j - 1] = buffer[j];
-    buffer[j] = c;
-  }
-  buffer[i] = '\0';
-  return i;
-}
-
 static void sig_fatal(int code) {
   const char msg[] = "\nCaught signal ";
   const char msgreport[] =
     "\nPlease report the problem at http://forum.httrack.com\n";
   char buffer[256];
-  size_t size;
+  /* MSVC's write() counts in unsigned int; this stays under buffer[256] */
+  unsigned int size;
 
   signal(code, SIG_DFL);
   signal(SIGABRT, SIG_DFL);
 
   memcpy(buffer, msg, sizeof(msg) - 1);
   size = sizeof(msg) - 1;
-  size += print_num(&buffer[size], code);
+  size += hts_print_num(&buffer[size], code);
   buffer[size++] = '\n';
   (void) (write(FD_ERR, buffer, size) == size);
-  print_backtrace();
+  hts_print_backtrace();
   (void) (write(FD_ERR, msgreport, sizeof(msgreport) - 1)
     == sizeof(msgreport) - 1);
   abort();
@@ -949,42 +980,49 @@ static void sig_leave(int code) {
   }
 }
 
-static void signal_handlers(void) {
-#ifdef _WIN32
-#if 0                           /* BUG366763 */
-  signal(SIGINT, sig_ask);      // ^C
-#else
-  signal(SIGINT, sig_leave);    // ^C
+/* SA_ONSTACK, so a stack-overflow SIGSEGV still reaches sig_fatal: the faulting
+   stack has no room left for a signal frame, and the kernel then kills the
+   process with no diagnostic at all (#866). */
+static void install_fatal_handler(int code) {
+#ifdef SA_ONSTACK
+  struct sigaction sa;
+
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = sig_fatal;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_ONSTACK;
+  if (sigaction(code, &sa, NULL) == 0)
+    return;
 #endif
+  signal(code, sig_fatal);
+}
+
+static void signal_handlers(void) {
+  hts_backtrace_init();
+  (void) hts_backtrace_altstack();
+  /* The crawl recurses in the engine's workers, so they need one too (#969). */
+  hts_set_thread_hooks(hts_backtrace_altstack, hts_backtrace_altstack_release);
+#ifdef _WIN32
+  signal(SIGINT, sig_leave);    // ^C
   signal(SIGTERM, sig_finish);  // kill <process>
 #else
-#if 0                           /* BUG366763 */
-  signal(SIGHUP, sig_back);     // close window
-#endif
   signal(SIGTSTP, sig_back);    // ^Z
   signal(SIGTERM, sig_finish);  // kill <process>
-#if 0                           /* BUG366763 */
-  signal(SIGINT, sig_ask);      // ^C
-#else
   signal(SIGINT, sig_leave);    // ^C
-#endif
   signal(SIGPIPE, sig_brpipe);  // broken pipe (write into non-opened socket)
   signal(SIGCHLD, sig_ignore);  // child change status
 #endif
 #ifdef SIGABRT
-  signal(SIGABRT, sig_fatal);    // abort
+  install_fatal_handler(SIGABRT); // abort
 #endif
 #ifdef SIGBUS
-  signal(SIGBUS, sig_fatal);    // bus error
+  install_fatal_handler(SIGBUS); // bus error
 #endif
 #ifdef SIGILL
-  signal(SIGILL, sig_fatal);    // illegal instruction
+  install_fatal_handler(SIGILL); // illegal instruction
 #endif
 #ifdef SIGSEGV
-  signal(SIGSEGV, sig_fatal);   // segmentation violation
-#endif
-#ifdef SIGSTKFLT
-  signal(SIGSTKFLT, sig_fatal); // stack fault
+  install_fatal_handler(SIGSEGV); // segmentation violation
 #endif
 }
 

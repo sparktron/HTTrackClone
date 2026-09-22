@@ -4,6 +4,11 @@ Copyright (C) 1998-2017 Xavier Roche and other contributors
 Welcome to HTTrack Website Copier!
 
 
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
+
+
 Information:
 
 The folder html/ contains the documentation
@@ -35,7 +40,6 @@ These are the principals limits of HTTrack for that moment. Note that we did not
 that would have solved them.
 
 - Several scripts generating complex filenames may not find them (ex: img.src='image'+a+Mobj.dst+'.gif')
-- Some java classes may not find some files on them (class included)
 - Cgi-bin links may not work properly in some cases (parameters needed). To avoid them: use filters like -*cgi-bin*
 
 

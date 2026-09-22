@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -33,6 +35,7 @@ Please visit our Website: http://www.httrack.com
 /* Store manager */
 #include "../minizip/mztools.h"
 #include "store.h"
+#include "../htsdate.h"
 
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -40,7 +43,6 @@ Please visit our Website: http://www.httrack.com
 #else
 #include <utime.h>
 #endif
-#include <sys/timeb.h>
 #ifndef _WIN32
 #include <pthread.h>
 #endif
@@ -60,19 +62,32 @@ int proxytrack_main(char *proxyAddr, int proxyPort, char *icpAddr, int icpPort,
 
 /* Static definitions */
 
-HTS_UNUSED static void proxytrack_print_log(const char *severity, const char *format, ...) {
+/* Log one line; a NULL severity discards it. */
+HTS_UNUSED HTS_PRINTF_FUN(2, 0) static void proxytrack_vprint_log(
+    const char *severity, const char *format, va_list args) {
   if (severity != NULL) {
     const int error = errno;
     FILE *const fp = stderr;
-    va_list args;
 
     fprintf(fp, " * %s: ", severity);
-    va_start(args, format);
     (void) vfprintf(fp, format, args);
-    va_end(args);
     fputs("\n", fp);
     fflush(fp);
     errno = error;
+  }
+}
+
+HTS_UNUSED
+HTS_PRINTF_FUN(2, 3)
+
+static void proxytrack_print_log(const char *severity, const char *format,
+                                 ...) {
+  if (severity != NULL) {
+    va_list args;
+
+    va_start(args, format);
+    proxytrack_vprint_log(severity, format, args);
+    va_end(args);
   }
 }
 
@@ -105,13 +120,12 @@ HTS_UNUSED static void proxytrack_print_log(const char *severity, const char *fo
 	"<!-- _-._.--._._-._.--._._-._.--._._-._.--._._-._.--._. -->\r\n" \
 	"<!-- End Disable IE Friendly HTTP Error Messages -->\r\n"
 
+/* Same contract as hts_gethome(): proxytrack does not link libhttrack */
 HTS_UNUSED static const char *gethomedir(void) {
   const char *home = getenv("HOME");
 
-  if (home)
-    return home;
-  else
-    return ".";
+  /* An empty $HOME would resolve a relative path against the root */
+  return strnotempty(home) ? home : ".";
 }
 
 HTS_UNUSED static int linput(FILE * fp, char *s, int max) {
@@ -256,120 +270,17 @@ HTS_UNUSED static int fexist(char *s) {
   return 0;
 }
 
-/* convertir une chaine en temps */
-HTS_UNUSED static void set_lowcase(char *s) {
-  int i;
-
-  for(i = 0; i < (int) strlen(s); i++)
-    if ((s[i] >= 'A') && (s[i] <= 'Z'))
-      s[i] += ('a' - 'A');
-}
-HTS_UNUSED static struct tm *convert_time_rfc822(struct tm *result, const char *s) {
-  char months[] = "jan feb mar apr may jun jul aug sep oct nov dec";
-  char str[256];
-  char *a;
-
-  /* */
-  int result_mm = -1;
-  int result_dd = -1;
-  int result_n1 = -1;
-  int result_n2 = -1;
-  int result_n3 = -1;
-  int result_n4 = -1;
-
-  /* */
-
-  if ((int) strlen(s) > 200)
-    return NULL;
-  strcpy(str, s);
-  set_lowcase(str);
-  /* éliminer :,- */
-  while((a = strchr(str, '-')))
-    *a = ' ';
-  while((a = strchr(str, ':')))
-    *a = ' ';
-  while((a = strchr(str, ',')))
-    *a = ' ';
-  /* tokeniser */
-  a = str;
-  while(*a) {
-    char *first, *last;
-    char tok[256];
-
-    /* découper mot */
-    while(*a == ' ')
-      a++;                      /* sauter espaces */
-    first = a;
-    while((*a) && (*a != ' '))
-      a++;
-    last = a;
-    tok[0] = '\0';
-    if (first != last) {
-      char *pos;
-
-      strncat(tok, first, (int) (last - first));
-      /* analyser */
-      if ((pos = strstr(months, tok))) {        /* month always in letters */
-        result_mm = ((int) (pos - months)) / 4;
-      } else {
-        int number;
-
-        if (sscanf(tok, "%d", &number) == 1) {  /* number token */
-          if (result_dd < 0)    /* day always first number */
-            result_dd = number;
-          else if (result_n1 < 0)
-            result_n1 = number;
-          else if (result_n2 < 0)
-            result_n2 = number;
-          else if (result_n3 < 0)
-            result_n3 = number;
-          else if (result_n4 < 0)
-            result_n4 = number;
-        }                       /* sinon, bruit de fond(+1GMT for exampel) */
-      }
-    }
-  }
-  if ((result_n1 >= 0) && (result_mm >= 0) && (result_dd >= 0)
-      && (result_n2 >= 0) && (result_n3 >= 0) && (result_n4 >= 0)) {
-    if (result_n4 >= 1000) {    /* Sun Nov  6 08:49:37 1994 */
-      result->tm_year = result_n4 - 1900;
-      result->tm_hour = result_n1;
-      result->tm_min = result_n2;
-      result->tm_sec = max(result_n3, 0);
-    } else {                    /* Sun, 06 Nov 1994 08:49:37 GMT or Sunday, 06-Nov-94 08:49:37 GMT */
-      result->tm_hour = result_n2;
-      result->tm_min = result_n3;
-      result->tm_sec = max(result_n4, 0);
-      if (result_n1 <= 50)      /* 00 means 2000 */
-        result->tm_year = result_n1 + 100;
-      else if (result_n1 < 1000)        /* 99 means 1999 */
-        result->tm_year = result_n1;
-      else                      /* 2000 */
-        result->tm_year = result_n1 - 1900;
-    }
-    result->tm_isdst = 0;       /* assume GMT */
-    result->tm_yday = -1;       /* don't know */
-    result->tm_wday = -1;       /* don't know */
-    result->tm_mon = result_mm;
-    result->tm_mday = result_dd;
-    return result;
-  }
-  return NULL;
-}
 HTS_UNUSED static struct tm PT_GetTime(time_t t) {
   struct tm tmbuf;
 
-#ifdef _WIN32
-  struct tm *tm = gmtime(&t);
-#else
-  struct tm *tm = gmtime_r(&t, &tmbuf);
-#endif
-  if (tm != NULL)
-    return *tm;
-  else {
+  if (!hts_gmtime(t, &tmbuf)) {
+    /* an all-zero tm has tm_mday == 0, which the ARC date field prints as a
+       day of "00"; the epoch is the conventional "date unknown" */
     memset(&tmbuf, 0, sizeof(tmbuf));
-    return tmbuf;
+    tmbuf.tm_year = 70;
+    tmbuf.tm_mday = 1;
   }
+  return tmbuf;
 }
 HTS_UNUSED static int set_filetime(const char *file, struct tm *tm_time) {
   struct utimbuf tim;

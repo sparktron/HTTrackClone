@@ -11,11 +11,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   char input[] = "/tmp/httrack-zip-input-XXXXXX";
   char output[] = "/tmp/httrack-zip-output-XXXXXX";
   char scratch[] = "/tmp/httrack-zip-scratch-XXXXXX";
-  unsigned char *extra;
   uLong recovered = 0;
   uLong recovered_bytes = 0;
-  short header = 0;
-  int extra_size;
   int input_fd;
   int output_fd;
   int scratch_fd;
@@ -23,16 +20,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   if (size > 1024 * 1024)
     return 0;
 
-  extra = (unsigned char *)malloc(size == 0 ? 1 : size);
-  if (extra == NULL)
-    return 0;
-  memcpy(extra, data, size);
-  if (size >= 2)
-    memcpy(&header, data, sizeof(header));
-  extra_size = (int)size;
-  (void)zipRemoveExtraInfoBlock((char *)extra, &extra_size, header);
-  free(extra);
-
+  /* zipRemoveExtraInfoBlock() was fuzzed here too until upstream deleted it
+     as dead code (3.50.x); ZIP repair is what is left. */
   input_fd = mkstemp(input);
   output_fd = mkstemp(output);
   scratch_fd = mkstemp(scratch);

@@ -1,0 +1,218 @@
+#!/bin/bash
+#
+# A poll tick that returns without waiting must end test-timeout.sh's wait loop,
+# not be re-forked every iteration on a box already out of processes (#1038).
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/httrack_nofork.XXXXXX")
+cleanup_push rm -rf "$tmp"
+
+# A tick that cannot exec is what bash reports as 126/127, so a stub returning one
+# models it exactly. The flaky stub fails every other call, which no counter that
+# resets on a good tick can ever accumulate into a verdict.
+mkdir -p "$tmp/dead" "$tmp/flaky"
+cat >"$tmp/dead/sleep" <<'EOF'
+#!/bin/sh
+# Hold the first tick until the child has announced: the guard counts ticks, not
+# time, so this changes nothing it measures, and without it ten instant ticks can
+# outrun the child's first line and leave no pid to reap (#1092). Bounded, or a
+# child that dies before writing would wedge the run instead of failing it.
+n=0
+while test ! -s "$PIDFILE" && test "$n" -lt 100000; do n=$((n + 1)); done
+exit 126
+EOF
+cat >"$tmp/flaky/sleep" <<'EOF'
+#!/bin/sh
+n=$(cat "$TICKFILE" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" >"$TICKFILE"
+test $((n % 2)) -ne 0 || exit 126
+exit 0
+EOF
+chmod +x "$tmp/dead/sleep" "$tmp/flaky/sleep"
+
+# Builtins only, and self-limiting: the stubbed sleep is on the child's PATH too,
+# and a child that outlives the harness would leak when the kill is the thing broken.
+cat >"$tmp/child.sh" <<'EOF'
+#!/bin/bash
+trap 'exit 0' TERM INT
+echo "$$" >"$PIDFILE"
+end=$((SECONDS + ${CHILDLIFE:-5}))
+while test "$SECONDS" -lt "$end"; do :; done
+EOF
+
+# 60s, so a deadline firing in place of the guard shows up as a stall and a DUMP
+# line rather than as the same 124.
+run_timeout() {
+    local bin=$1 log=$2 life=${3:-5}
+    env PATH="$bin:$PATH" \
+        TICKFILE="$tmp/ticks" PIDFILE="$tmp/childpid" \
+        CHILDLIFE="$life" \
+        HTTRACK_POLL_SLEEP=1 \
+        HTTRACK_TEST_TIMEOUT=60 \
+        HTTRACK_PROGRESS_LOG="$tmp/progress" \
+        "$BASH" "$testdir/test-timeout.sh" "$tmp/child.sh" >"$log" 2>&1
+}
+
+# --- control: the probe the give-up assertion rests on ----------------------
+#
+# The wedged child is killed but never waited on, since the guard exits without
+# reaping and this test is not its parent. reap_bounded must read that as stopped
+# and a running process as not, or the assertion below holds for any run at all.
+# The parent waits for a file rather than a clock: a fixture that outlives the
+# grading by a fixed margin is the wall-clock assumption that caused this bug.
+# Spin loops, not sleeps, since the stubbed sleep is on the PATH; the minutes
+# below are leak insurance and a healthy run never reaches them.
+cat >"$tmp/zombie.sh" <<'EOF'
+#!/bin/bash
+bash -c 'end=$((SECONDS + 120)); while test "$SECONDS" -lt "$end"; do :; done' &
+echo "$!" >"$ZPIDFILE"
+exec bash -c 'end=$((SECONDS + 120)); while test ! -f "$1" && test "$SECONDS" -lt "$end"; do :; done' _ "$2"
+EOF
+: >"$tmp/zpid"
+ZPIDFILE="$tmp/zpid" bash "$tmp/zombie.sh" _ "$tmp/release" &
+live=$!
+cleanup_push kill_pid "$live"
+while test ! -s "$tmp/zpid" && kill -0 "$live" 2>/dev/null; do :; done
+zombie=$(<"$tmp/zpid")
+test -n "$zombie" || fail "the zombie fixture never started"
+
+# Graded only where the host will answer for this very pid: with neither /proc nor
+# ps, reap_bounded degrades to the wait it always did and there is nothing here to
+# grade, so asserting would red a host master passes.
+kill -9 "$zombie" 2>/dev/null || true
+if ! pid_state_readable "$zombie"; then
+    echo "no readable state for pid $zombie, so the reap probe cannot be graded" >&2
+else
+    REAP_GRACE=1 reap_bounded "$zombie" ||
+        fail "reap_bounded waited out its grace on a killed process nobody had collected"
+    # Named, not assumed: a parent that had already exited would make the arm below
+    # pass for the wrong reason.
+    kill -0 "$live" 2>/dev/null || fail "the live half of the fixture died before it was graded"
+    REAP_GRACE=1 reap_bounded "$live" && fail "reap_bounded called a running process reaped"
+    ok "reap_bounded reads a killed-but-uncollected process as stopped, a live one as running"
+fi
+: >"$tmp/release"
+
+# --- pid_state: what each route answers, and what neither may invent ---------
+#
+# A directory stands in for an entry that is readable but yields nothing, which
+# is what Hurd gives for a task it cannot summarise. That must never count as
+# death: Hurd answers the same way for a live task that is merely suspended.
+# The pids are ones no host allocates, so a seam that failed open would grade a
+# live kernel thread instead of the fixture.
+running=9999992 exited=9999993 unterminated=9999994
+absent=9999996 splitcomm=9999997 unreadable_live=$$
+mkdir -p "$tmp/proc/$running" "$tmp/proc/$exited" "$tmp/proc/$unterminated" \
+    "$tmp/proc/$splitcomm" "$tmp/proc/$unreadable_live/stat"
+printf '%s (sh (weird) name) S 1 1 1 0 -1 0\n' "$running" >"$tmp/proc/$running/stat"
+printf '%s (sh (weird) name) Z 1 1 1 0 -1 0\n' "$exited" >"$tmp/proc/$exited/stat"
+printf '%s (sh) Z 1 1 1 0 -1 0' "$unterminated" >"$tmp/proc/$unterminated/stat"
+# Linux writes comm unescaped, so a process named ") Z<LF>q" splits its own stat
+# file and the first line ends in a state this one is not.
+printf '%s () Z\nq) S 1 1 1 0 -1 0\n' "$splitcomm" >"$tmp/proc/$splitcomm/stat"
+
+TESTLIB_PROC=$tmp/proc
+# Called as a statement, not a condition, so errexit sees the read's own status.
+pid_state "$running"
+test "$PID_STATE" = S || fail "the state field was read as '$PID_STATE', not S"
+pid_is_zombie "$running" && fail "a stat line naming state S was read as exited"
+pid_is_zombie "$exited" || fail "a stat line naming state Z was read as running"
+pid_is_zombie "$unterminated" || fail "a stat line with no trailing newline was read as running"
+pid_is_zombie "$splitcomm" && fail "a process name holding a newline forged state Z"
+# The one the arm this test used to carry got wrong: an entry that answers
+# nothing says nothing, and this shell is running.
+pid_is_zombie "$unreadable_live" && fail "an entry that yields nothing was read as an exit"
+pid_state_readable "$running" || fail "a stat line the host gave was called unreadable"
+# A failed open must stay off the caller's stderr: every macOS poll takes this
+# route, and local_crawl points that stderr at the log its tests grep.
+noise=$(pid_is_zombie "$absent" 2>&1 >/dev/null) || true
+test -z "$noise" || fail "a failed open reached the caller's stderr: $noise"
+
+# The ps route, which no host with a working /proc reaches. Padded, since a
+# column with spaces around it used to read as neither state. Two stubs, because
+# Hurd's ps rejects -p and takes the pid positionally.
+mkdir -p "$tmp/psposix" "$tmp/pshurd" "$tmp/psnone" "$tmp/psmulti"
+cat >"$tmp/psposix/ps" <<'STUB'
+#!/bin/sh
+for a; do test "$a" != -p || { echo " Z+ "; exit 0; }; done
+exit 64
+STUB
+cat >"$tmp/pshurd/ps" <<'STUB'
+#!/bin/sh
+for a; do test "$a" != -p || exit 64; done
+echo " Z+ "
+STUB
+# Two rows, which is what a ps that ignored the empty header would print. The
+# first names a state, and it is not this pid's.
+cat >"$tmp/psmulti/ps" <<'STUB'
+#!/bin/sh
+printf 'Z\nR\n'
+STUB
+chmod +x "$tmp/psposix/ps" "$tmp/pshurd/ps" "$tmp/psmulti/ps"
+path_was=$PATH
+for stub in psposix pshurd; do
+    PATH=$tmp/$stub:$path_was
+    pid_is_zombie "$absent" || fail "$stub ps named state Z and it was read as running"
+done
+PATH=$tmp/psmulti:$path_was
+pid_is_zombie "$unreadable_live" && fail "two ps rows were concatenated into an exit"
+pid_state_readable "$unreadable_live" && fail "an answer naming two pids was called readable"
+PATH=$path_was
+# A build root with no ps at all, which Fedora's is: neither route answers, so
+# the helper must say so rather than guess.
+# shellcheck disable=SC2123 # a PATH holding one empty directory is how ps goes missing
+PATH=$tmp/psnone
+pid_is_zombie "$unreadable_live" && nops_exit=yes || nops_exit=no
+pid_state_readable "$unreadable_live" && nops_read=yes || nops_read=no
+PATH=$path_was
+test "$nops_exit" = no || fail "a live process was read as exited where no ps exists"
+test "$nops_read" = no || fail "a live process with no answer anywhere was called readable"
+pid_state_readable "$absent" && fail "a pid neither route answers for was called readable"
+unset TESTLIB_PROC
+ok "pid_state takes the host's answer, and never reads no answer as an exit"
+
+: >"$tmp/progress"
+: >"$tmp/childpid"
+began=$SECONDS
+rc=0
+# 20s of insurance, not 5: the kill is asserted with a 5s wait below, and a child
+# expiring on its own budget inside that window would read as a successful kill.
+run_timeout "$tmp/dead" "$tmp/broken.log" 20 || rc=$?
+spent=$((SECONDS - began))
+
+test "$rc" -eq 124 || fail "a tick that never waits exited $rc, not 124: $(<"$tmp/broken.log")"
+# With the count, or a guard tripping on the first tick reads the same.
+grep -q 'poll tick ran 10 times' "$tmp/broken.log" ||
+    fail "no verdict naming the tenth tick: $(<"$tmp/broken.log")"
+grep -q '^NOFORK child.sh$' "$tmp/progress" ||
+    fail "the off-box watchdog got no marker: $(<"$tmp/progress")"
+# The deadline path writes DUMP and spends the whole 60s, so either says the guard
+# is gone and the budget is what ended the loop.
+grep -q '^DUMP ' "$tmp/progress" && fail "the loop ran to its 60s deadline, not the guard"
+test "$spent" -lt 30 || fail "took ${spent}s to give up on a tick that returns at once"
+childpid=$(<"$tmp/childpid")
+test -n "$childpid" || fail "the child never started"
+# Bounded, not instantaneous: the give-up branch skips reap_bounded on purpose, so
+# it returns with the kill barely delivered and the child not yet reaped (#1092).
+REAP_GRACE=5 reap_bounded "$childpid" ||
+    fail "giving up left the wedged test running as $childpid"
+
+# A tick that fails intermittently is a healthy box, and must never reach the
+# verdict: without the reset, any run long enough accumulates ten of them.
+: >"$tmp/progress"
+: >"$tmp/ticks"
+run_timeout "$tmp/flaky" "$tmp/flaky.log" || fail "an intermittent tick failed the run: $(<"$tmp/flaky.log")"
+grep -q 'NOFORK' "$tmp/progress" && fail "ticks that fail every other call were read as a wedge"
+
+# Control: a working sleep must reach neither branch, or the assertions above would
+# hold for any run at all.
+: >"$tmp/progress"
+run_timeout "" "$tmp/ok.log" || fail "a healthy run failed: $(<"$tmp/ok.log")"
+grep -q 'NOFORK' "$tmp/progress" && fail "a healthy poll tick was read as a broken one"
+
+echo "test-timeout poll guard OK"

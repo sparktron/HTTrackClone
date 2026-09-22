@@ -1,0 +1,26 @@
+#!/bin/bash
+#
+# Stick to POSIX tool flags: macOS ships BSD grep/sed, not the GNU ones.
+
+# Cache write-failure policy (-#test=cache-writefail <dir>). #174/#219: disk
+# full or a failure streak aborts cleanly; an isolated failure or an oversized
+# entry is only dropped.
+
+set -eu
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+dir=$(mktemp -d)
+cleanup_push rm -rf "$dir"
+
+out=$(httrack -#test=cache-writefail "$dir")
+
+# Match the exact success line (error logs also go to stdout); a renamed/removed
+# test prints the registry to stderr, which exits non-zero but never prints this.
+grep -qx "cache-writefail: OK" <<<"$out" || fail "expected 'cache-writefail: OK', got: $out"
+
+# A skipped entry must be warned about with its URL.
+grep -q "entry not cached: example.com/" <<<"$out" || fail "expected a URL-bearing skip warning"
+
+# A backend that cannot truncate rolls back by rewinding, and says so (#1402).
+grep -q "cache rollback incomplete" <<<"$out" || fail "expected a warning about the incomplete rollback"

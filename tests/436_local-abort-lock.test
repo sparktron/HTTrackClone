@@ -1,0 +1,134 @@
+#!/bin/bash
+# Windows has no cross-process SIGTERM, so a running engine takes a stop request
+# as a file: hts-abort.lock in the output directory, beside the hts-stop.lock
+# that asks for a pause. It acts on one only when the request is newer than the
+# run's own hts-in_progress.lock and it could also delete it.
+set -eu
+
+# shellcheck source=tests/crawllib.sh
+. "${0%"${0##*/}"}./crawllib.sh"
+
+# The C side has HTS_ABORT_LOCKNAME for these two.
+ABORTLOCK=hts-abort.lock
+PROGRESSLOCK=hts-in_progress.lock
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/httrack_abortlock.XXXXXX") || exit 1
+crawlpid=
+cleanup() {
+    if test -n "$crawlpid"; then kill -9 "$crawlpid" 2>/dev/null || true; fi
+    rm -rf "$tmpdir"
+}
+cleanup_push cleanup
+
+stop_crawl() {
+    if test -n "$crawlpid"; then
+        kill -9 "$crawlpid" 2>/dev/null || true
+        wait "$crawlpid" 2>/dev/null || true
+        crawlpid=
+    fi
+}
+
+require_httrack
+
+assert_lockrule_selftest abortlock
+
+local_server_start
+common=(--quiet --disable-security-limits --robots=0 --timeout=30 --retries=0 -c1)
+# The crawl log only ever says "Mirror not completed (see log file)", so the
+# engine log it names is dumped beside it (#1680).
+fail_dump_var crawllog enginelog
+arm_paths() { # arm_paths NAME: leaves the paths in $out, $crawllog, $enginelog
+    out="${tmpdir}/$1"
+    crawllog="${tmpdir}/log-$1"
+    # shellcheck disable=SC2034 # read by fail_dump_var above, by name
+    enginelog="${out}/hts-log.txt"
+}
+
+# The engine creates the page file when its transfer starts. The progress lock
+# appears earlier, while nothing is transferring yet.
+trickle_started() { # trickle_started DIR
+    test -n "$(find "$1" -path '*/trickle/p*.bin' 2>/dev/null)"
+}
+
+# /trickle/ hands out eight .bin pages, two bytes a second for a minute each, so
+# the single socket is busy and only the reading inside that wait can see this.
+printf '[a running engine takes the request] ..\t'
+arm_paths running
+httrack -O "$out" "${common[@]}" "${BASEURL}/trickle/index.html" \
+    >"$crawllog" 2>&1 &
+crawlpid=$!
+wait_until_still_running "test -e '${out}/${PROGRESSLOCK}'" "the crawl never got going" "$crawlpid"
+# The engine dates that lock a second back, so a request written the instant it
+# appears is newer than it whatever resolution the filesystem keeps.
+: >"${tmpdir}/probe"
+test "$(mtime "${tmpdir}/probe")" -gt "$(mtime "${out}/${PROGRESSLOCK}")" ||
+    fail "the engine did not date ${PROGRESSLOCK} back, so a request written the moment it appears can tie it"
+wait_until_still_running "trickle_started '$out'" "the crawl opened no trickle page" \
+    "$crawlpid"
+write_lock_request "$out" "$ABORTLOCK" "$crawlpid"
+wait_until_still_running "test ! -e '${out}/${ABORTLOCK}'" \
+    "30s on, a running engine had not read the request" "$crawlpid"
+stop_crawl
+echo "OK"
+
+# The point of the whole feature: an abort keeps hts-cache/ref, where the
+# interactive stop erases it. Both log "Exit requested by shell or user", and so
+# does the -E budget, so only the directory tells them apart.
+printf '[an abort keeps the cut transfers] ..\t'
+arm_paths keep
+httrack -O "$out" "${common[@]}" --max-rate=200000 \
+    "${BASEURL}/bigfiles/index.html" >"$crawllog" 2>&1 &
+crawlpid=$!
+wait_until_still_running "test -e '${out}/${PROGRESSLOCK}'" "the crawl never got going" "$crawlpid"
+# The abort has to find a transfer already running, or there is no resume data
+# for it to keep.
+sleep 1
+write_lock_request "$out" "$ABORTLOCK" "$crawlpid"
+wait_until_still_running "test ! -e '${out}/${ABORTLOCK}'" \
+    "30s on, a running engine had not read the request" "$crawlpid"
+# The erase happens at shutdown, and unwinding the cut transfer takes a while.
+wait_until "! kill -0 '$crawlpid' 2>/dev/null" "the engine never shut down" 900
+wait "$crawlpid" 2>/dev/null || true
+crawlpid=
+test -n "$(find "${out}/hts-cache/ref" -name '*.ref' 2>/dev/null)" ||
+    fail "the abort erased hts-cache/ref, so the cut transfers cannot resume"
+echo "OK"
+
+# The pause wait watches for it too, or a paused engine is unreachable.
+printf '[a paused engine takes the request] ..\t'
+arm_paths paused
+httrack -O "$out" "${common[@]}" --max-rate=200000 \
+    "${BASEURL}/bigfiles/index.html" >"$crawllog" 2>&1 &
+crawlpid=$!
+wait_until_still_running "test -e '${out}/${PROGRESSLOCK}'" "the crawl never got going" "$crawlpid"
+write_lock_request "$out" hts-stop.lock "$crawlpid"
+wait_until_still_running "test -e '${out}/hts-paused.lock'" "the engine never paused" "$crawlpid"
+# A frozen mirror writes nothing, and the wait re-reads once a second, so three
+# seconds cover an iteration that saw the file and a resumed 200KB/s transfer.
+frozen=$(du -sk "$out")
+touch -t 200001010000 "${out}/${ABORTLOCK}"
+sleep 3
+test "$(du -sk "$out")" = "$frozen" ||
+    fail "a request left by an earlier run lifted the pause"
+test -e "${out}/${ABORTLOCK}" ||
+    fail "the pause wait deleted a request that was never aimed at it"
+write_lock_request "$out" "$ABORTLOCK" "$crawlpid"
+wait_until_still_running "test ! -e '${out}/${ABORTLOCK}'" \
+    "30s on, a paused engine had not read the request" "$crawlpid"
+stop_crawl
+echo "OK"
+
+# A request older than the mirror that finds it was aimed at an earlier run.
+# Dated back, because the engine backdates its own progress lock by a second. A
+# file written just before the mirror starts lands inside that second.
+printf '[a request left behind does not stop the next mirror] ..\t'
+arm_paths stale
+mkdir -p "$out"
+touch -t 200001010000 "${out}/${ABORTLOCK}"
+local_crawl --log "$crawllog" -O "$out" "${common[@]}" \
+    "${BASEURL}/simple/basic.html" || fail "the mirror failed outright"
+test -n "$(find "$out" -name 'basic.html' 2>/dev/null)" ||
+    fail "the mirror saved nothing, so the request it inherited stopped it"
+test -e "${out}/${ABORTLOCK}" ||
+    fail "the mirror deleted a request that was never aimed at it"
+echo "OK"

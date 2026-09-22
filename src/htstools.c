@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -36,12 +36,16 @@ Please visit our Website: http://www.httrack.com
 
 /* String */
 #include <ctype.h>
+#include <limits.h>
 #include "htscore.h"
 #include "htstools.h"
+#include "htsio.h"
 #include "htsstrings.h"
+#include "htsescape.h"
 #include "htscharset.h"
 #ifdef _WIN32
-#include "windows.h"
+#include "htswin32.h"
+#include <io.h> /* _isatty */
 #else
 #include <dirent.h>
 #ifdef HAVE_UNISTD_H
@@ -68,53 +72,8 @@ struct find_handle_struct {
   char path[2048];
 };
 #endif
-//#ifndef HTS_DEF_FWSTRUCT_topindex_chain
-//#define HTS_DEF_FWSTRUCT_topindex_chain
-//typedef struct topindex_chain topindex_chain;
-//#endif
-//struct topindex_chain {
-//  int level;                    /* sort level */
-//  char *category;               /* category */
-//  char name[2048];              /* path */
-//  struct topindex_chain *next;  /* next element */
-//};
 
 /* Tools */
-
-static int ehexh(char c) {
-  if ((c >= '0') && (c <= '9'))
-    return c - '0';
-  if ((c >= 'a') && (c <= 'f'))
-    c -= ('a' - 'A');
-  if ((c >= 'A') && (c <= 'F'))
-    return (c - 'A' + 10);
-  return 0;
-}
-
-static int ehex(const char *s) {
-  return 16 * ehexh(*s) + ehexh(*(s + 1));
-}
-
-static void unescapehttp(const char *s, String * tempo) {
-  size_t i;
-
-  for(i = 0; s[i] != '\0'; i++) {
-    if (s[i] == '%' && s[i + 1] == '%') {
-      i++;
-      StringAddchar(*tempo, '%');
-    } else if (s[i] == '%') {
-      char hc;
-
-      i++;
-      hc = (char) ehex(s + i);
-      StringAddchar(*tempo, (char) hc);
-      i++;                      // sauter 2 caractères finalement
-    } else if (s[i] == '+') {
-      StringAddchar(*tempo, ' ');
-    } else
-      StringAddchar(*tempo, s[i]);
-  }
-}
 
 // forme à partir d'un lien et du contexte (origin_fil et origin_adr d'où il est tiré) adr et fil
 // [adr et fil sont des buffers de 1ko]
@@ -146,6 +105,13 @@ int ident_url_relatif(const char *lien, const char *origin_adr,
       scheme = 1;
   }
 
+#if !HTS_USEOPENSSL
+  // Drop every https link: the relative arm below strips "https:" and refetches
+  // it from the origin host in the clear.
+  if (strfield(lien, "https:"))
+    return -2;
+#endif
+
   // filtrer les parazites (mailto & cie)
   // scheme+authority (//)
   if ((strfield(lien, "http://"))       // scheme+//
@@ -164,17 +130,13 @@ int ident_url_relatif(const char *lien, const char *origin_adr,
     } else {
       ok = -2;                  // non supporté
     }
-#if HTS_USEOPENSSL
   } else if (strfield(lien, "https://")) {
-    // Note: ftp:foobar.gif is not valid
     if (ident_url_absolute(lien, adrfil) == -1) {
       ok = -1;                // erreur URL
     }
-#endif
-  } else if ((scheme) && ((!strfield(lien, "http:"))
-                          && (!strfield(lien, "https:"))
-                          && (!strfield(lien, "ftp:"))
-             )) {
+  } else if ((scheme) &&
+             ((!strfield(lien, "http:")) && (!strfield(lien, "https:")) &&
+              (!strfield(lien, "ftp:")))) {
     ok = -1;                    // unknown scheme
   } else {                      // c'est un lien relatif
     // On forme l'URL complète à partie de l'url actuelle
@@ -217,7 +179,14 @@ int ident_url_relatif(const char *lien, const char *origin_adr,
           a = strchr(adrfil->fil, '?');
           if (a)
             *a = '\0';
-          strcatbuff(adrfil->fil, lien);
+          /* Every other arm keeps fil under HTS_URLMAXSIZE, and callers size
+             their buffers from that. The subtraction is safe because fil holds
+             origin_fil, which the enclosing test already bounded. */
+          if (strlen(lien) < HTS_URLMAXSIZE - strlen(adrfil->fil)) {
+            strcatbuff(adrfil->fil, lien);
+          } else {
+            ok = -1; // erreur URL
+          }
         } else {
           const char *a = strchr(origin_fil, '?');
 
@@ -253,7 +222,7 @@ int ident_url_relatif(const char *lien, const char *origin_adr,
     } else
       ok = -1;
 
-  }                             // test news: etc.
+  } // test news: etc.
 
   // case insensitive pour adresse
   {
@@ -274,6 +243,7 @@ int ident_url_relatif(const char *lien, const char *origin_adr,
       char *const idna = hts_convertStringUTF8ToIDNA(a, strlen(a));
       if (idna != NULL) {
         if (strlen(idna) < HTS_URLMAXSIZE) {
+          /* a points within adrfil->adr; bound by the remaining capacity */
           strlcpybuff(a, idna,
                       sizeof(adrfil->adr) - (size_t) (a - adrfil->adr));
         }
@@ -285,15 +255,28 @@ int ident_url_relatif(const char *lien, const char *origin_adr,
   return ok;
 }
 
+/* Bounded substring search: bodies and archive records carry NUL bytes, so
+   strstr() would stop at the first one. */
+const char *hts_memstr(const char *hay, size_t haylen, const char *needle,
+                       size_t nlen) {
+  size_t i;
+
+  if (nlen == 0 || haylen < nlen)
+    return NULL;
+  for (i = 0; i + nlen <= haylen; i++) {
+    if (hay[i] == *needle && memcmp(hay + i, needle, nlen) == 0)
+      return hay + i;
+  }
+  return NULL;
+}
+
 // créer dans s, à partir du chemin courant curr_fil, le lien vers link (absolu)
 // un ident_url_relatif a déja été fait avant, pour que link ne soit pas un chemin relatif
-int lienrelatif(char *s, size_t s_size, const char *link,
-                const char *curr_fil) {
+int lienrelatif(char *s, size_t ssize, const char *link, const char *curr_fil) {
   char BIGSTK _curr[HTS_URLMAXSIZE * 2];
   char BIGSTK newcurr_fil[HTS_URLMAXSIZE * 2], newlink[HTS_URLMAXSIZE * 2];
   char *curr;
 
-  //int n=0;
   char *a;
   int slash = 0;
 
@@ -316,11 +299,12 @@ int lienrelatif(char *s, size_t s_size, const char *link,
     }
   }
 
-  // recopier uniquement le chemin courant
+  // copy only the current path
   curr = _curr;
   strlcpybuff(curr, curr_fil, sizeof(_curr));
-  if ((a = strchr(curr, '?')) == NULL)  // couper au ? (params)
-    a = curr + strlen(curr) - 1;        // pas de params: aller à la fin
+  if ((a = strchr(curr, '?')) == NULL) { // cut at the ? (query parameters)
+    a = hts_lastcharptr(curr);
+  }
   while((*a != '/') && (a > curr))
     a--;                        // chercher dernier / du chemin courant
   if (*a == '/')
@@ -338,7 +322,6 @@ int lienrelatif(char *s, size_t s_size, const char *link,
     if (*curr == '/')
       curr++;
     l = link;
-    //c=curr;
     // couper ce qui est commun
     while((streql(*link, *curr)) && (*link != 0)) {
       link++;
@@ -350,8 +333,6 @@ int lienrelatif(char *s, size_t s_size, const char *link,
       link--;
       curr--;
     }
-    //if (*link=='/') link++;
-    //if (*curr=='/') curr++;
   }
 
   // calculer la profondeur du répertoire courant et remonter
@@ -361,14 +342,13 @@ int lienrelatif(char *s, size_t s_size, const char *link,
     a++;
   while(*a)
     if (*(a++) == '/')
-      strlcatbuff(s, "../", s_size);
-  //if (strlen(s)==0) strcatbuff(s,"/");
+      strlcatbuff(s, "../", ssize);
 
   if (slash)
-    strlcatbuff(s, "/", s_size);        // garder absolu!!
+    strlcatbuff(s, "/", ssize); // keep it absolute!
 
-  // on est dans le répertoire de départ, copier
-  strlcatbuff(s, link + ((*link == '/') ? 1 : 0), s_size);
+  // we are in the starting directory, copy
+  strlcatbuff(s, link + ((*link == '/') ? 1 : 0), ssize);
 
   /* Security check */
   if (strlen(s) >= HTS_URLMAXSIZE)
@@ -396,6 +376,41 @@ int link_has_authority(const char *lien) {
   return 0;
 }
 
+hts_boolean link_base_is_hostname(const char *lien) {
+  const char *a;
+
+  if (*lien == '.')
+    return HTS_FALSE;
+  for (a = lien; *a != '\0' && *a != '/' && *a != '?' && *a != '#'; a++) {
+    if (*a == '.' || *a == ':')
+      return HTS_TRUE;
+  }
+  return HTS_FALSE;
+}
+
+hts_boolean link_dir_is_multisegment(const char *lien) {
+  size_t slashes = 0, other = 0;
+  const char *a;
+
+  for (a = lien; *a != '\0'; a++) {
+    if (*a == '/')
+      slashes++;
+    else
+      other++;
+  }
+  return (slashes >= 2 && other != 0) ? HTS_TRUE : HTS_FALSE;
+}
+
+hts_boolean link_dir_has_fragment_or_query(const char *lien) {
+  /* A '&' before the marker may decode into an earlier one, so answer no. */
+  const size_t cut = strcspn(lien, "#?&");
+
+  if (cut == 0 || lien[cut] == '\0' || lien[cut] == '&' || lien[cut - 1] != '/')
+    return HTS_FALSE;
+  /* "/" is the site root, and anything longer needs a name. */
+  return (cut == 1 || strspn(lien, "/") < cut) ? HTS_TRUE : HTS_FALSE;
+}
+
 int link_has_authorization(const char *lien) {
   const char *adr = jump_protocol_const(lien);
   const char *firstslash = strchr(adr, '/');
@@ -412,7 +427,7 @@ int link_has_authorization(const char *lien) {
 }
 
 // conversion chemin de fichier/dossier vers 8-3 ou ISO9660
-void long_to_83(int mode, char *n83, size_t n83_size, char *save) {
+void long_to_83(int mode, char *n83, size_t n83size, char *save) {
   n83[0] = '\0';
 
   while(*save) {
@@ -428,18 +443,18 @@ void long_to_83(int mode, char *n83, size_t n83_size, char *save) {
     fnl[j] = '\0';
     // conversion
     longfile_to_83(mode, fn83, sizeof(fn83), fnl);
-    strlcatbuff(n83, fn83, n83_size);
+    strlcatbuff(n83, fn83, n83size);
 
     save += i;
     if (*save == '/') {
-      strlcatbuff(n83, "/", n83_size);
+      strlcatbuff(n83, "/", n83size);
       save++;
     }
   }
 }
 
 // conversion nom de fichier/dossier isolé vers 8-3 ou ISO9660
-void longfile_to_83(int mode, char *n83, size_t n83_size, char *save) {
+void longfile_to_83(int mode, char *n83, size_t n83size, char *save) {
   int j = 0, max = 0;
   int i = 0;
   char nom[256];
@@ -528,10 +543,10 @@ void longfile_to_83(int mode, char *n83, size_t n83_size, char *save) {
   }
   // corriger vers 8-3
   n83[0] = '\0';
-  strlncatbuff(n83, nom, n83_size, max);
+  strlncatbuff(n83, nom, n83size, max);
   if (strnotempty(ext)) {
-    strlcatbuff(n83, ".", n83_size);
-    strlncatbuff(n83, ext, n83_size, 3);
+    strlcatbuff(n83, ".", n83size);
+    strlncatbuff(n83, ext, n83size, 3);
   }
 }
 
@@ -553,8 +568,7 @@ int verif_backblue(httrackp * opt, const char *base) {
                  fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt), base, "backblue.gif"));
     opt->state.verif_backblue_done = 1;
     if (fp) {
-      if (fwrite(HTS_DATA_BACK_GIF, HTS_DATA_BACK_GIF_LEN, 1, fp) !=
-          HTS_DATA_BACK_GIF_LEN)
+      if (!hts_fwrite_exact(HTS_DATA_BACK_GIF, HTS_DATA_BACK_GIF_LEN, fp))
         ret = 1;
       fclose(fp);
       usercommand(opt, 0, NULL,
@@ -566,8 +580,7 @@ int verif_backblue(httrackp * opt, const char *base) {
       filecreate(&opt->state.strc,
                  fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt), base, "fade.gif"));
     if (fp) {
-      if (fwrite(HTS_DATA_FADE_GIF, HTS_DATA_FADE_GIF_LEN, 1, fp) !=
-          HTS_DATA_FADE_GIF_LEN)
+      if (!hts_fwrite_exact(HTS_DATA_FADE_GIF, HTS_DATA_FADE_GIF_LEN, fp))
         ret = 1;
       fclose(fp);
       usercommand(opt, 0, NULL, fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt), base, "fade.gif"),
@@ -613,6 +626,10 @@ HTS_INLINE int rech_tageq(const char* adr,const char* s) {
   return 0;
 }
 */
+HTS_INLINE char html_prevc(const char *adr, const char *start) {
+  return adr > start ? adr[-1] : ' ';
+}
+
 // Deuxième partie
 HTS_INLINE int __rech_tageq(const char *adr, const char *s) {
   int p;
@@ -769,35 +786,48 @@ typedef struct hts_template_format_buf {
   size_t offset;
 } hts_template_format_buf;
 
+// Bounded append to a template buffer (or FILE); returns -1 on overflow/error.
+static int htsfmt_putc(hts_template_format_buf *buf, char c) {
+  if (buf->fp != NULL) {
+    assertf(buf->buffer == NULL);
+    if (fputc(c, buf->fp) < 0)
+      return -1;
+  } else {
+    assertf(buf->buffer != NULL);
+    if (buf->offset + 1 < buf->size)
+      buf->buffer[buf->offset++] = c;
+    else
+      return -1;
+  }
+  return 0;
+}
+
+static int htsfmt_puts(hts_template_format_buf *buf, const char *s) {
+  size_t i;
+  assertf(s != NULL);
+  for (i = 0; s[i] != '\0'; i++) {
+    if (htsfmt_putc(buf, s[i]) < 0)
+      return -1;
+  }
+  return 0;
+}
+
 // note: upstream arg list MUST be NULL-terminated for safety
 // returns a negative value upon error
-static int hts_template_formatv(hts_template_format_buf *buf, 
+static int hts_template_formatv(hts_template_format_buf *buf,
                                 const char *format, va_list args) {
 #undef FPUTC
 #undef FPUTS
-#define FPUTC(C) do { \
-  if (buf->fp != NULL) { \
-    assertf(buf->buffer == NULL); \
-    if (fputc(C, buf->fp) < 0) { \
-      return -1; \
-    } \
-  } else { \
-    assertf(buf->buffer != NULL); \
-    if (buf->offset + 1 < buf->size) { \
-      buf->buffer[buf->offset++] = (C); \
-    } else { \
-      return -1; \
-    } \
-  } \
-} while(0)
-#define FPUTS(S) do { \
-  size_t i; \
-  const char *const str_ = (S); \
-  assertf(str_ != NULL); \
-  for(i = 0 ; str_[i] != '\0' ; i++) { \
-    FPUTC(str_[i]); \
-  } \
-} while(0)
+#define FPUTC(C)                                                               \
+  do {                                                                         \
+    if (htsfmt_putc(buf, (C)) < 0)                                             \
+      return -1;                                                               \
+  } while (0)
+#define FPUTS(S)                                                               \
+  do {                                                                         \
+    if (htsfmt_puts(buf, (S)) < 0)                                             \
+      return -1;                                                               \
+  } while (0)
 
   if (buf != NULL && format != NULL) {
     const char *arg_expanded[32];
@@ -814,6 +844,10 @@ static int hts_template_formatv(hts_template_format_buf *buf,
       if (c == '%') {
         const unsigned char cFormat = format[++i];
         switch(cFormat) {
+        case '\0': /* trailing %: back up, or the loop reads past the NUL */
+          FPUTC('%');
+          i--;
+          break;
         case '%':
           FPUTC('%');
           break;
@@ -874,6 +908,129 @@ int hts_template_format_str(char *buffer, size_t size, const char *format, ...) 
   return success;
 }
 
+// Indexed by hts_footer_field_id. Sized by the initializer, then pinned below:
+// a new id without a name here is a compile error, not a NULL slot.
+static const char *const footer_field_names[] = {
+    "addr",    "path", "url",     "date",   "lastmodified",
+    "version", "mime", "charset", "status", "size"};
+
+enum {
+  footer_field_names_complete =
+      1 / (int) (sizeof(footer_field_names) / sizeof(footer_field_names[0]) ==
+                 HTS_FOOTER_FIELD_COUNT)
+};
+
+const char *hts_footer_field_list(char *buffer, size_t size) {
+  htsbuff fields = htsbuff_ptr(buffer, size);
+  size_t i;
+
+  for (i = 0; i < HTS_FOOTER_FIELD_COUNT; i++) {
+    if (i != 0)
+      htsbuff_catc(&fields, ' ');
+    htsbuff_catc(&fields, '{');
+    htsbuff_cat(&fields, footer_field_names[i]);
+    htsbuff_catc(&fields, '}');
+  }
+  return htsbuff_str(&fields);
+}
+
+HTSEXT_API hts_boolean hts_footer_field_ok(const char *name) {
+  size_t i;
+
+  if (name == NULL)
+    return HTS_FALSE;
+  for (i = 0; i < HTS_FOOTER_FIELD_COUNT; i++) {
+    if (strcmp(footer_field_names[i], name) == 0)
+      return HTS_TRUE;
+  }
+  return HTS_FALSE;
+}
+
+// Value of a field, or "" (never NULL, so callers can pass it straight to a
+// formatter).
+static const char *footer_field_value(const char *const *values,
+                                      hts_footer_field_id id) {
+  return values[id] != NULL ? values[id] : "";
+}
+
+int hts_footer_format(char *buffer, size_t size, const char *footer,
+                      const char *const values[HTS_FOOTER_FIELD_COUNT]) {
+  hts_template_format_buf buf = {NULL, buffer, size, 0};
+  size_t i;
+
+  if (footer == NULL || buffer == NULL || size == 0)
+    return -1;
+  // %s keeps the legacy positional model, byte-for-byte for existing -%F
+  // strings: addr, path, date, version, looked up by name and
+  // order-independent.
+  if (strstr(footer, "%s") != NULL)
+    return hts_template_format_str(
+        buffer, size, footer, footer_field_value(values, HTS_FOOTER_ADDR),
+        footer_field_value(values, HTS_FOOTER_PATH),
+        footer_field_value(values, HTS_FOOTER_DATE),
+        footer_field_value(values, HTS_FOOTER_VERSION), /* EOF */ NULL);
+  // "{{"/"}}" emit a literal brace; an unknown "{...}" is left verbatim so
+  // typos stay visible.
+  for (i = 0; footer[i] != '\0'; i++) {
+    const char c = footer[i];
+    if (c == '{' && footer[i + 1] == '{') {
+      if (htsfmt_putc(&buf, '{') < 0)
+        return -1;
+      i++;
+    } else if (c == '}' && footer[i + 1] == '}') {
+      if (htsfmt_putc(&buf, '}') < 0)
+        return -1;
+      i++;
+    } else if (c == '{') {
+      const char *const end = strchr(footer + i + 1, '}');
+      int matched = 0;
+      if (end != NULL) {
+        const size_t namelen = (size_t) (end - (footer + i + 1));
+        size_t j;
+        for (j = 0; j < HTS_FOOTER_FIELD_COUNT; j++) {
+          if (strlen(footer_field_names[j]) == namelen &&
+              strncmp(footer_field_names[j], footer + i + 1, namelen) == 0) {
+            if (htsfmt_puts(&buf, footer_field_value(
+                                      values, (hts_footer_field_id) j)) < 0)
+              return -1;
+            i += namelen + 1; // consume the name and its closing '}'
+            matched = 1;
+            break;
+          }
+        }
+      }
+      if (!matched && htsfmt_putc(&buf, '{') < 0)
+        return -1;
+    } else if (htsfmt_putc(&buf, c) < 0) {
+      return -1;
+    }
+  }
+  buffer[buf.offset] = '\0';
+  return 1;
+}
+
+/* Move the finished tmp onto the live index. Both paths are the system charset,
+   RENAME is utf-8 on Windows. */
+static hts_boolean topindex_commit(httrackp *opt, const char *tmp,
+                                   const char *dst) {
+#ifdef _WIN32
+  char *tmp_utf8 = hts_convertStringSystemToUTF8(tmp, strlen(tmp));
+  char *dst_utf8 = hts_convertStringSystemToUTF8(dst, strlen(dst));
+  const hts_boolean moved =
+      hts_rename_over(opt, tmp_utf8 != NULL ? tmp_utf8 : tmp,
+                      dst_utf8 != NULL ? dst_utf8 : dst);
+  /* the caller logs with LOG_ERRNO, and freet() may clobber errno */
+  const int err = errno;
+
+  freet(tmp_utf8);
+  freet(dst_utf8);
+  errno = err;
+  return moved;
+#else
+  return hts_rename_over(opt, tmp, dst);
+#endif
+}
+
 /* Note: NOT utf-8 */
 HTSEXT_API int hts_buildtopindex(httrackp * opt, const char *path,
                                  const char *binpath) {
@@ -885,33 +1042,54 @@ HTSEXT_API int hts_buildtopindex(httrackp * opt, const char *path,
   char catbuff[CATBUFF_SIZE];
 
   // et templates html
-  toptemplate_header =
-    readfile_or(fconcat(catbuff, sizeof(catbuff), binpath, "templates/topindex-header.html"),
-                HTS_INDEX_HEADER);
-  toptemplate_body =
-    readfile_or(fconcat(catbuff, sizeof(catbuff), binpath, "templates/topindex-body.html"),
-                HTS_INDEX_BODY);
-  toptemplate_bodycat =
-    readfile_or(fconcat(catbuff, sizeof(catbuff), binpath, "templates/topindex-bodycat.html"),
-                HTS_INDEX_BODYCAT);
-  toptemplate_footer =
-    readfile_or(fconcat(catbuff, sizeof(catbuff), binpath, "templates/topindex-footer.html"),
-                HTS_INDEX_FOOTER);
+  toptemplate_header = readfile_or(fconcat(catbuff, sizeof(catbuff), binpath,
+                                           "templates/topindex-header.html"),
+                                   HTS_TOPINDEX_HEADER);
+  toptemplate_body = readfile_or(fconcat(catbuff, sizeof(catbuff), binpath,
+                                         "templates/topindex-body.html"),
+                                 HTS_TOPINDEX_BODY);
+  toptemplate_bodycat = readfile_or(fconcat(catbuff, sizeof(catbuff), binpath,
+                                            "templates/topindex-bodycat.html"),
+                                    HTS_TOPINDEX_BODYCAT);
+  toptemplate_footer = readfile_or(fconcat(catbuff, sizeof(catbuff), binpath,
+                                           "templates/topindex-footer.html"),
+                                   HTS_TOPINDEX_FOOTER);
 
   if (toptemplate_header && toptemplate_body && toptemplate_footer
       && toptemplate_bodycat) {
+    char BIGSTK dst[CATBUFF_SIZE], tmp[CATBUFF_SIZE];
 
     strcpybuff(rpath, path);
-    if (rpath[0]) {
-      if (rpath[strlen(rpath) - 1] == '/')
-        rpath[strlen(rpath) - 1] = '\0';
-    }
+    hts_striplastchar(rpath, '/');
 
-    fpo = fopen(fconcat(catbuff, sizeof(catbuff), rpath, "/index.html"), "wb");
+    /* Build aside and rename over: a reader of the live index gets the previous
+       file or the new one, never the truncated middle (#1329). The temporary is
+       named shorter than the index so it cannot be the one to hit MAX_PATH. */
+    if (!slprintfbuff(dst, sizeof(dst), "%s/index.html", rpath) ||
+        !slprintfbuff(tmp, sizeof(tmp), "%s/index.tmp", rpath)) {
+      hts_log_print(opt, LOG_WARNING, "top index path too long: %s", rpath);
+      fpo = NULL;
+    } else if ((fpo = fopen(fconv(catbuff, sizeof(catbuff), tmp), "wb")) ==
+               NULL) {
+      hts_log_print(opt, LOG_WARNING | LOG_ERRNO, "could not create %s", tmp);
+    }
     if (fpo) {
       find_handle h;
 
-      verif_backblue(opt, concat(catbuff, sizeof(catbuff), rpath, "/")); // générer gif
+      // générer gif. verif_backblue() is utf-8, but our path is the system
+      // charset, so on Windows convert it or the gifs land in a mangled twin
+      // dir (#217). Elsewhere the system charset is already utf-8.
+#ifdef _WIN32
+      {
+        const char *const base = concat(catbuff, sizeof(catbuff), rpath, "/");
+        char *base_utf8 = hts_convertStringSystemToUTF8(base, strlen(base));
+
+        verif_backblue(opt, base_utf8 != NULL ? base_utf8 : base);
+        freet(base_utf8);
+      }
+#else
+      verif_backblue(opt, concat(catbuff, sizeof(catbuff), rpath, "/"));
+#endif
       // Header
       hts_template_format(fpo, toptemplate_header,
               "<!-- Mirror and index made by HTTrack Website Copier/"
@@ -948,6 +1126,17 @@ HTSEXT_API int hts_buildtopindex(httrackp * opt, const char *path,
                     freet(category);
                     category = NULL;
                   }
+#ifdef _WIN32
+                  /* category is ANSI-codepage, doc is utf-8: convert (#216) */
+                  else {
+                    char *cat_utf8 = hts_convertStringSystemToUTF8(
+                        category, strlen(category));
+                    if (cat_utf8 != NULL) {
+                      freet(category);
+                      category = cat_utf8;
+                    }
+                  }
+#endif
                 }
               }
               if (category == NULL) {
@@ -956,26 +1145,30 @@ HTSEXT_API int hts_buildtopindex(httrackp * opt, const char *path,
               }
 
               chain = calloc(sizeof(struct topindex_chain), 1);
-              if (chain == NULL) {
-                /* note: 'category' is owned by the entry we failed to
-                   allocate, and chainSize/startchain used to be updated even
-                   on that path -- leaving a NULL startchain and a count one
-                   too high. Give up on the scan instead. */
-                freet(category);
-                chain = oldchain;
-                break;
-              }
               chainSize++;
               if (!startchain) {
                 startchain = chain;
               }
-              if (oldchain) {
-                oldchain->next = chain;
+              if (chain) {
+                if (oldchain) {
+                  oldchain->next = chain;
+                }
+                chain->next = NULL;
+#ifdef _WIN32
+                /* name is ANSI-codepage, doc is utf-8: convert (#216) */
+                {
+                  const char *const name = hts_findgetname(h);
+                  char *name_utf8 =
+                      hts_convertStringSystemToUTF8(name, strlen(name));
+                  strcpybuff(chain->name, name_utf8 != NULL ? name_utf8 : name);
+                  freet(name_utf8);
+                }
+#else
+                strcpybuff(chain->name, hts_findgetname(h));
+#endif
+                chain->category = category;
+                chain->level = level;
               }
-              chain->next = NULL;
-              strcpybuff(chain->name, hts_findgetname(h));
-              chain->category = category;
-              chain->level = level;
             }
 
           }
@@ -1037,8 +1230,20 @@ HTSEXT_API int hts_buildtopindex(httrackp * opt, const char *path,
               "<!-- Mirror and index made by HTTrack Website Copier/"
               HTTRACK_VERSION " " HTTRACK_AFF_AUTHORS " -->", /* EOF */ NULL);
 
-      fclose(fpo);
+      {
+        const hts_boolean written = ferror(fpo) == 0 ? HTS_TRUE : HTS_FALSE;
+        const hts_boolean flushed = fclose(fpo) == 0 ? HTS_TRUE : HTS_FALSE;
 
+        /* A short write must not reach the index either: it would look as
+           complete as a good one. */
+        if (!written || !flushed || !topindex_commit(opt, tmp, dst)) {
+          hts_log_print(opt, LOG_WARNING | LOG_ERRNO,
+                        "could not rebuild the top index %s", dst);
+          /* raw unlink: UNLINK is utf-8 on Windows, this path is not */
+          (void) unlink(fconv(catbuff, sizeof(catbuff), tmp));
+          retval = 0;
+        }
+      }
     }
 
   }
@@ -1049,13 +1254,12 @@ HTSEXT_API int hts_buildtopindex(httrackp * opt, const char *path,
     freet(toptemplate_body);
   if (toptemplate_footer)
     freet(toptemplate_footer);
-  if (toptemplate_body)
-    freet(toptemplate_body);
+  if (toptemplate_bodycat)
+    freet(toptemplate_bodycat);
 
   return retval;
 }
 
-/* Note: NOT utf-8 */
 HTSEXT_API char *hts_getcategory(const char *filename) {
   String categ = STRING_EMPTY;
 
@@ -1071,7 +1275,7 @@ HTSEXT_API char *hts_getcategory(const char *filename) {
 
         if (n > 0) {
           if (strfield(line, "category=")) {
-            unescapehttp(line + 9, &categ);
+            hts_unescapehttp(line + 9, &categ);
             done = 1;
           }
         }
@@ -1082,7 +1286,6 @@ HTSEXT_API char *hts_getcategory(const char *filename) {
   return StringBuffRW(categ);
 }
 
-/* Note: NOT utf-8 */
 HTSEXT_API char *hts_getcategories(char *path, int type) {
   String categ = STRING_EMPTY;
   String profiles = STRING_EMPTY;
@@ -1090,11 +1293,8 @@ HTSEXT_API char *hts_getcategories(char *path, int type) {
   find_handle h;
   coucal hashCateg = NULL;
 
-  if (rpath[0]) {
-    if (rpath[strlen(rpath) - 1] == '/') {
-      rpath[strlen(rpath) - 1] = '\0';  /* note: patching stored (inhash) value */
-    }
-  }
+  /* note: patching stored (inhash) value */
+  hts_striplastchar(rpath, '/');
   h = hts_findfirst(rpath);
   if (h) {
     String iname = STRING_EMPTY;
@@ -1131,7 +1331,7 @@ HTSEXT_API char *hts_getcategories(char *path, int type) {
                         if (StringLength(categ) > 0) {
                           StringCat(categ, "\r\n");
                         }
-                        unescapehttp(line2 + 9, &categ);
+                        hts_unescapehttp(line2 + 9, &categ);
                       }
                     }
                     done = 1;
@@ -1171,7 +1371,8 @@ find_handle h = hts_findfirst("/tmp");
 if (h) {
   do {
     if (hts_findisfile(h))
-      printf("File: %s (%d octets)\n",hts_findgetname(h),hts_findgetsize(h));
+      printf("File: %s, " LLintP " bytes\n",
+             hts_findgetname(h), hts_findgetsize64(h));
     else if (hts_findisdir(h))
       printf("Dir: %s\n",hts_findgetname(h));
   } while(hts_findnext(h));
@@ -1191,7 +1392,7 @@ HTSEXT_API find_handle hts_findfirst(char *path) {
 
           strcpybuff(rpath, path);
           if (rpath[0]) {
-            if (rpath[strlen(rpath) - 1] != '\\')
+            if (hts_lastchar(rpath) != '\\')
               strcatbuff(rpath, "\\");
           }
           strcatbuff(rpath, "*.*");
@@ -1203,7 +1404,7 @@ HTSEXT_API find_handle hts_findfirst(char *path) {
         strcpybuff(find->path, path);
         {
           if (find->path[0]) {
-            if (find->path[strlen(find->path) - 1] != '/')
+            if (hts_lastchar(find->path) != '/')
               strcatbuff(find->path, "/");
           }
         }
@@ -1220,23 +1421,23 @@ HTSEXT_API find_handle hts_findfirst(char *path) {
   return NULL;
 }
 
-HTSEXT_API int hts_findnext(find_handle find) {
+HTSEXT_API hts_boolean hts_findnext(find_handle find) {
   if (find) {
 #ifdef _WIN32
     if ((FindNextFileA(find->handle, &find->hdata)))
-      return 1;
+      return HTS_TRUE;
 #else
     char catbuff[CATBUFF_SIZE];
 
     memset(&(find->filestat), 0, sizeof(find->filestat));
     if ((find->dirp = readdir(find->hdir)))
-      if (find->dirp->d_name)
-        if (!STAT
-            (concat(catbuff, sizeof(catbuff), find->path, find->dirp->d_name), &find->filestat))
-          return 1;
+      if (!STAT(
+              concat(catbuff, sizeof(catbuff), find->path, find->dirp->d_name),
+              &find->filestat))
+        return HTS_TRUE;
 #endif
   }
-  return 0;
+  return HTS_FALSE;
 }
 
 HTSEXT_API int hts_findclose(find_handle find) {
@@ -1269,10 +1470,13 @@ HTSEXT_API char *hts_findgetname(find_handle find) {
   return NULL;
 }
 
-HTSEXT_API int hts_findgetsize(find_handle find) {
+HTSEXT_API LLint hts_findgetsize64(find_handle find) {
   if (find) {
 #ifdef _WIN32
-    return find->hdata.nFileSizeLow;
+    const uint64_t size =
+        ((uint64_t) find->hdata.nFileSizeHigh << 32) | find->hdata.nFileSizeLow;
+
+    return (LLint) size;
 #else
     return find->filestat.st_size;
 #endif
@@ -1280,7 +1484,15 @@ HTSEXT_API int hts_findgetsize(find_handle find) {
   return -1;
 }
 
-HTSEXT_API int hts_findisdir(find_handle find) {
+HTSEXT_API int hts_findgetsize(find_handle find) {
+  const LLint size = hts_findgetsize64(find);
+
+  /* Report the error sentinel rather than the low bits: a caller sizing a
+     buffer off a plausible small number takes a heap overflow. */
+  return size >= 0 && size <= INT_MAX ? (int) size : -1;
+}
+
+HTSEXT_API hts_boolean hts_findisdir(find_handle find) {
   if (find) {
     if (!hts_findissystem(find)) {
 #ifdef _WIN32
@@ -1294,7 +1506,7 @@ HTSEXT_API int hts_findisdir(find_handle find) {
   }
   return 0;
 }
-HTSEXT_API int hts_findisfile(find_handle find) {
+HTSEXT_API hts_boolean hts_findisfile(find_handle find) {
   if (find) {
     if (!hts_findissystem(find)) {
 #ifdef _WIN32
@@ -1308,7 +1520,7 @@ HTSEXT_API int hts_findisfile(find_handle find) {
   }
   return 0;
 }
-HTSEXT_API int hts_findissystem(find_handle find) {
+HTSEXT_API hts_boolean hts_findissystem(find_handle find) {
   if (find) {
 #ifdef _WIN32
     if (find->hdata.
@@ -1331,4 +1543,85 @@ HTSEXT_API int hts_findissystem(find_handle find) {
 #endif
   }
   return 0;
+}
+
+/* Park cdst under a free sibling name; caside receives it. */
+static hts_boolean rename_park_aside(char *caside, size_t size,
+                                     const char *cdst) {
+  int i;
+
+  for (i = 0; i < 16; i++) {
+    if (!slprintfbuff(caside, size, "%s.hts-old%d", cdst, i))
+      return HTS_FALSE;
+    /* Skip a name the mirror already holds: POSIX rename() would clobber it
+       (#774). A non-regular entry reads as free and the rename refuses it. */
+    if (fexist_utf8(caside))
+      continue;
+    if (RENAME(cdst, caside) == 0)
+      return HTS_TRUE;
+  }
+  return HTS_FALSE;
+}
+
+/* cdst is in the way of the move: park it, retry, and put it back if the retry
+   fails too. Unlinking it instead would leave nothing at all (#790). */
+static hts_boolean rename_over_aside(httrackp *opt, const char *csrc,
+                                     const char *cdst) {
+  char caside[CATBUFF_SIZE];
+  int err;
+
+  /* Only a regular file may be parked: a directory in the way is not what the
+     caller asked to replace, and parking it orphans it (UNLINK cannot drop). */
+  if (!fexist_utf8(cdst))
+    return HTS_FALSE;
+  if (!rename_park_aside(caside, sizeof(caside), cdst))
+    return HTS_FALSE;
+  if (RENAME(csrc, cdst) == 0) {
+    (void) UNLINK(caside);
+    return HTS_TRUE;
+  }
+  err = errno;
+  /* Retry once, then name the parked copy: nothing else on disk or in the log
+     points at it, and an --update purge would delete it unnoticed. */
+  if (RENAME(caside, cdst) != 0 && RENAME(caside, cdst) != 0)
+    hts_log_print(opt, LOG_WARNING | LOG_ERRNO,
+                  "could not put %s back; its previous content is now %s", cdst,
+                  caside);
+  errno = err;
+  return HTS_FALSE;
+}
+
+hts_boolean hts_rename_over(httrackp *opt, const char *src, const char *dst) {
+  char csrc[CATBUFF_SIZE], cdst[CATBUFF_SIZE];
+
+  fconv(csrc, sizeof(csrc), src);
+  fconv(cdst, sizeof(cdst), dst);
+  if (RENAME(csrc, cdst) == 0)
+    return HTS_TRUE;
+  /* Only a dst in the way is something the fallback can clear, and the CRT maps
+     that to EEXIST; it keeps EACCES for a src another process holds, where the
+     retry would fail the same way. The src check covers a CRT that reports
+     neither. */
+  const int err = errno;
+
+  if (err != EEXIST || !fexist_utf8(src))
+    return HTS_FALSE;
+  return rename_over_aside(opt, csrc, cdst);
+}
+
+hts_boolean hts_rename_over_aside_selftest(httrackp *opt, const char *src,
+                                           const char *dst) {
+  char csrc[CATBUFF_SIZE], cdst[CATBUFF_SIZE];
+
+  fconv(csrc, sizeof(csrc), src);
+  fconv(cdst, sizeof(cdst), dst);
+  return rename_over_aside(opt, csrc, cdst);
+}
+
+hts_boolean hts_stdout_isterminal(void) {
+#ifdef _WIN32
+  return _isatty(_fileno(stdout)) ? HTS_TRUE : HTS_FALSE;
+#else
+  return isatty(fileno(stdout)) ? HTS_TRUE : HTS_FALSE;
+#endif
 }

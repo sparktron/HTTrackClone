@@ -1,11 +1,11 @@
 # HTTrack Website Copier - Development Repository
 
-> **Private fork.** This is `sparktron/HTTrackClone`, a private fork of [xroche/httrack](https://github.com/xroche/httrack), branched from 3.49.6. It carries its own hardening and features and is not the official HTTrack repository. Report issues and send changes here, not upstream. Upstream fixes are merged in periodically; see [AGENTS.md](AGENTS.md).
+> **Private fork.** This is `sparktron/HTTrackClone`, a private fork of [xroche/httrack](https://github.com/xroche/httrack), currently synced to upstream 3.50.3. It adds https certificate verification and an opt-in imageboard catalog (`--enable-imageboard-catalog`), and is not the official HTTrack repository. Report issues and send changes here, not upstream. Upstream fixes are merged in periodically; see [AGENTS.md](AGENTS.md).
 
 ## About
 _Copy websites to your computer (Offline browser)_
 
-<img src="http://www.httrack.com/htsw/screenshot_w1.jpg" width="34%">
+<img src="https://www.httrack.com/htsw/screenshot_w1.jpg" width="34%">
 
 *HTTrack* is an _offline browser_ utility, allowing you to download a World Wide website from the Internet to a local directory, building recursively all directories, getting html, images, and other files from the server to your computer.
  
@@ -13,33 +13,30 @@ _Copy websites to your computer (Offline browser)_
 
 HTTrack can also update an existing mirrored site, and resume interrupted downloads. HTTrack is fully configurable, and has an integrated help system.
 
-*WinHTTrack* is the Windows 2000/XP/Vista/Seven release of HTTrack, and *WebHTTrack* the Linux/Unix/BSD release. 
+*WinHTTrack* is the Windows front end and *WebHTTrack* the one for Linux, BSD and macOS, where it also arrives with `brew install httrack` and in the release DMG. There is an [Android app](https://play.google.com/store/apps/details?id=com.httrack.android) too, and underneath all of them the `httrack` command line.
 
 ## Website
 
 *Main Website:*
-http://www.httrack.com/
+https://www.httrack.com/
 
 ## Compile trunk release
 
-`src/coucal` is a submodule and the build needs it, so clone recursively:
+A git checkout ships only the autotools sources, so `./bootstrap` (which runs
+`autoreconf`) regenerates `configure` first; this needs autoconf, automake and
+libtool. Released tarballs already include `configure`, so building from a
+tarball skips `./bootstrap`.
 
 ```sh
 git clone https://github.com/sparktron/HTTrackClone.git --recurse-submodules
 cd HTTrackClone
+./bootstrap
 ./configure --prefix=$HOME/usr && make -j8 && make install
 ```
 
-If you already have a checkout that was cloned without `--recurse-submodules`,
-`configure` will stop and tell you to run:
+Or use the one-shot wrapper (bootstrap + configure + make), which forwards its
+arguments to `configure`:
 
 ```sh
-git submodule update --init --recursive
-```
-
-To run the test suite (the offline tests; drop the argument to include the
-ones that need network access):
-
-```sh
-make check ONLINE_UNIT_TESTS=no
+./build.sh --prefix=$HOME/usr
 ```

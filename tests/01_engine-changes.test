@@ -1,0 +1,16 @@
+#!/bin/bash
+#
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/httrack_changes_st.XXXXXX") || exit 1
+cleanup_push rm -rf "$tmpdir"
+
+# --changes bucket accounting and JSON escaping (#714).
+expect_ok "changes self-test" httrack -O "${tmpdir}/o1" -#test=changes run
+# The report must hold against a transfer thread the crawl never joins.
+expect_ok "changes-race self-test" httrack -O "${tmpdir}/o2" \
+    -#test=changes-race "${tmpdir}/race"

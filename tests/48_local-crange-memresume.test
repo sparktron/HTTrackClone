@@ -1,0 +1,64 @@
+#!/bin/bash
+# C2 (memory branch): a resume whose 206 lies text/html with a matching
+# INT64_MAX Content-Length must not overflow the resume buffer-size add
+# (UBSan aborts on the pre-fix binary at alloc_mem += totalsize). Pass 1 leaves
+# a partial + temp-ref; pass 2 resumes and must reject and refetch the whole
+# file. Teeth are UBSan-only: a normal build wraps to the same reject+restart.
+set -u
+
+# shellcheck source=tests/crawllib.sh
+. "${0%"${0##*/}"}./crawllib.sh"
+
+# The resume needs a graceful pass-1 interrupt to leave a temp-ref, and MSYS
+# cannot deliver a signal to a native exe.
+skip_on_windows "Windows: the pass-1 interrupt needs a signal MSYS cannot deliver"
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/httrack_crangemem.XXXXXX") || exit 1
+crawlpid=
+cleanup() {
+    test -n "$crawlpid" && kill -9 "$crawlpid" 2>/dev/null
+    rm -rf "$tmpdir"
+}
+cleanup_push cleanup
+
+local_server_start
+
+require_httrack
+out="${tmpdir}/crawl"
+mkdir "$out"
+common=(-O "$out" --quiet --disable-security-limits --robots=0 --timeout=30 --retries=1 -c1)
+refdir="${out}/hts-cache/ref"
+
+# --- pass 1: crawl, interrupt once the blob download is underway -------------
+printf '[pass 1: interrupt mid-download] ..\t'
+httrack "${common[@]}" "${BASEURL}/crange206mem/index.html" >"${tmpdir}/log1" 2>&1 &
+crawlpid=$!
+for _ in $(seq 1 300); do
+    test -n "$(find "$refdir" -name '*.ref' 2>/dev/null)" && break
+    kill -0 "$crawlpid" 2>/dev/null || break
+    sleep 0.1
+done
+sleep 0.3
+kill -TERM "$crawlpid" 2>/dev/null
+wait "$crawlpid" 2>/dev/null
+crawlpid=
+test -n "$(find "$refdir" -name '*.ref' 2>/dev/null)" || fail "no temp-ref survived pass 1; cannot drive the resume"
+echo "OK (temp-ref present)"
+
+# --- pass 2: --continue -> resume -> hostile INT64_MAX Content-Range ----------
+printf '[pass 2: hostile 206, no overflow, refetch] ..\t'
+rc=0
+local_crawl --log "${tmpdir}/log2" "${common[@]}" --continue "${BASEURL}/crange206mem/index.html" || rc=$?
+# a crash here would otherwise read as a clean "terminated"
+test "$rc" -eq 0 ||
+    fail_dump "httrack exited $rc" "${tmpdir}/log2"
+echo "OK (terminated)"
+
+blob=$(find "$out" -name blob.bin 2>/dev/null | head -1)
+full=6008 # len(CRANGE206_BODY) = len("CR206DAT") + 6000
+
+printf '[file recovered whole] ..\t'
+test -s "$blob" || fail "blob.bin missing after the hostile 206"
+got=$(wc -c <"$blob")
+test "$got" -eq "$full" || fail "blob.bin is ${got} bytes, expected ${full}"
+echo "OK (${got} bytes)"

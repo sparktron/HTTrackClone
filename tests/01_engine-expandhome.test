@@ -1,0 +1,69 @@
+#!/bin/bash
+#
+
+# SC2088: the literal, unexpanded '~' is the input under test.
+# shellcheck disable=SC2088
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# ~ expansion for the -O base path (expand_home). $HOME is pinned so the cases
+# cannot depend on the caller's, but MSYS rewrites it into a Windows path
+# before the native httrack.exe reads it: ask the engine what it saw rather
+# than hardcoding the value.
+ask() {
+    HOME=HTSHOME httrack -O /dev/null -#test=expandhome "$1"
+}
+exp() { selftest_queue "expanded=$2" expandhome "$1"; }
+
+home=$(ask '~')
+home=${home#expanded=}
+
+# or every case below is vacuous: '~' means expansion never fired, '.' means it
+# fell back to the default without ever reading $HOME
+test "$home" != '~' || fail "expansion never fired"
+test "$home" != '.' || fail "expansion fell back to the default without reading HOME"
+
+exp '~' "$home"
+exp '~/foo' "$home/foo"
+exp '~/foo/bar/#' "$home/foo/bar/#"
+exp '~/' "$home/"
+exp '~/../x' "$home/../x"
+
+# ~user/ needs getpwnam: left alone rather than mangled into $HOME + "user/"
+exp '~smith/foo' '~smith/foo'
+exp '~root' '~root'
+
+# only a leading '~' expands; anything else is a literal path component
+exp 'a~/x' 'a~/x'
+exp './~/x' './~/x'
+exp 'foo~bar' 'foo~bar'
+
+# an unset or empty $HOME must not turn ~/foo into the absolute /foo
+unset_home=$(env -u HOME httrack -O /dev/null -#test=expandhome '~/foo')
+if test "$(suite_backend)" = wsl2; then
+    # The engine reads the Windows environment block, which the distro cannot
+    # unset, so HOME still resolves and ./foo is not what comes back. Pin the
+    # shape instead of the value, because an inequality alone also passes on an
+    # empty answer and on an unexpanded ~/foo.
+    case $unset_home in
+    expanded=/foo) fail "unset HOME: expanded to the absolute /foo" ;;
+    expanded=?*/foo) ;;
+    *) fail "unset HOME: [$unset_home] is not an expansion of ~/foo" ;;
+    esac
+else
+    assert_eq "expanded=./foo" "$unset_home" 'unset HOME'
+fi
+assert_eq "expanded=./foo" "$(HOME='' httrack -O /dev/null -#test=expandhome '~/foo')" 'empty HOME'
+
+# A $HOME past the 2 * HTS_URLMAXSIZE buffer is left alone: strcatbuff aborts
+# rather than truncates. Only meaningful where the engine sees the value we set:
+# MSYS rewrites HOME into a path of its own choosing, long or not.
+if test "$home" = HTSHOME; then
+    long=$(printf '%04096d' 0 | tr '0' 'A')
+    assert_eq "expanded=~/foo" "$(HOME="$long" httrack -O /dev/null -#test=expandhome '~/foo')" 'over-long HOME'
+fi
+
+HOME=HTSHOME selftest_run_queued

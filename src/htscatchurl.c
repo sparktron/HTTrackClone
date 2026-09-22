@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -64,7 +64,7 @@ Please visit our Website: http://www.httrack.com
 // catch_url_init(&port,&return_host);
 HTSEXT_API T_SOC catch_url_init_std(int *port_prox, char *adr_prox) {
   T_SOC soc;
-  int try_to_listen_to[] = { 8080, 3128, 80, 81, 82, 8081, 3129, 31337, 0, -1 };
+  int try_to_listen_to[] = {8080, 3128, 80, 81, 82, 8081, 3129, 0, -1};
   int i = 0;
 
   do {
@@ -82,23 +82,19 @@ HTSEXT_API T_SOC catch_url_init(int *port, /* 128 bytes */ char *adr) {
   T_SOC soc = INVALID_SOCKET;
   SOCaddr server;
 
-  /* Loopback only. This is a throwaway proxy that the user points a browser
-     at so that we can capture a URL, and the request the browser sends
-     carries whatever cookies and credentials it holds for that site.
-     Binding to the address the machine's hostname resolves to put all of
-     that on a port reachable from the network. */
-  SOCaddr_initlocal(server);
-
-  if ((soc =
-       (T_SOC) socket(SOCaddr_sinfamily(server), SOCK_STREAM,
-                      0)) != INVALID_SOCKET) {
+  /* Loopback only: the request this proxy captures carries the browser's
+     cookies and credentials for the target site. */
+  SOCaddr_initloopback(server);
+  if ((soc = (T_SOC) socket(SOCaddr_sinfamily(server), SOCK_STREAM, 0)) !=
+      INVALID_SOCKET) {
     SOCaddr_initport(server, *port);
     if (bind(soc, &SOCaddr_sockaddr(server), SOCaddr_size(server)) == 0) {
       SOCaddr server2;
       SOClen len = SOCaddr_capacity(server2);
 
       if (getsockname(soc, &SOCaddr_sockaddr(server2), &len) == 0) {
-        *port = ntohs(SOCaddr_sinport(server));     // récupérer port
+        /* server2, not server: an ephemeral port only appears here */
+        *port = ntohs(SOCaddr_sinport(server2));
         if (listen(soc, 1) >= 0) {
           SOCaddr_inetntoa(adr, 128, server2);
         } else {
@@ -131,26 +127,78 @@ HTSEXT_API T_SOC catch_url_init(int *port, /* 128 bytes */ char *adr) {
   return soc;
 }
 
-// 2 - Wait for URL
+/* Accumulate the request headers into "data" (CATCH_URL_DATA_SIZE bytes, on
+   entry holding the request line) and feed them to treathead(). A clipped
+   header block is not the request the browser sent, so a line or block that
+   does not fit fails the capture rather than replay a prefix. Every iteration
+   charges "used", which is what ends the loop. */
+static catch_url_status catch_url_headers(T_SOC soc, char *data,
+                                          htsblk *blkretour) {
+  char BIGSTK line[CATCH_URL_LINE_SIZE];
+  size_t used = strlen(data); /* invariant: used < CATCH_URL_DATA_SIZE */
 
-/* Upper bound on header lines accepted for one request, so that draining
-   an oversized header block always terminates. */
-#define CATCH_URL_MAX_HEADER_LINES 512
+  do {
+    size_t need;
+
+    /* a line socinput() had to clip is not the header the browser sent, and
+       skipping one charges "used" nothing: a peer sending only such lines
+       would hold this loop open for free */
+    if (socinput(soc, line, (int) sizeof(line)))
+      return CATCH_URL_ERR_HEADER;
+    treathead(NULL, NULL, NULL, blkretour, line); // traiter
+    need = strlen(line) + 2;                      // the CRLF this line carries
+    if (need >= CATCH_URL_DATA_SIZE - used)
+      return CATCH_URL_ERR_BLOCK;
+    strlcatbuff(data, line, CATCH_URL_DATA_SIZE);
+    strlcatbuff(data, "\r\n", CATCH_URL_DATA_SIZE);
+    used += need;
+    /* the empty line ending the block was appended just above, which is why no
+       final CRLF is added afterwards */
+  } while (strnotempty(line));
+  return CATCH_URL_OK;
+}
+
+/* Contract in htscatchurl.h. */
+const char *catch_url_strerror(catch_url_status status) {
+  switch (status) {
+  case CATCH_URL_OK:
+    return "the request was captured";
+  case CATCH_URL_ERR_URL:
+    return "the browser asked for a relative URL, not an absolute one";
+  case CATCH_URL_ERR_HEADER:
+    return "one request header line was over " CATCH_URL_STR(
+        CATCH_URL_LINE_MAX) " bytes";
+  case CATCH_URL_ERR_BLOCK:
+    return "the request headers were over " CATCH_URL_STR(
+        CATCH_URL_DATA_SIZE) " bytes in total";
+  case CATCH_URL_ERR_REQUEST:
+    break;
+  }
+  return "the browser sent no usable request line";
+}
+
+// 2 - Wait for URL
 
 // catch_url
 // returns 0 if error
 // url: buffer where URL must be stored - or ip:port in case of failure
-//      (CATCH_URL_URL_SIZE bytes)
-// method: CATCH_URL_METHOD_SIZE bytes
-// data: CATCH_URL_DATA_SIZE bytes
-HTSEXT_API int catch_url(T_SOC soc, char *url, char *method, char *data) {
-  int retour = 0;
+// data: 32Kb
+HTSEXT_API hts_boolean catch_url(T_SOC soc, char *url, char *method,
+                                 char *data) {
+  return catch_url_capture(soc, url, method, data) == CATCH_URL_OK;
+}
+
+/* Contract in htscatchurl.h. */
+catch_url_status catch_url_capture(T_SOC soc, char *url, char *method,
+                                   char *data) {
+  catch_url_status status = CATCH_URL_ERR_REQUEST;
 
   // connexion (accept)
   if (soc != INVALID_SOCKET) {
     T_SOC soc2;
 
     while((soc2 = (T_SOC) accept(soc, NULL, NULL)) == INVALID_SOCKET) ;
+    socket_set_nosigpipe(soc2);
     /*
        #ifdef _WIN32
        closesocket(soc);
@@ -168,27 +216,21 @@ HTSEXT_API int catch_url(T_SOC soc, char *url, char *method, char *data) {
         char dot[256 + 2];
 
         SOCaddr_inetntoa(dot, sizeof(dot), server2);
-        snprintf(url, CATCH_URL_URL_SIZE, "%s:%d", dot,
-                 ntohs(SOCaddr_sinport(server2)));
+        sprintf(url, "%s:%d", dot, ntohs(SOCaddr_sinport(server2)));
       }
     }
     /* INFOS */
 
     // réception
     if (soc != INVALID_SOCKET) {
-      char line[1000];
+      char BIGSTK line[CATCH_URL_LINE_SIZE];
       char protocol[256];
 
       line[0] = protocol[0] = '\0';
-      //
-      socinput(soc, line, 1000);
-      if (strnotempty(line)) {
-        /* The widths below have to be literals, so fail the build rather
-           than silently overrun if the capacities are ever changed. */
-        typedef char catch_url_width_check_[(CATCH_URL_METHOD_SIZE == 32
-                                             && CATCH_URL_URL_SIZE == 2048
-                                             && sizeof(protocol) == 256)
-                                            ? 1 : -1] HTS_UNUSED;
+      // a clipped request-line names a URL the browser did not ask for
+      if (!socinput(soc, line, (int) sizeof(line)) && strnotempty(line)) {
+        /* widths bound the caller buffers: method[32], url[HTS_URLMAXSIZE*2],
+           protocol[256] */
         if (sscanf(line, "%31s %2047s %255s", method, url, protocol) == 3) {
           lien_adrfil af;
 
@@ -205,69 +247,41 @@ HTSEXT_API int catch_url(T_SOC soc, char *url, char *method, char *data) {
           // adresse du lien
           if (ident_url_absolute(url, &af) >= 0) {
             // Traitement des en-têtes
-            char BIGSTK loc[HTS_URLMAXSIZE * 2];
+            char BIGSTK loc[HTS_LOCATION_SIZE];
             htsblk blkretour;
-            int headers_too_large = 0;
-            int header_lines = 0;
 
             hts_init_htsblk(&blkretour);
-            //memset(&blkretour, 0, sizeof(htsblk));    // effacer
             blkretour.location = loc;   // si non nul, contiendra l'adresse véritable en cas de moved xx
             // Lire en têtes restants
-            snprintf(data, CATCH_URL_DATA_SIZE, "%s %s %s\r\n", method, af.fil,
-                     protocol);
-            while(strnotempty(line)) {
-              socinput(soc, line, 1000);
-              treathead(NULL, NULL, NULL, &blkretour, line);    // traiter
-              /* A client can send more header bytes than data holds. Keep
-                 reading to the blank line that ends the block even once we
-                 stop storing: leaving the rest of the headers in the socket
-                 would have the body read below capture them as the body. */
-              if (++header_lines > CATCH_URL_MAX_HEADER_LINES) {
-                /* Nothing obliges a client to ever send the blank line. */
-                headers_too_large = 1;
-                break;
-              }
-              if (headers_too_large
-                  || strlen(data) + strlen(line) + 2 >= CATCH_URL_DATA_SIZE) {
-                headers_too_large = 1;
-                continue;
-              }
-              strlcatbuff(data, line, CATCH_URL_DATA_SIZE);
-              strlcatbuff(data, "\r\n", CATCH_URL_DATA_SIZE);
-            }
-            // CR/LF final de l'en tête inutile car déja placé via la ligne vide juste au dessus
-            //strcatbuff(data,"\r\n");
-            /* Headers we could not store are headers the caller never
-               sees, so the capture would be a quiet lie. Reject instead. */
-            if (!headers_too_large) {
+            sprintf(data, "%s %s %s\r\n", method, af.fil, protocol);
+            status = catch_url_headers(soc, data, &blkretour);
+            if (status == CATCH_URL_OK) {
               if (blkretour.totalsize > 0) {
                 int pos = (int) strlen(data);
-                /* Keep the body within what is left of data, terminator
-                   included: the headers above already consumed part of it. */
-                const int room = (int) CATCH_URL_DATA_SIZE - pos - 1;
-                int len = (int) min(blkretour.totalsize, 32000);
-
-                if (len > room)
-                  len = room;
+                /* the headers already took part of data[], so bound the body by
+                   the room they left rather than by a constant */
+                int len = (int) min(blkretour.totalsize,
+                                    (LLint) (CATCH_URL_DATA_SIZE - 1 - pos));
 
                 // Copier le reste (post éventuel)
-                while((len > 0)
-                      && ((r = recv(soc, (char *) data + pos, len, 0)) > 0)) {
+                while ((len > 0) &&
+                       ((r = recv(soc, (char *) data + pos, len, 0)) > 0)) {
                   pos += r;
                   len -= r;
-                  data[pos] = '\0';     // terminer par NULL
+                  data[pos] = '\0'; // terminer par NULL
                 }
               }
               // Envoyer page
               sprintf(line, CATCH_RESPONSE);
-              send(soc, line, (int) strlen(line), 0);
-              // OK!
-              retour = 1;
+              send(soc, line, (int) strlen(line), HTS_MSG_NOSIGNAL);
+            } else {
+              data[0] = '\0'; // no prefix handed back
             }
+          } else {
+            status = CATCH_URL_ERR_URL;
           }
         }
-      }                         // sinon erreur
+      } // sinon erreur
     }
   }
   if (soc != INVALID_SOCKET) {
@@ -280,11 +294,12 @@ HTSEXT_API int catch_url(T_SOC soc, char *url, char *method, char *data) {
     close(soc);
 #endif
   }
-  return retour;
+  return status;
 }
 
-// Lecture de ligne sur socket
-void socinput(T_SOC soc, char *s, int max) {
+// Read one line off a socket; HTS_TRUE if it did not fit "s".
+hts_boolean socinput(T_SOC soc, char *s, int max) {
+  hts_boolean cut = HTS_FALSE;
   int c;
   int j = 0;
 
@@ -303,11 +318,15 @@ void socinput(T_SOC soc, char *s, int max) {
       case 12:
         break;                  // sauter ces caractères
       default:
-        s[j++] = (char) c;
+        if (j < max - 1)
+          s[j++] = (char) c;
+        else
+          cut = HTS_TRUE; // keep draining: the tail is not a new line
         break;
       }
     } else
       c = EOF;
-  } while((c != -1) && (c != EOF) && (j < (max - 1)));
-  s[j++] = '\0';
+  } while ((c != -1) && (c != EOF));
+  s[j] = '\0';
+  return cut;
 }

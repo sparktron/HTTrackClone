@@ -1,0 +1,48 @@
+#!/bin/bash
+#
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# htsarrays.h growth macros (driven by 'httrack -#test=arrays').
+
+# Success path: growth reaches the requested room and the payload survives
+# every reallocation.
+assert_selftest "arrays: OK" arrays run
+
+# A hang is the pre-fix symptom here, so bound the runs where the shell can
+# (macOS ships no timeout(1); there the suite watchdog is the backstop).
+run_bounded() {
+    if command -v timeout >/dev/null; then timeout 60 "$@"; else "$@"; fi
+}
+
+# Room whose byte size cannot fit a size_t: capa*width used to wrap short.
+err=$(run_bounded httrack -#test=arrays overflow-capa 2>&1) || true
+case "$err" in
+*"arrays: NOT aborted"*)
+    echo "capacity overflow was NOT caught" >&2
+    exit 1
+    ;;
+*"room_ <= maxCapa_"*) ;;
+*)
+    echo "expected the capacity bound to abort, got: $err" >&2
+    exit 1
+    ;;
+esac
+
+# Room of SIZE_MAX: doubling used to wrap the capacity to 0 and spin forever,
+# and the allocation it ends on used to abort the process instead of letting
+# the caller fail just the page it was building.
+# ASan kills the process on an over-large request unless told to return NULL.
+err=$(ASAN_OPTIONS="${ASAN_OPTIONS-}${ASAN_OPTIONS:+:}allocator_may_return_null=1" \
+    run_bounded httrack -O /dev/null -#test=arrays overflow-loop 2>&1) || true
+case "$err" in
+*"arrays: growth failure OK"*) ;;
+*)
+    echo "expected the growth to fail and be reported, got: $err" >&2
+    exit 1
+    ;;
+esac
+
+exit 0

@@ -1,0 +1,17 @@
+#!/bin/bash
+#
+# Regression guard for the unsigned-enum sentinel trap: copy_htsopt's
+# `if (from->X > -1)` guard is always false for unsigned hts_boolean fields, so
+# they silently stop being copied. Driven by the in-process 'httrack -#test=copyopt' test.
+
+set -eu
+
+# 'run' is an ignored placeholder argument.
+out=$(httrack -#test=copyopt run)
+
+# Exact-match the success line so a renamed/removed test (it prints the registry
+# to stderr) can't pass.
+test "$out" = "copy-htsopt: OK" || {
+    echo "expected 'copy-htsopt: OK', got: $out" >&2
+    exit 1
+}

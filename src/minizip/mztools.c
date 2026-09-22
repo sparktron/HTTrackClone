@@ -14,7 +14,7 @@
 
 #define READ_8(adr)  ((unsigned char)*(adr))
 #define READ_16(adr) ( READ_8(adr) | (READ_8(adr+1) << 8) )
-#define READ_32(adr) ( READ_16(adr) | (READ_16((adr)+2) << 16) )
+#define READ_32(adr) ((uLong) READ_16(adr) | ((uLong) READ_16((adr) + 2) << 16))
 
 #define WRITE_8(buff, n) do { \
   *((unsigned char*)(buff)) = (unsigned char) ((n) & 0xff); \
@@ -248,7 +248,6 @@ extern int ZEXPORT unzRepair(const char* file, const char* fileOut, const char* 
 
     /* Final merge (file + central directory) */
     fclose(fpOutCD);
-    fpOutCD = NULL;
     if (err == Z_OK) {
       fpOutCD = fopen(fileOutTmp, "rb");
       if (fpOutCD != NULL) {
@@ -261,19 +260,12 @@ extern int ZEXPORT unzRepair(const char* file, const char* fileOut, const char* 
           }
         }
         fclose(fpOutCD);
-        fpOutCD = NULL;
-      } else {
-        err = Z_ERRNO;
       }
     }
 
     /* Close */
     fclose(fpZip);
     fclose(fpOut);
-
-    if (err != Z_OK) {
-      (void)remove(fileOut);
-    }
 
     /* Wipe temporary file */
     (void)remove(fileOutTmp);
@@ -288,18 +280,19 @@ extern int ZEXPORT unzRepair(const char* file, const char* fileOut, const char* 
       }
     }
   } else {
-    err = Z_STREAM_ERROR;
+    /* Close and drop whatever did open, so a failed open leaks nothing. */
     if (fpZip != NULL) {
       fclose(fpZip);
     }
     if (fpOut != NULL) {
       fclose(fpOut);
-      (void)remove(fileOut);
+      (void) remove(fileOut);
     }
     if (fpOutCD != NULL) {
       fclose(fpOutCD);
+      (void) remove(fileOutTmp);
     }
-    (void)remove(fileOutTmp);
+    err = Z_STREAM_ERROR;
   }
   return err;
 }

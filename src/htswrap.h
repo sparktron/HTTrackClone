@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -31,6 +31,12 @@ Please visit our Website: http://www.httrack.com
 /* Author: Xavier Roche                                         */
 /* ------------------------------------------------------------ */
 
+/** @file htswrap.h
+    Legacy entry points of the callback-wrapper subsystem. The live callback
+    registration API now lives on the httrackp options block (hts_set_callback);
+    only the no-op init/free stubs remain exported here for ABI compatibility.
+ */
+
 #ifndef HTSWRAP_DEFH
 #define HTSWRAP_DEFH
 
@@ -38,7 +44,6 @@ Please visit our Website: http://www.httrack.com
 #ifdef HTS_INTERNAL_BYTECODE
 
 #include "htsglobal.h"
-#include "coucal.h"
 
 /* Forward definitions */
 #ifndef HTS_DEF_FWSTRUCT_httrackp
@@ -50,15 +55,18 @@ typedef struct httrackp httrackp;
 extern "C" {
 #endif
 
-HTSEXT_API int htswrap_init(void);      // LEGACY
-HTSEXT_API int htswrap_free(void);      // LEGACY
+/** Legacy no-op retained for ABI compatibility; always returns 1. */
+HTSEXT_API int htswrap_init(void); // LEGACY
+
+/** Legacy no-op retained for ABI compatibility; always returns 1. */
+HTSEXT_API int htswrap_free(void); // LEGACY
 
 #ifdef __cplusplus
 }
 #endif
 
-//HTSEXT_API int htswrap_add(httrackp * opt, const char *name, void *fct);
-//HTSEXT_API uintptr_t htswrap_read(httrackp * opt, const char *name);
+// HTSEXT_API int htswrap_add(httrackp * opt, const char *name, void *fct);
+// HTSEXT_API uintptr_t htswrap_read(httrackp * opt, const char *name);
 
 #endif
 

@@ -1,0 +1,47 @@
+#!/bin/bash
+#
+# Fork-only: https certificates are verified (upstream never verifies). The
+# suite trusts tests/server.crt through SSL_CERT_FILE (tests/Makefile.am), so
+# 14_local-https.test already proves a trusted certificate is accepted. This
+# test proves the other side: an untrusted certificate is refused, the refusal
+# is logged as a certificate failure, and -%V0 / --insecure bring back the old
+# accept-anything behaviour.
+
+set -euo pipefail
+
+: "${top_srcdir:=..}"
+
+if test "${HTTPS_SUPPORT:-}" == "no"; then
+    echo "no https support compiled, skipping"
+    exit 77
+fi
+
+work=$(mktemp -d) || exit 1
+trap 'set +e; rm -rf "$work"' EXIT
+# An empty trust store: the test server's self-signed certificate is unknown.
+: >"$work/empty-ca.pem"
+
+# Untrusted: nothing is mirrored, and the log names the certificate check.
+# -R0: no retries, so one refused handshake logs exactly two errors (the check
+# that failed, then the link given up on).
+SSL_CERT_FILE="$work/empty-ca.pem" \
+    bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 2 --not-found 'simple/basic.html' \
+    --log-found 'TLS certificate check failed for .*self.signed' \
+    httrack 'BASEURL/simple/basic.html' -R0
+
+# Same untrusted store, verification turned off: the old behaviour.
+SSL_CERT_FILE="$work/empty-ca.pem" \
+    bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 0 --files 5 \
+    --found 'simple/basic.html' \
+    --log-not-found 'TLS certificate check failed' \
+    httrack 'BASEURL/simple/basic.html' '-%V0'
+
+SSL_CERT_FILE="$work/empty-ca.pem" \
+    bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 0 --files 5 \
+    --found 'simple/basic.html' \
+    httrack 'BASEURL/simple/basic.html' --insecure
+
+# -%V0 must not survive an explicit -%V after it.
+SSL_CERT_FILE="$work/empty-ca.pem" \
+    bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 2 --not-found 'simple/basic.html' \
+    httrack 'BASEURL/simple/basic.html' -R0 '-%V0' '-%V'

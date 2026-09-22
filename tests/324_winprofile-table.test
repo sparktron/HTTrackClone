@@ -1,0 +1,403 @@
+#!/bin/bash
+#
+# Three front ends assert against this table, so a row that goes missing or
+# stops matching this repo has to red here, not in someone else's suite.
+
+set -e
+
+testdir=$(cd "$(dirname "$0")" && pwd)
+distdir=${top_srcdir:-$(cd "${testdir}/.." && pwd)}
+distdir=$(cd "${distdir}" && pwd)
+# shellcheck source=tests/testlib.sh
+. "${testdir}/testlib.sh"
+
+TSV="${distdir}/winprofile-keys.tsv"
+HDR="${distdir}/src/winprofile-keys.h"
+GEN="${distdir}/tools/gen-winprofile-keys.py"
+
+# Missing is fatal, never a skip: a check that opts itself out proves nothing.
+for f in "${TSV}" "${HDR}" "${GEN}"; do
+    test -r "${f}" || fail "missing ${f}"
+done
+
+py=$(find_python) || skip "python3 not found"
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/winprofile_table.XXXXXX") || fail "no tmpdir"
+cleanup() { rm -rf "${work}"; }
+cleanup_push cleanup
+
+printf '[the header matches the table] ..\t'
+# Generated, never hand-edited, and never parsed back the other way: a reader
+# that scrapes C is the failure mode this file replaces.
+"${py}" "${GEN}" "${TSV}" "${work}/regen.h" >/dev/null ||
+    fail "the generator rejected ${TSV}"
+diff -u "${HDR}" "${work}/regen.h" ||
+    fail "src/winprofile-keys.h is stale; re-run tools/gen-winprofile-keys.py"
+echo OK
+
+printf '[a one-sided composed_with is rejected] ..\t'
+# Without a control, a symmetry check that never fires passes identically.
+"${py}" - "${TSV}" "${work}/broken.tsv" <<'PY' || fail "see above"
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+out, cut = [], False
+for line in open(src, encoding="ascii"):
+    f = line.rstrip("\n").split("\t")
+    if not line.startswith("#") and len(f) == 11 and f[6] and not cut:
+        f[6], cut = "", True
+        line = "\t".join(f) + "\n"
+    out.append(line)
+if not cut:
+    sys.exit("no row carries composed_with, so this control proves nothing")
+open(dst, "w", encoding="ascii").writelines(out)
+PY
+if "${py}" "${GEN}" "${work}/broken.tsv" "${work}/broken.h" >/dev/null 2>&1; then
+    fail "the generator accepted a one-sided composed_with edge"
+fi
+echo OK
+
+printf '[every row is well formed] ..\t'
+rows=$(
+    "${py}" - "${TSV}" <<'PY'
+import sys
+cols = 11
+n = 0
+for i, line in enumerate(open(sys.argv[1], encoding="ascii"), 1):
+    line = line.rstrip("\n")
+    if not line or line.startswith("#"):
+        continue
+    # split with no limit loss: a trailing empty cell is still a cell
+    f = line.split("\t")
+    if len(f) != cols:
+        sys.exit("line %d: %d columns, want %d" % (i, len(f), cols))
+    # A blank default is only meaningful on a row that points at another.
+    if not f[7] and not f[10]:
+        sys.exit("line %d: %s has no default_state and no legacy_of"
+                 % (i, f[0]))
+    # The generator owns the value's domain. Its presence is what it cannot
+    # judge: whether empty differs from absent is a fact about the other front
+    # ends' readers, and a value-bearing kind has to state one either way.
+    if not f[9] and f[3].split(":")[0] in ("string", "number") \
+            and not f[10] and f[7] != "none":
+        sys.exit("line %d: %s states no empty_means" % (i, f[0]))
+    n += 1
+sys.stdout.reconfigure(newline="\n")  # the count below is read as a number
+print(n)
+PY
+) || fail "malformed table (see above)"
+test "${rows}" -ge 100 || fail "only ${rows} rows: the table shrank"
+echo "OK (${rows} rows)"
+
+printf '[the escape vectors round-trip here] ..\t'
+"${py}" - "${distdir}/winprofile-escapes.tsv" <<'PY' || fail "see above"
+import re
+import sys
+
+UNESC = {"r": "\r", "n": "\n", "t": "\t", "\\": "\\"}
+
+
+def unescape(s):
+    return re.sub(r"\\(.)", lambda m: UNESC[m.group(1)], s)
+
+
+def encode(v):
+    """WebHTTrack's inifile encoding: %% for percent, %02x under 32."""
+    out = []
+    for c in v:
+        if c == "%":
+            out.append("%%")
+        elif ord(c) < 32:
+            out.append("%%%02x" % ord(c))
+        else:
+            out.append(c)
+    return "".join(out)
+
+
+agreed = skipped = 0
+for i, line in enumerate(open(sys.argv[1], encoding="ascii"), 1):
+    line = line.rstrip("\n")
+    if not line or line.startswith("#"):
+        continue
+    f = line.split("\t")
+    if len(f) != 4:
+        sys.exit("line %d: %d columns, want 4" % (i, len(f)))
+    raw, enc, state = unescape(f[0]), f[1], f[2]
+    if state == "divergent":
+        if enc:
+            sys.exit("line %d: a divergent row carries an encoding" % i)
+        skipped += 1
+        continue
+    if state != "agreed":
+        sys.exit("line %d: bad state %r" % (i, state))
+    got = encode(raw)
+    if got != enc:
+        sys.exit("line %d: %r encodes here as %r, table says %r"
+                 % (i, f[0], got, enc))
+    agreed += 1
+if agreed < 8:
+    sys.exit("only %d agreed vectors: the file shrank" % agreed)
+print("OK (%d agreed, %d divergent skipped)" % (agreed, skipped))
+PY
+
+printf '[this repo matches its own rows] ..\t'
+"${py}" - "${TSV}" "${distdir}" <<'PY' || fail "see above"
+import re
+import sys
+
+tsv, root = sys.argv[1], sys.argv[2]
+
+COLS = ["key", "owners", "scope", "kind", "flag_on", "flag_off",
+        "composed_with", "default_state", "default_value", "empty_means",
+        "legacy_of"]
+rows = {}
+for line in open(tsv, encoding="ascii"):
+    line = line.rstrip("\n")
+    if line and not line.startswith("#"):
+        f = line.split("\t")
+        rows[f[0]] = dict(zip(COLS, f))
+
+
+def read(p):
+    return open("%s/%s" % (root, p), encoding="latin-1").read()
+
+
+def block(text, name):
+    m = re.search(r'<textarea name="%s".*?>(.*?)</textarea>' % name, text, re.S)
+    if m is None:
+        sys.exit("no %s textarea in step4.html" % name)
+    return m.group(1)
+
+
+def same(got, want, what):
+    """1 if they match, else the run dies. Deleting a call deletes its count,
+    so coverage cannot be dropped without the total falling."""
+    if got != want:
+        sys.exit("%s: this repo says %r, the table says %r" % (what, got, want))
+    return 1
+
+
+step4 = read("html/server/step4.html")
+written = set(re.findall(r"^([A-Za-z][A-Za-z0-9_]*)=", block(step4, "winprofile"),
+                         re.M))
+claimed = set(k for k, r in rows.items() if "web" in r["owners"].split(","))
+if written - claimed:
+    sys.exit("step4.html writes %s, not marked web" % sorted(written - claimed))
+if claimed - written:
+    sys.exit("the table marks %s as written here, step4.html does not"
+             % sorted(claimed - written))
+
+srv = read("src/htsserver.c")
+
+
+def names(sym):
+    m = re.search(r"%s\[\] = \{(.*?)\n\};" % sym, srv, re.S)
+    if m is None:
+        sys.exit("no %s[] in htsserver.c" % sym)
+    return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+
+listk, checkbox = names("ini_list_keys"), names("ini_checkbox_keys")
+init_int = dict(re.findall(r'\{"([a-z0-9_]+)", (\d+)\}', srv))
+# A seed table this parser cannot find takes every check that reads it, so a
+# renamed array must red here rather than emptying the dict.
+def srv_block(pattern):
+    m = re.search(pattern, srv, re.S)
+    if m is None:
+        sys.exit("htsserver.c: no match for %s" % pattern)
+    return m.group(1)
+
+
+init_on = set(re.findall(r'"([A-Za-z0-9_]+)"',
+                         srv_block(r"initOn\[\] = \{(.*?)NULL\}")))
+seeds = srv_block(r"initStrElt initStr\[\] = \{(.*?)\{NULL")
+FRAG = r'(?:HTS_DEFAULT_[A-Z_]+|"(?:[^"\\]|\\.)*")'
+NAME = r'\{\s*"([a-z0-9_]+)"\s*,'
+init_str = dict(re.findall(r'%s\s*(%s(?:\s*%s)*)' % (NAME, FRAG, FRAG), seeds))
+# A seed this parser cannot read drops silently out of init_str, so its row's
+# check would never run.
+unread = set(re.findall(NAME, seeds)) - set(init_str)
+if unread:
+    sys.exit("initStr: cannot read %s" % sorted(unread))
+def literal(text, skip=None):
+    """The value of a C string expression: adjacent fragments joined and any
+    HTS_DEFAULT_* macro expanded. Stopping at the first fragment would
+    under-read a seed the formatter wrapped."""
+    out = []
+    for tok in re.finditer(r'"((?:[^"\\]|\\.)*)"|([A-Z][A-Z0-9_]+)', text):
+        if tok.group(1) is not None:
+            out.append(tok.group(1).encode().decode("unicode_escape"))
+        elif tok.group(2) != skip:
+            out.append(expand(tok.group(2)))
+    return "".join(out)
+
+
+def expand(name):
+    """A HTS_DEFAULT_* macro's value, read from htsglobal.h rather than copied:
+    a copy here would pin the row against this test instead of the macro."""
+    hdr = read("src/htsglobal.h")
+    m = re.search(r"#\s*define\s+%s((?:[^\n]*\\\n)*[^\n]*)" % name, hdr)
+    if m is None:
+        sys.exit("no %s in htsglobal.h" % name)
+    out = literal(m.group(1), skip=name)
+    if not out:
+        sys.exit("%s expanded to nothing" % name)
+    return out
+
+# value variable -> the checkbox variable gating it, so a value typed under a
+# cleared box reaches no flag
+body = srv_block(r"ini_gated_values\[\] = \{(.*?)\{NULL")
+pairs = re.findall(r'\{\s*"([a-z0-9_]+)"\s*,\s*"([a-z0-9_]+)"\s*\}', body)
+gates = dict(pairs)
+# A row this parser cannot read drops out in silence, taking its checks with it.
+if len(pairs) != body.count("{"):
+    sys.exit("ini_gated_values[]: read %d of its %d rows"
+             % (len(pairs), body.count("{")))
+# A repeated value takes the last row's gate and drops the others in silence.
+if len(gates) != len(pairs):
+    sys.exit("ini_gated_values[] gates a value twice: %s" % sorted(p[0] for p in pairs))
+# Pinned, not a floor: a gate dropped from the C table and the template together
+# is otherwise a green tree with two checks fewer.
+if len(gates) != 5:
+    sys.exit("ini_gated_values[] holds %d pairs, expected 5: %s"
+             % (len(gates), sorted(gates)))
+
+# key -> the variable step4 writes it from, and the flags that variable emits
+wvar, emit = {}, {}
+for line in block(step4, "winprofile").split("\n"):
+    m = re.match(r"^([A-Za-z][A-Za-z0-9_]*)=(.*)$", line.strip("\r"))
+    if m:
+        v = re.match(r"^\$\{(?:z?test:)?([a-z0-9_]+)[:}]", m.group(2))
+        if v:
+            wvar[m.group(1)] = v.group(1)
+cmd = block(step4, "command")
+for m in re.finditer(r"\$\{z?test:([a-z0-9_]+):([^}]*)\}", cmd):
+    var = m.group(1)
+    # A gated value is emitted as <var>_eff; without the fold every check that
+    # reads emit would silently stop running for it.
+    if var.endswith("_eff") and var[:-4] in gates:
+        var = var[:-4]
+    emit.setdefault(var, []).append(m.group(2))
+
+key_of = {v: k for k, v in wvar.items()}
+for value, gate in sorted(gates.items()):
+    if re.search(r"\$\{(?:z?test|arg|unquoted):%s[:}]" % value, cmd):
+        sys.exit("the command block still reads %s ungated" % value)
+    if not re.search(r"\$\{(?:z?test|arg|unquoted):%s_eff[:}]" % value, cmd):
+        sys.exit("the command block does not read %s_eff" % value)
+    # The stored value is what the profile keeps, gate or no gate. A checkbox
+    # goes through ${ztest:}; anything else must reach the file verbatim, so a
+    # row that started storing 1/0 instead of the typed value is a regression.
+    if value not in key_of or gate not in key_of:
+        sys.exit("no winprofile key writes %s"
+                 % (value if value not in key_of else gate))
+    if rows[key_of[value]]["kind"] != "checkbox" and not re.search(
+            r"^[A-Za-z0-9_]+=\$\{%s\}$" % value, block(step4, "winprofile"),
+            re.M):
+        sys.exit("the winprofile block no longer writes %s verbatim" % value)
+for m in re.finditer(r"\$\{(?:z?test|arg|unquoted):([a-z0-9_]+)_eff[:}]", cmd):
+    if m.group(1) not in gates:
+        sys.exit("the command block reads %s_eff, which htsserver.c never publishes"
+                 % m.group(1))
+
+# LISTDEF cardinality, so a list row's count is checkable rather than decorative
+lang = read("lang.def").split("\n")
+listdef = {}
+for i, l in enumerate(lang):
+    if re.match(r"^LISTDEF_\d+$", l):
+        listdef[l] = lang[i + 1].count("\\n") + 1
+pages = "".join(read("html/server/%s" % f) for f in
+                ("step3.html", "option2.html", "option3.html", "option8.html",
+                 "option9.html"))
+listvar = dict(re.findall(r"\$\{listid:([a-z0-9_]+):(LISTDEF_\d+)", pages))
+
+COMPOSED = {"Build", "BuildString", "ProxyType", "Proxy", "Port",
+            "Sitemap", "SitemapUrl", "SingleFile", "SingleFileMaxSize",
+            "Warc", "WarcFile", "WarcMaxSize", "WarcCdx"}
+if set(k for k, r in rows.items() if r["composed_with"]) != COMPOSED:
+    sys.exit("composed_with is set on %s, expected %s"
+             % (sorted(k for k, r in rows.items() if r["composed_with"]),
+                sorted(COMPOSED)))
+
+checked = skipped = 0
+for value, gate in sorted(gates.items()):
+    vk, gk = key_of[value], key_of[gate]
+    checked += same(True, gk in rows[vk]["composed_with"].split(","),
+                    "%s composed_with %s" % (vk, gk))
+    checked += same(True, vk in rows[gk]["composed_with"].split(","),
+                    "%s composed_with %s" % (gk, vk))
+
+for key in sorted(claimed):
+    r, kind, var = rows[key], rows[key]["kind"], wvar.get(key, "")
+
+    if key in listk:
+        n = listdef.get(listvar.get(var, ""), 0)
+        # The base is the whole of #1323: on disk it is 0, whatever the
+        # templates number internally.
+        checked += same(kind, "list:0:%d" % n, "%s kind" % key)
+    elif key == "Dos":
+        checked += same(kind, "bitmask", "Dos kind")
+    elif key == "ProxyType":
+        # In ini_checkbox_keys for the 0-to-empty coercion, but a three-item
+        # combo: membership there does not make a key boolean.
+        n = len(re.findall(r"<option ", re.search(
+            r'<select name="proxytype".*?</select>',
+            read("html/server/option10.html"), re.S).group(0)))
+        checked += same("list:0:%d" % n, kind, "ProxyType kind")
+    elif key in checkbox:
+        checked += same(kind, "checkbox", "%s kind" % key)
+
+    # Whether this repo has an opinion, decided here rather than read from the
+    # table: a row that says unresolved where a default is derivable would
+    # otherwise switch its own check off.
+    # Rows where Xavier's ruling took WinHTTrack's answer over this repo's, so
+    # the table says none while htsserver still ships a default it should lose.
+    RULED = {"MaxRate", "Sockets"}
+    ruled = key in RULED
+    if ruled:
+        # Assert the divergence rather than skipping it: a bare exemption keeps
+        # passing once the seed goes and the row should have become agreed.
+        if var not in init_int:
+            sys.exit("%s: no seed left, so the row is no longer a divergence "
+                     "and belongs out of RULED" % key)
+        checked += same("none", r["default_state"], "%s default_state" % key)
+        checked += same("", r["default_value"], "%s default_value" % key)
+    derivable = (var in init_int or var in init_on or key in checkbox) \
+        and not ruled
+    if derivable and r["default_state"] != "agreed":
+        sys.exit("%s: this repo defaults it, the table says %s"
+                 % (key, r["default_state"] or "nothing"))
+    if not derivable:
+        skipped += 1
+    elif var in init_int:
+        n = int(init_int[var])
+        checked += same(str(n - 1 if key in listk else n), r["default_value"],
+                        "%s default" % key)
+    elif var in init_on:
+        checked += same("1", r["default_value"], "%s default" % key)
+    else:
+        checked += same("0", r["default_value"], "%s default" % key)
+
+    # A string default this repo states, checked by nothing until now, which is
+    # how Footer sat as a disagreement it was never part of.
+    if r["default_state"] == "agreed" and var in init_str and var not in init_on:
+        checked += same(literal(init_str[var]), r["default_value"],
+                        "%s default" % key)
+
+    # Only an on/off setting has an on/off pair: a list emits through a ladder
+    # the table deliberately does not carry.
+    if kind != "checkbox" or len(emit.get(var, [])) != 1:
+        continue
+    slots = emit[var][0].split(":")
+    on = slots[0] if len(slots) == 1 else slots[1]
+    off = "" if len(slots) == 1 else slots[0]
+    checked += same(on, r["flag_on"], "%s flag_on" % key)
+    checked += same(off, r["flag_off"], "%s flag_off" % key)
+
+if len(claimed) < 90:
+    sys.exit("only %d rows claim web: the table shrank" % len(claimed))
+if checked < 150:
+    sys.exit("only %d checks ran: the assertions stopped reaching the rows"
+             % checked)
+print("OK (%d rows, %d checks, %d skipped)" % (len(claimed), checked, skipped))
+PY

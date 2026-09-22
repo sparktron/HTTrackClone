@@ -1,0 +1,342 @@
+#!/bin/bash
+#
+# crawllib's launch and crawl helpers, exercised from a subject process: a
+# firing assertion, and the library's own reaping, each end that process.
+
+# The subject snippets below are deliberately unexpanded: they run in the
+# subject, against its own tmpdir and the variables the library sets there.
+# shellcheck disable=SC2016
+
+set -euo pipefail
+
+# shellcheck source=tests/crawllib.sh
+. "${0%"${0##*/}"}./crawllib.sh"
+
+find_python >/dev/null || skip "python3 not found"
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/httrack_crawllib.XXXXXX")
+cleanup_push rm -rf "$tmpdir"
+
+rc=0 out=
+run_subject() {
+    printf 'set -euo pipefail\n. "%s/crawllib.sh"\ntmpdir=%s\n%s\n' \
+        "$testdir" "$1" "$2" >"${1}/subject.sh"
+    rc=0
+    out=$(bash "${1}/subject.sh" 2>&1) || rc=$?
+}
+
+# Each subject gets its own tmpdir: the library defaults its log to $tmpdir and
+# registers cleanups there.
+subject=0
+holds() {
+    subject=$((subject + 1))
+    mkdir -p "${tmpdir}/s${subject}"
+    run_subject "${tmpdir}/s${subject}" "$1"
+    test "$rc" -eq 0 || fail "[$1] should have held, exited $rc: $out"
+}
+
+fires() {
+    subject=$((subject + 1))
+    mkdir -p "${tmpdir}/s${subject}"
+    run_subject "${tmpdir}/s${subject}" "$1"
+    test "$rc" -eq 1 || fail "[$1] should have failed, exited $rc: $out"
+    case "$out" in
+    *"$2"*) ;;
+    *) fail "[$1] failed without reporting '$2': $out" ;;
+    esac
+}
+
+## local_server_start announces a live server
+holds 'local_server_start
+test -n "$SRV_PORT" && test -n "$SRV_PID" && test -n "$SRV_LOG"
+test "$BASEURL" = "http://127.0.0.1:${SRV_PORT}"
+kill -0 "$SRV_PID"'
+ok "local_server_start sets BASEURL, SRV_PORT, SRV_PID and SRV_LOG"
+
+# A server that cannot bind must end the test, not leave SRV_PORT empty and let
+# every later assertion run against a dead port.
+fires 'local_server_start --bind 300.300.300.300' 'local-server did not come up'
+ok "a server that fails to bind fails the test"
+
+## --root picks what is served, and the default is the shared fixture
+holds 'mkdir -p "${tmpdir}/doc"
+printf "picked-this-root\n" >"${tmpdir}/doc/probe.html"
+local_server_start --root "${tmpdir}/doc"
+body=$("$(find_python)" - "$SRV_PORT" <<PY
+import sys, urllib.request
+print(urllib.request.urlopen("http://127.0.0.1:%s/probe.html" % sys.argv[1]).read().decode())
+PY
+)
+assert_match "picked-this-root" "$body" "served from --root"'
+ok "--root is what gets served"
+
+## --tls serves HTTPS, and BASEURL says so
+# Fetched over TLS, not read off BASEURL: an option that set the scheme and left
+# the server plain would pass on the string alone.
+holds 'local_server_start --tls
+assert_eq "https://127.0.0.1:${SRV_PORT}" "$BASEURL" "--tls scheme"
+body=$("$(find_python)" - "$SRV_PORT" <<PY
+import ssl, sys, urllib.request
+url = "https://127.0.0.1:%s/simple/basic.html" % sys.argv[1]
+print(urllib.request.urlopen(url, context=ssl._create_unverified_context()).read().decode())
+PY
+)
+assert_match "<html" "$body" "served over TLS"'
+ok "--tls serves HTTPS, with the scheme in BASEURL"
+
+## --env reaches the server process
+holds 'local_server_start --env LOCAL_SERVER_VERBOSE=1
+"$(find_python)" - "$SRV_PORT" <<PY
+import sys, urllib.request
+urllib.request.urlopen("http://127.0.0.1:%s/simple/basic.html" % sys.argv[1]).read()
+PY
+grep -q "GET /simple/basic.html" "$SRV_LOG"'
+ok "--env is exported to the server"
+
+## Two servers coexist on their own ports, and both are reaped
+holds 'local_server_start --log "${tmpdir}/a.log"
+a=$SRV_PORT apid=$SRV_PID
+assert_eq "${tmpdir}/a.log" "$SRV_LOG" "--log is where the announcement went"
+local_server_start --log "${tmpdir}/b.log"
+test "$a" != "$SRV_PORT" || fail "both servers took port $a"
+# Two servers, two logs: one shared default would leave the second port
+# discoverable in the first log and hide a --log that never took effect.
+grep -q "PORT ${a}$" "${tmpdir}/a.log" || fail "a.log holds no announcement"
+grep -q "PORT ${SRV_PORT}$" "${tmpdir}/b.log" || fail "b.log holds no announcement"
+! grep -q "PORT ${SRV_PORT}$" "${tmpdir}/a.log" || fail "both servers logged to a.log"
+printf "%s %s\n" "$apid" "$SRV_PID" >"${tmpdir}/pids"'
+read -r apid bpid <"${tmpdir}/s${subject}/pids"
+# The subject has exited, so its cleanups have run.
+! kill -0 "$apid" 2>/dev/null || fail "server $apid survived its test"
+! kill -0 "$bpid" 2>/dev/null || fail "server $bpid survived its test"
+ok "two servers get distinct ports and both are reaped on exit"
+
+## local_server_stop reaps now and disarms the teardown
+holds 'local_server_start --log "${tmpdir}/a.log"
+first=$SRV_PID
+local_server_start --log "${tmpdir}/b.log"
+local_server_stop "$first"
+! kill -0 "$first" 2>/dev/null || fail "the mid-run stop left the server alive"
+# The emptied slot is what stops teardown signalling a recycled pid number.
+test -z "${SRV_PIDS[0]}" || fail "the stopped server was left armed: ${SRV_PIDS[0]}"
+test "${SRV_PIDS[1]}" = "$SRV_PID" || fail "the running server lost its teardown"
+printf "%s %s\n" "$first" "$SRV_PID" >"${tmpdir}/pids"'
+read -r first second <"${tmpdir}/s${subject}/pids"
+! kill -0 "$first" 2>/dev/null || fail "server $first survived"
+! kill -0 "$second" 2>/dev/null || fail "server $second survived its test"
+ok "local_server_stop reaps its server and disarms only that teardown"
+
+## local_crawl's argument contract, read off a shim rather than a real crawl
+shim="${tmpdir}/bin"
+mkdir -p "$shim"
+cat >"${shim}/httrack" <<'SH'
+#!/bin/bash
+printf '%s\n' "$@" >"${SHIM_ARGV:?}"
+exit "${SHIM_RC:-0}"
+SH
+chmod +x "${shim}/httrack"
+
+argv="${tmpdir}/argv"
+export SHIM_ARGV="$argv"
+# A second name, kept to the PATH entry: MSYS reads the drive colon in "D:/a/..."
+# as a separator, while $shim stays native for anything that later needs it.
+PATH="$(posixpath "$shim"):$PATH"
+# By content, not by path spelling. crawled() below catches an unreachable shim
+# too, but names neither the real binary it reached nor the split PATH entry.
+grep -q SHIM_ARGV "$(command -v httrack)" 2>/dev/null ||
+    fail "the shim is not on PATH: $(command -v httrack)"
+url="http://127.0.0.1:1/x"
+
+# Truncate first, then require the URL back: an assertion that only reads $argv
+# would otherwise pass on the previous call's arguments when the crawl never ran.
+crawled() { # crawled ARGS...
+    local rc=0
+    : >"$argv"
+    # Not the last command, so its status is captured rather than the grep's.
+    local_crawl "$@" || rc=$?
+    grep -qxF -- "$url" "$argv" || fail "httrack never ran, or lost its URL"
+    return "$rc"
+}
+has() { grep -qxF -- "$1" "$argv" || fail "${2:-missing argument $1}"; }
+hasnt() { ! grep -qxF -- "$1" "$argv" || fail "${2:-unwanted argument $1}"; }
+
+crawled -O /dev/null "$url"
+has '--max-time=120' "local_crawl dropped its default --max-time"
+# Values, not just flags: an argv rebuilt from options alone would pass on flags.
+assert_eq "--max-time=120
+-O
+/dev/null
+$url" "$(<"$argv")" "the caller's arguments reach httrack, in order, after the cap"
+ok "local_crawl adds a --max-time backstop ahead of the caller's arguments"
+
+# A caller's own cap wins: with two of them the engine takes one of the pair,
+# and the backstop exists to be the weaker.
+crawled --max-time=7 -O /dev/null "$url"
+hasnt '--max-time=120' "local_crawl added a cap over the caller's"
+has '--max-time=7' "local_crawl dropped the caller's cap"
+crawled --max-time 7 -O /dev/null "$url"
+hasnt '--max-time=120' "the spaced form did not suppress the default"
+has '--max-time' "the spaced form lost the caller's cap"
+has '7' "the spaced form lost the cap's value"
+# Back to the default, so a library that only ever adds it once is caught.
+crawled -O /dev/null "$url"
+has '--max-time=120' "the default cap was added only on the first crawl"
+ok "a caller's own --max-time suppresses the default, in either spelling"
+
+## The exit status is httrack's own
+export SHIM_RC=3
+rc=0
+crawled -O /dev/null "$url" || rc=$?
+assert_eq 3 "$rc" "local_crawl returns httrack's status"
+unset SHIM_RC
+ok "local_crawl returns the crawl's exit status"
+
+## --log takes the crawl's output, and the default discards it
+cat >"${shim}/httrack" <<'SH'
+#!/bin/bash
+echo "crawl-said-this"
+SH
+chmod +x "${shim}/httrack"
+local_crawl --log "${tmpdir}/crawl.log" -O /dev/null "$url"
+assert_eq "crawl-said-this" "$(<"${tmpdir}/crawl.log")" "--log took stdout"
+# Truncated, not appended: every call site it replaced used a plain > redirect.
+local_crawl --log "${tmpdir}/crawl.log" -O /dev/null "$url"
+assert_eq "crawl-said-this" "$(<"${tmpdir}/crawl.log")" "--log truncates per crawl"
+ok "--log takes the crawl output, one crawl at a time"
+
+## --stdin feeds the engine, which a redirect on the call cannot be trusted to do
+# Three outcomes on one line, so a closed descriptor is told apart from the empty
+# read /dev/null gives.
+# Written straight out, never through $(cat): with fd 0 closed a command
+# substitution takes the free slot 0 for its pipe and the read blocks forever.
+cat >"${shim}/httrack" <<'SH'
+#!/bin/bash
+printf 'stdin=['
+# uutils cat does not fail on a closed fd, so ask the shell; the subshell keeps
+# an exec redirection error from taking bash 3.2 down with it
+if (exec 3<&0) 2>/dev/null; then cat 2>/dev/null; else printf closed; fi
+printf ']\n'
+SH
+chmod +x "${shim}/httrack"
+
+printf answer >"${tmpdir}/answers"
+# Against a call redirected elsewhere: --stdin is on the engine, so it wins.
+local_crawl --stdin "${tmpdir}/answers" --log "${tmpdir}/crawl.log" \
+    -O /dev/null "$url" </dev/null
+assert_eq "stdin=[answer]" "$(<"${tmpdir}/crawl.log")" "--stdin FILE"
+local_crawl --stdin closed --log "${tmpdir}/crawl.log" \
+    -O /dev/null "$url" <"${tmpdir}/answers"
+assert_eq "stdin=[closed]" "$(<"${tmpdir}/crawl.log")" "--stdin closed"
+# Without the option the engine still has a descriptor, whatever the platform
+# gives a background job.
+local_crawl --log "${tmpdir}/crawl.log" -O /dev/null "$url" </dev/null
+assert_eq "stdin=[]" "$(<"${tmpdir}/crawl.log")" "the default stdin"
+ok "--stdin hands the engine a file, or no descriptor at all"
+
+## The watchdog reds a crawl that never ends, from a subject: it ends the test
+cat >"${shim}/httrack" <<'SH'
+#!/bin/bash
+sleep 30
+SH
+chmod +x "${shim}/httrack"
+export PATH CRAWL_DEADLINE=2
+start=$SECONDS
+fires 'local_crawl -O /dev/null "http://127.0.0.1:1/x"' \
+    'crawl watchdog fired after 2s'
+elapsed=$((SECONDS - start))
+# Bounded both ways: firing early would red a healthy crawl, and a watchdog that
+# ignored CRAWL_DEADLINE would sit out the shim's whole sleep.
+test "$elapsed" -ge 1 || fail "the watchdog fired before its deadline"
+test "$elapsed" -lt 15 || fail "the watchdog outran its deadline: ${elapsed}s"
+unset CRAWL_DEADLINE
+ok "CRAWL_DEADLINE drives the watchdog, which reds a wedged crawl"
+
+## write_lock_request names the component that went missing
+holds 'mkdir -p "${tmpdir}/out"
+write_lock_request "${tmpdir}/out" hts-stop.lock $$
+test -e "${tmpdir}/out/hts-stop.lock"'
+assert_eq "" "$out" "what the first attempt printed"
+ok "write_lock_request writes the request, silently, on the first attempt"
+
+# A grandparent, since the old helper already named the parent.
+fires 'mkdir -p "${tmpdir}/ht.1/req.AAA/fresh"
+rm -rf "${tmpdir}/ht.1"
+write_lock_request "${tmpdir}/ht.1/req.AAA/fresh" hts-stop.lock $$' '/ht.1 is gone'
+# One line, or the failing redirect leaked the shell's own message.
+assert_eq 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "lines the helper printed"
+ok "a vanished grandparent is named, not the parent"
+
+# The real #1639 shape, where only the crawl output went.
+fires 'mkdir -p "${tmpdir}/ht.2"
+write_lock_request "${tmpdir}/ht.2/fresh" hts-stop.lock $$' '/fresh is gone'
+assert_match '/ht\.2 survives\)' "$out" "the deepest surviving directory"
+ok "a vanished output directory is named, with the survivor above it"
+
+fires 'sleep 0 &
+pid=$!
+wait "$pid"
+write_lock_request "${tmpdir}/gone" hts-stop.lock "$pid"' 'the engine exited before it could be asked'
+ok "a dead engine is named before the path is walked"
+
+# A relative path leaves the walk with nothing to strip, where the cwd is what
+# stops it.
+fires 'cd "$tmpdir"
+write_lock_request rel.dir/out hts-stop.lock $$' 'rel.dir is gone (. survives)'
+ok "a relative path stops the walk at the working directory"
+
+# At the other end, stripping the last component leaves an empty string, and
+# the root is what survives.
+fires 'write_lock_request /no-such-top-level-dir/out hts-stop.lock $$' \
+    '/no-such-top-level-dir is gone (/ survives)'
+ok "an absolute path stops the walk at the root"
+
+# A directory sitting where the request goes refuses the write for root too, and
+# the walk finds nothing removed. The helper gives it 29 more tries, 0.1s apart.
+holds 'mkdir -p "${tmpdir}/out/hts-stop.lock"
+(sleep 0.3 && rmdir "${tmpdir}/out/hts-stop.lock") &
+write_lock_request "${tmpdir}/out" hts-stop.lock $$
+test -f "${tmpdir}/out/hts-stop.lock"'
+assert_match 'took [2-9][0-9]* tries to accept hts-stop\.lock' "$out" "the try that landed"
+ok "a write refused while its directory is there is retried, and says so"
+
+fires 'mkdir -p "${tmpdir}/out/hts-stop.lock"
+write_lock_request "${tmpdir}/out" hts-stop.lock $$' \
+    'which is still there, after 30 tries'
+ok "a refusal that outlasts the retries is reported, not blamed on a removal"
+
+# drvfs can refuse a write that landed all the same (#1680), and a read-only file
+# is the nearest local shape, because the write fails and the request is there.
+if test "$(id -u)" -eq 0; then
+    ok "SKIP the refused-but-landed pair, root writes a read-only file regardless"
+else
+    holds 'mkdir -p "${tmpdir}/out"
+touch -t 200001010000 "${tmpdir}/out/hts-in_progress.lock"
+: >"${tmpdir}/out/hts-stop.lock"
+chmod 0444 "${tmpdir}/out/hts-stop.lock"
+write_lock_request "${tmpdir}/out" hts-stop.lock $$'
+    assert_eq "" "$out" "what the helper printed"
+    ok "a request already there ends the retries, so no second one is written"
+
+    # The engine ignores a request no newer than its own progress lock, and the
+    # tie is the edge 436's third arm sits on.
+    fires 'mkdir -p "${tmpdir}/out"
+: >"${tmpdir}/out/hts-in_progress.lock"
+: >"${tmpdir}/out/hts-stop.lock"
+touch -r "${tmpdir}/out/hts-in_progress.lock" "${tmpdir}/out/hts-stop.lock"
+chmod 0444 "${tmpdir}/out/hts-stop.lock"
+write_lock_request "${tmpdir}/out" hts-stop.lock $$' \
+        'which is still there, after 30 tries'
+    ok "a request no newer than the progress lock is not taken for this run"
+fi
+
+# The retry may not wait out a removal. This directory goes while the loop runs
+# and comes back before the loop would end. It goes by rename, because drvfs can
+# leave "rm -rf" half done (#1639).
+fires 'mkdir -p "${tmpdir}/out/hts-stop.lock"
+(sleep 0.2 && mv "${tmpdir}/out" "${tmpdir}/out.gone") &
+(sleep 1.5 && mkdir -p "${tmpdir}/out") &
+write_lock_request "${tmpdir}/out" hts-stop.lock $$' \
+    '/out is gone'
+ok "a removal during the retries is named, not waited out"
+
+echo "PASS"

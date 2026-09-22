@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -31,7 +33,7 @@ Please visit our Website: http://www.httrack.com
 #ifndef _WIN32
 #include <pthread.h>
 #else
-#include "windows.h"
+#include "../htswin32.h"
 #endif
 
 /* Proxy */
@@ -42,12 +44,6 @@ typedef struct _PT_Indexes _PT_Indexes;
 typedef struct _PT_Index *PT_Index;
 typedef struct _PT_Indexes *PT_Indexes;
 
-typedef struct _PT_Cache _PT_Cache;
-typedef struct _PT_Cache *PT_Cache;
-
-typedef struct _PT_CacheItem _PT_CacheItem;
-typedef struct _PT_CacheItem *PT_CacheItem;
-
 typedef struct _PT_Element {
   int indexId;                  // index identifier, if suitable (!= -1)
   //
@@ -56,9 +52,7 @@ typedef struct _PT_Element {
   char *headers;                // adresse des en têtes si présents (RFC822 format)
   size_t size;                  // taille fichier
   char msg[1024];               // error message ("\0"=undefined)
-  char contenttype[80];         // content-type ("text/html" par exemple)
-                                // 80, not 64: the longest type the engine
-                                // can store is 73 characters (see htsopt.h)
+  char contenttype[64];         // content-type ("text/html" par exemple)
   char charset[64];             // charset ("iso-8859-1" par exemple)
   char *location;               // on copie dedans éventuellement la véritable 'location'
   char lastmodified[64];        // Last-Modified
@@ -90,7 +84,6 @@ void PT_Delete(PT_Indexes index);
 PT_Element PT_ReadIndex(PT_Indexes indexes, const char *url, int flags);
 int PT_LookupIndex(PT_Indexes indexes, const char *url);
 int PT_AddIndex(PT_Indexes index, const char *path);
-int PT_RemoveIndex(PT_Indexes index, int indexId);
 int PT_IndexMerge(PT_Indexes indexes, PT_Index * pindex);
 PT_Index PT_GetIndex(PT_Indexes indexes, int indexId);
 time_t PT_GetTimeIndex(PT_Indexes indexes);

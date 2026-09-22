@@ -1,0 +1,94 @@
+#!/bin/bash
+#
+# The "save settings" failure messages quote a project path the request body
+# supplies, so composing them must clip instead of running off a fixed buffer.
+
+set -euo pipefail
+
+# shellcheck source=tests/webhttracklib.sh
+. "${0%"${0##*/}"}./webhttracklib.sh"
+
+htsserver_require
+
+# ERROR_MESSAGE_MAX - 1 in htsserver.c.
+msgmax=1023
+
+# Physical path: macOS resolves TMPDIR through /var -> private/var, and the
+# paths built below sit within a few bytes of its 1024-byte PATH_MAX.
+base=$(cd "$(mktemp -d)" && pwd -P)
+cleanup_push htsserver_cleanup_dir "${base}"
+
+# Echo a path under the root $1 exactly $2 bytes long, in NAME_MAX-sized parts.
+padpath() {
+    local root=$1 want=$2 p=$1 last
+    while test $((${#p} + 203)) -lt "${want}"; do
+        p="${p}/$(printf '%0200d' 0)"
+    done
+    last=$((want - ${#p} - 1))
+    test "${last}" -ge 1 || fail "cannot build a ${want}-byte path under ${root}"
+    printf '%s/%0*d' "${p}" "${last}" 0
+}
+
+# Fail unless the error page renders the message opening with $1 about project
+# path $2, clipped to msgmax. error.html puts ${error} alone on its own line.
+check_clipped() {
+    local prefix=$1 full=$((${#1} + ${#2})) page line shown
+    test "${full}" -gt "${msgmax}" ||
+        fail "a ${full}-byte message fits in ${msgmax}: it cannot show a clip"
+    page=$(htsserver_get /server/error.html | tr -d '\r')
+    line=$(printf '%s\n' "${page}" | grep "^${prefix}") || {
+        shown=$(printf '%s\n' "${page}" | grep '^Unable to ' | cut -c1-80 || true)
+        fail "the error page reports '${shown:-nothing}', want: ${prefix}"
+    }
+    test "${#line}" -eq "${msgmax}" ||
+        fail "the message rendered ${#line} bytes, want ${full} clipped to ${msgmax}"
+}
+
+# The write cap is how the failing-write branch below is reached without /dev/full.
+htsserver_start --write-limit 8
+test -n "${HTS_PID}" || fail "htsserver did not report its pid"
+
+# Every request body is gated by the session id (78_webhttrack-sid.test).
+sid=$(htsserver_sid)
+test "${#sid}" -eq 32 || fail "did not scrape a 32-hex sid (got '${sid}')"
+
+save() {
+    htsserver_post "sid=${sid}&command=httrack&command_do=save&winprofile=$2&path=$1&projname=$3"
+}
+
+# A project path too long to be created at all.
+path=$(padpath "${base}/nodir" 1098)
+save "${path}" x p >/dev/null
+htsserver_alive ||
+    fail "an over-long project path crashed the server: $(<"${HTS_LOG}")"
+check_clipped "Unable to create the directory structure in " "${path}/p"
+
+# A creatable project path whose hts-cache is not a directory, so the init file
+# under it cannot be opened.
+path=$(padpath "${base}/isdir" 993)
+mkdir -p "${path}/p"
+ln -s /dev/null "${path}/p/hts-cache"
+save "${path}" x p >/dev/null
+htsserver_alive || fail "an unwritable init file crashed the server: $(<"${HTS_LOG}")"
+check_clipped "Unable to create the init file " "${path}/p"
+
+# The init file opens, then the write fails: the profile is past both stdio's
+# buffer, so fwrite() reaches the descriptor, and the server's file-size limit.
+path=$(padpath "${base}/full" 993)
+mkdir -p "${path}/p/hts-cache"
+profile=$(printf '%01024d' 0)
+profile=${profile}${profile}${profile}${profile}
+profile=${profile}${profile}${profile}${profile}
+test "${#profile}" -eq 16384 || fail "built a ${#profile}-byte profile, want 16384"
+save "${path}" "${profile}" p >/dev/null
+htsserver_alive || fail "a short init file write crashed the server: $(<"${HTS_LOG}")"
+written=$(wc -c <"${path}/p/hts-cache/winprofile.ini" | tr -d ' ')
+test "${written}" -lt "${#profile}" ||
+    fail "the file-size limit did not stop the write (${written} bytes landed)"
+check_clipped "Unable to write ${#profile} bytes in the the init file " "${path}/p"
+
+reply=$(htsserver_get /server/index.html || true)
+grep -q '200 OK' <<<"$reply" ||
+    fail "the server stopped answering after the refused saves"
+
+echo "PASS"

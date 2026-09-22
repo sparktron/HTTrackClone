@@ -1,0 +1,16 @@
+#!/bin/bash
+#
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# The verdict half of a wizard answer, driven without the interactive callback.
+# Both start from the undecided verdict the question is asked in.
+
+assert_selftest "forbidden=1 stop=1 prio=42" wizardverdict -1
+assert_selftest "forbidden=0 stop=0 prio=42" wizardverdict 6
+
+# every answer, all three incoming verdicts, both scope ranges
+assert_selftest "wizardverdict self-test OK" wizardverdict

@@ -1,0 +1,25 @@
+#!/bin/sh
+
+set -eu
+
+# Fork-only: the imageboard catalog is built only with --enable-imageboard-catalog.
+test "${CATALOG_ENABLED:-no}" = yes || { echo "imageboard catalog not built"; exit 77; }
+
+catalog_tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/httrack-catalog-test.XXXXXX")
+trap 'set +e; rm -rf "$catalog_tmp_dir"' EXIT
+trap 'exit 1' HUP INT TERM
+
+catalog_cc=${CATALOG_CC:-cc}
+catalog_top_srcdir=${CATALOG_TOP_SRCDIR:?missing source directory}
+catalog_top_builddir=${CATALOG_TOP_BUILDDIR:?missing build directory}
+
+# Build the same source that is linked into libhttrack.  Intentional word
+# splitting permits normal multi-flag compiler variables supplied by make.
+$catalog_cc ${CATALOG_CPPFLAGS:-} ${CATALOG_CFLAGS:-} \
+  -I"$catalog_top_srcdir/src" -I"$catalog_top_builddir" \
+  "$catalog_top_srcdir/tests/catalog-test.c" \
+  "$catalog_top_srcdir/src/htscatalog.c" \
+  ${CATALOG_SQLITE_LIBS:--lsqlite3} \
+  -o "$catalog_tmp_dir/catalog-test"
+
+"$catalog_tmp_dir/catalog-test"
