@@ -1,6 +1,6 @@
 # HTTrack Website Copier - Development Repository
 
-> **Private fork.** This is `sparktron/HTTrackClone`, a private fork of [xroche/httrack](https://github.com/xroche/httrack), branched from 3.49.6. It carries its own hardening and features and is not the official HTTrack repository. Report issues and send changes here, not upstream. Upstream fixes are pulled in selectively; see [AGENTS.md](AGENTS.md).
+> **Private fork.** This is `sparktron/HTTrackClone`, a private fork of [xroche/httrack](https://github.com/xroche/httrack), branched from 3.49.6. It carries its own hardening and features and is not the official HTTrack repository. Report issues and send changes here, not upstream. Upstream fixes are merged in periodically; see [AGENTS.md](AGENTS.md).
 
 ## About
 _Copy websites to your computer (Offline browser)_
