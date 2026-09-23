@@ -262,22 +262,22 @@ typedef struct hts_metadata_sync_result {
   int skipped_refresh;
 } hts_metadata_sync_result;
 
-HTSEXT_API hts_metadata_category hts_metadata_classify_http_status(
+hts_metadata_category hts_metadata_classify_http_status(
     int status_code);
-HTSEXT_API int hts_metadata_policy_validate(
+int hts_metadata_policy_validate(
     const hts_metadata_policy *policy);
-HTSEXT_API int hts_metadata_adapter_validate_source(
+int hts_metadata_adapter_validate_source(
     const hts_metadata_adapter *adapter,
     const hts_metadata_source_input *input,
     hts_metadata_source *output);
 
-HTSEXT_API int hts_metadata_runtime_create(
+int hts_metadata_runtime_create(
     hts_catalog *catalog, const hts_metadata_adapter *adapter,
     const hts_metadata_transport *transport, const hts_metadata_clock *clock,
     hts_metadata_report_fn report, void *report_context,
     hts_metadata_runtime **out_runtime);
-HTSEXT_API void hts_metadata_runtime_destroy(hts_metadata_runtime *runtime);
-HTSEXT_API hts_metadata_category hts_metadata_runtime_sync(
+void hts_metadata_runtime_destroy(hts_metadata_runtime *runtime);
+hts_metadata_category hts_metadata_runtime_sync(
     hts_metadata_runtime *runtime, const hts_metadata_sync_request *request,
     hts_metadata_sync_result *result);
 

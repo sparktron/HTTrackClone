@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -44,8 +44,17 @@ Please visit our Website: http://www.httrack.com
 #endif
 #endif
 
+/* Outstanding threads, counted at spawn rather than by the child at entry, so
+   that a caller which spawns and immediately waits still joins them (#747). */
 static int process_chain = 0;
 static htsmutex process_chain_mutex = HTSMUTEX_INIT;
+
+static void process_chain_add(int delta) {
+  hts_mutexlock(&process_chain_mutex);
+  process_chain += delta;
+  assertf(process_chain >= 0);
+  hts_mutexrelease(&process_chain_mutex);
+}
 
 HTSEXT_API void htsthread_wait(void) {
   htsthread_wait_n(0);
@@ -87,7 +96,59 @@ HTSEXT_API void htsthread_uninit(void) {
 typedef struct hts_thread_s {
   void *arg;
   void (*fun) (void *arg);
+  void (*tail)(void *arg);
+  int round;
 } hts_thread_s;
+
+/* A body and whether it reached its end. */
+typedef struct hts_body_s {
+  void *arg;
+  void (*fun)(void *arg);
+  hts_boolean returned;
+} hts_body_s;
+
+static void hts_run_body(void *arg) {
+  hts_body_s *const body = (hts_body_s *) arg;
+
+  body->fun(body->arg);
+  body->returned = HTS_TRUE;
+}
+
+/* Set by a worker a fault recovery cut short. A plain flag rather than a field
+   on opt, because a worker must not touch opt at all: it outlives a timed-out
+   resolve, and the mirror frees opt before the thread wait at exit. */
+static volatile hts_boolean worker_faulted = HTS_FALSE;
+/* Each mirror takes the next round, and a worker keeps the round it was spawned
+   in, so one abandoned by an earlier mirror cannot abort this one. */
+static volatile int mirror_round = 0;
+
+hts_boolean hts_worker_faulted(void) { return worker_faulted; }
+
+void hts_worker_fault_clear(void) {
+  mirror_round++; /* first, so a straggler can no longer raise the flag */
+  worker_faulted = HTS_FALSE;
+}
+
+/* Set once before any thread is spawned, hence unlocked. */
+static void *(*thread_enter)(void) = NULL;
+static void (*thread_leave)(void *cookie) = NULL;
+static hts_thread_runner thread_runner = NULL;
+
+HTSEXT_API void hts_set_thread_hooks(void *(*enter)(void),
+                                     void (*leave)(void *cookie)) {
+  /* Never half a pair: 'leave' must not see a cookie no 'enter' produced. */
+  const int paired = enter != NULL && leave != NULL;
+
+  thread_enter = paired ? enter : NULL;
+  thread_leave = paired ? leave : NULL;
+}
+
+HTSEXT_API hts_thread_runner hts_set_thread_runner(hts_thread_runner runner) {
+  const hts_thread_runner previous = thread_runner;
+
+  thread_runner = runner;
+  return previous;
+}
 
 #ifdef _WIN32
 static unsigned int __stdcall hts_entry_point(void *tharg)
@@ -97,22 +158,32 @@ static void *hts_entry_point(void *tharg)
 {
   hts_thread_s *s_args = (hts_thread_s *) tharg;
   void *const arg = s_args->arg;
-  void (*fun) (void *arg) = s_args->fun;
+  void (*const tail)(void *arg) = s_args->tail;
+  const int round = s_args->round;
+  hts_body_s body;
+  void *cookie;
 
-  free(tharg);
+  body.fun = s_args->fun;
+  body.arg = arg;
+  body.returned = HTS_FALSE;
+  freet(tharg);
 
-  hts_mutexlock(&process_chain_mutex);
-  process_chain++;
-  assertf(process_chain > 0);
-  hts_mutexrelease(&process_chain_mutex);
-
+  cookie = thread_enter != NULL ? thread_enter() : NULL;
   /* run */
-  fun(arg);
+  if (thread_runner != NULL)
+    thread_runner(hts_run_body, &body);
+  else
+    hts_run_body(&body);
+  /* back_check_worker_fault() reads this and gives up the mirror. */
+  if (!body.returned && round == mirror_round)
+    worker_faulted = HTS_TRUE;
+  /* Not at the end of the body, because a recovered fault never gets there. */
+  if (tail != NULL)
+    tail(arg);
+  if (thread_leave != NULL)
+    thread_leave(cookie);
 
-  hts_mutexlock(&process_chain_mutex);
-  process_chain--;
-  assertf(process_chain >= 0);
-  hts_mutexrelease(&process_chain_mutex);
+  process_chain_add(-1);
 #ifdef _WIN32
   return 0;
 #else
@@ -122,18 +193,27 @@ static void *hts_entry_point(void *tharg)
 
 /* create a thread */
 HTSEXT_API int hts_newthread(void (*fun) (void *arg), void *arg) {
-  hts_thread_s *s_args = malloc(sizeof(hts_thread_s));
+  return hts_newthread_tail(fun, arg, NULL);
+}
+
+int hts_newthread_tail(void (*fun)(void *arg), void *arg,
+                       void (*tail)(void *arg)) {
+  hts_thread_s *s_args = malloct(sizeof(hts_thread_s));
 
   assertf(s_args != NULL);
   s_args->arg = arg;
   s_args->fun = fun;
+  s_args->tail = tail;
+  s_args->round = mirror_round;
+  process_chain_add(1);
 #ifdef _WIN32
   {
     unsigned int idt;
     HANDLE handle =
       (HANDLE) _beginthreadex(NULL, 0, hts_entry_point, s_args, 0, &idt);
     if (handle == 0) {
-      free(s_args);
+      process_chain_add(-1);
+      freet(s_args);
       return -1;
     } else {
       /* detach the thread from the main process so that is can be independent */
@@ -145,19 +225,23 @@ HTSEXT_API int hts_newthread(void (*fun) (void *arg), void *arg) {
     const size_t stackSize = 1024 * 1024 * 8;
     pthread_attr_t attr;
     pthread_t handle = 0;
-    int retcode;
+    hts_boolean created;
 
-    if (pthread_attr_init(&attr) != 0
-        || pthread_attr_setstacksize(&attr, stackSize) != 0
-        || (retcode =
-            pthread_create(&handle, &attr, hts_entry_point, s_args)) != 0) {
-      free(s_args);
-      return -1;
+    /* init kept apart: destroying an uninitialised attr is undefined (#772) */
+    if (pthread_attr_init(&attr) == 0) {
+      created = pthread_attr_setstacksize(&attr, stackSize) == 0 &&
+                pthread_create(&handle, &attr, hts_entry_point, s_args) == 0;
+      pthread_attr_destroy(&attr); /* create() copied what it needed */
     } else {
-      /* detach the thread from the main process so that is can be independent */
-      pthread_detach(handle);
-      pthread_attr_destroy(&attr);
+      created = HTS_FALSE;
     }
+    if (!created) {
+      process_chain_add(-1);
+      freet(s_args);
+      return -1;
+    }
+    /* detach the thread from the main process so that it can be independent */
+    pthread_detach(handle);
   }
 #endif
   return 0;
@@ -193,7 +277,23 @@ HTSEXT_API void hts_mutexfree(htsmutex * mutex) {
 HTSEXT_API void hts_mutexlock(htsmutex * mutex) {
   assertf(mutex != NULL);
   if (*mutex == HTSMUTEX_INIT) {        /* must be initialized */
-    hts_mutexinit(mutex);
+    /* Initialize exactly once, even when several threads race to lock the same
+       mutex for the first time. Build our own object, then publish it with a
+       single atomic compare-and-swap; the threads that lose the race free the
+       object they built (issue #297). No static guard is needed, which keeps
+       this safe on Windows 2000 (no statically-initializable lock there). */
+    htsmutex created = HTSMUTEX_INIT;
+
+    hts_mutexinit(&created);
+#ifdef _WIN32
+    if (InterlockedCompareExchangePointer((PVOID volatile *) mutex, created,
+                                          HTSMUTEX_INIT) != HTSMUTEX_INIT)
+#else
+    if (!__sync_bool_compare_and_swap(mutex, HTSMUTEX_INIT, created))
+#endif
+    {
+      hts_mutexfree(&created);
+    }
   }
   assertf(*mutex != NULL);
 #ifdef _WIN32

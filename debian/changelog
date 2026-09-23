@@ -1,9 +1,344 @@
+httrack (3.50.3-1) unstable; urgency=medium
+
+  * New upstream release, security and correctness fixes.  Full list in
+    history.txt.  No packaging change.
+
+ -- Xavier Roche <xavier@debian.org>  Fri, 18 Sep 2026 13:28:45 +0200
+
+httrack (3.50.2-1) unstable; urgency=medium
+
+  * New upstream release, mostly security and correctness fixes.  Full list
+    in history.txt.
+  * debian/rules: build with --disable-auto-features, so this recipe decides
+    which optional codings and libraries are compiled in rather than whatever
+    the build machine happens to have.  The flags after it name the whole
+    optional set: brotli, zstd, iconv and backtrace.
+  * debian/control: add pkgconf to Build-Depends.  It is what lets configure
+    fill in libhttrack.pc's Requires.private.  Without it, every private
+    dependency falls back to Libs.private, so the installed .pc would follow
+    whatever the build machine holds.
+  * debian/rules: drop the block that moved the manual into
+    /usr/share/httrack/html and left /usr/share/doc/httrack/html as a symlink
+    to it.  Upstream moved the WebHTTrack interface out of $(docdir), which
+    packagers strip, so that swap is no longer needed.  The manual's real
+    files now ship in /usr/share/doc/httrack/html, and
+    /usr/share/httrack/html/doc is the symlink that reaches them.  The
+    symlink_to_dir maintscript carries the upgrade past the symlink 3.50.1-1
+    shipped, which dpkg will not replace with a directory on its own.
+
+ -- Xavier Roche <xavier@debian.org>  Thu, 10 Sep 2026 14:40:10 +0200
+
+httrack (3.50.1-1) unstable; urgency=medium
+
+  * New upstream release, bug fixes only.  Full list in history.txt.
+
+ -- Xavier Roche <xavier@debian.org>  Wed, 02 Sep 2026 15:00:26 +0200
+
+httrack (3.50.0-2) unstable; urgency=medium
+
+  * Rebuild with a changelog timestamp that precedes the build.  The 3.50.0-1
+    entry was stamped two hours ahead of its buildd run, so SOURCE_DATE_EPOCH
+    clamped nothing there and clamped everything on a rebuild.  That made the
+    binaries unreproducible on all four tested architectures.  The source is
+    unchanged.
+
+ -- Xavier Roche <xavier@debian.org>  Tue, 01 Sep 2026 14:06:23 +0200
+
+httrack (3.50.0-1) unstable; urgency=medium
+
+  * New upstream release.  The version moves to 3.50 to match the Windows
+    and Android front ends built on this engine.
+  * debian/rules: the HTML manual moved to $(docdir)/html upstream, so the
+    doc tree is relocated from there.  Drop the history.txt copy the
+    changelog already provides, and leave the .txt files the manual links
+    uncompressed.
+  * The installed headers no longer include autoconf's config.h, which used
+    to collide with a consumer's own.  Drop the now unused
+    package-name-defined-in-config-h override from libhttrack-dev.
+
+ -- Xavier Roche <xavier@debian.org>  Tue, 01 Sep 2026 09:00:00 +0200
+
+httrack (3.49.25-1) unstable; urgency=medium
+
+  * New upstream release: the About box names each language's own
+    translators, a crash report prints the signal number the right way
+    round, and links to httrack.com open over https; full list in
+    history.txt.
+  * debian/control: use https for the Homepage and the snapshots URL.
+
+ -- Xavier Roche <xavier@debian.org>  Fri, 28 Aug 2026 12:12:16 +0200
+
+httrack (3.49.24-1) unstable; urgency=medium
+
+  * New upstream release: a mirror the engine abandoned no longer exits 0,
+    an update purge no longer deletes pages the site still has, a failed
+    write is no longer read as the end of a file, and scripts are scanned
+    for links whichever content type they are served with; full list in
+    history.txt.
+  * webhttrack: promote httrack-doc from Suggests to Recommends.  The
+    panel's help links open the guide, so without the package they open
+    nothing.
+  * Drop three unexported make variables from debian/rules (-O3 via
+    DEB_CFLAGS_MAINT_APPEND, -DNOSTRDEBUG on architectures Debian no longer
+    has, and -g3 under noopt).  None was exported, so dpkg-buildflags never
+    saw them and no build has ever used them.  The nostrip block goes with
+    them: it appended to an INSTALL_PROGRAM nothing consumes, and dh_strip
+    already honours the option.
+
+ -- Xavier Roche <xavier@debian.org>  Wed, 26 Aug 2026 14:17:36 +0200
+
+httrack (3.49.23-1) unstable; urgency=medium
+
+  * New upstream release: a header added by hand was sent twice, rebuilding
+    the top index blanked it in place, a URL injected into a running mirror
+    crashed the engine, and WebHTTrack stored several settings under the
+    wrong keys; full list in history.txt.
+
+ -- Xavier Roche <xavier@debian.org>  Fri, 21 Aug 2026 13:42:30 +0200
+
+httrack (3.49.22-1) unstable; urgency=medium
+
+  * New upstream release: the interactive wizard can be answered for a whole
+    domain and its answer now holds for the rest of the mirror, the mirrored
+    page footer takes named fields, and a series of buffer overflows on long
+    values read off the network or the command line are fixed; full list in
+    history.txt.
+  * Move webhttrack's browser dependency to Recommends: the autoremoval
+    gatherer reads only the first alternative of a disjunction and never
+    looks at Recommends, so chromium's RC bugs put the whole httrack source
+    on its removal clock.  Apt installs Recommends by default, and the
+    package also ships htsserver, which serves the same interface to a
+    browser elsewhere.
+  * Drop skip-emulated-host-test-failures.patch, applied upstream.
+  * Fix the FTBFS on an LTO build, which broke 3.49.21-2 on four Ubuntu
+    architectures: the installed-header symbol test matched header
+    identifiers against symbol names that GCC had renamed, and emptied its
+    own candidate list.  It now strips the clone suffixes first.
+
+ -- Xavier Roche <xavier@debian.org>  Sun, 16 Aug 2026 11:29:20 +0200
+
+httrack (3.49.21-2) unstable; urgency=medium
+
+  * Fix the FTBFS on hppa: three suite tests measured the build host rather
+    than the property they cover, and failed on the qemu-user buildd purely
+    for being slower there.  Patched from upstream, which now skips a step a
+    host is too slow to finish instead of failing the build
+    (skip-emulated-host-test-failures.patch).
+
+ -- Xavier Roche <xavier@debian.org>  Thu, 13 Aug 2026 07:26:38 +0200
+
+httrack (3.49.21-1) unstable; urgency=medium
+
+  * New upstream release: a site answering to several hostnames can now be
+    mirrored once rather than once per name, plus fixes to mirror
+    interruption, to an update pass that purged files it had never reached,
+    and to several buffer overflows; full list in history.txt.
+
+ -- Xavier Roche <xavier@debian.org>  Wed, 12 Aug 2026 15:05:15 +0200
+
+httrack (3.49.20-1) unstable; urgency=medium
+
+  * New upstream release: an off-site link that looked like a file could pull
+    in the whole foreign site, and a mirror asked to stop while receiving over
+    FTP hung; full list in history.txt. The documentation was also refreshed.
+  * debian/copyright: record the League Spartan webfont the documentation now
+    bundles (OFL-1.1).
+
+ -- Xavier Roche <xavier@debian.org>  Mon, 10 Aug 2026 21:08:40 +0200
+
+httrack (3.49.19-1) unstable; urgency=medium
+
+  * New upstream release: mostly FTP fixes, plus stack-overflow, mirror
+    interruption and --update data-loss fixes; full list in history.txt. Two
+    of them matter to the build: the test suite no longer assumes GNU
+    coreutils, and the AppStream metainfo no longer declares a non-stock icon
+    name that appstream-util rejects.
+
+ -- Xavier Roche <xavier@debian.org>  Sat, 08 Aug 2026 21:29:56 +0200
+
+httrack (3.49.18-1) unstable; urgency=medium
+
+  * New upstream release, fixing the 3.49.17-1 build failures on armhf,
+    powerpc, hppa and loong64: the test suite's mmap interposer did not
+    compile on the first three, and the alternate-stack test insisted on a
+    longer backtrace than loong64's unwinder produces. Nothing in the engine
+    changed. Upstream now cross-builds the test shims for the ports
+    architectures on every push, so the next such break surfaces before the
+    buildds do.
+
+ -- Xavier Roche <xavier@debian.org>  Wed, 05 Aug 2026 23:00:24 +0200
+
+httrack (3.49.17-1) unstable; urgency=medium
+
+  * New upstream release: security fixes in the FTP and HTTP request paths and
+    in both WebHTTrack interfaces, where a crawled page could reach the control
+    panel, plus crash-report and stack-diagnostic fixes; full list in
+    history.txt. Also fixes the 3.49.16-1 build failures on armhf, loong64 and
+    hppa, both in the crash-report test's unwinding assumptions and in the
+    per-test time budget.
+  * libhttrack-dev ships $(libdir)/pkgconfig/libhttrack.pc, and so now depends
+    on libhttrack3 and on the -dev packages whose modules that file names:
+    libssl-dev, libbrotli-dev and libzstd-dev.
+  * Build with --disable-online-unit-tests. Policy 4.9 forbids network access
+    during a build, and the previous "auto" probe found one on hurd-i386, whose
+    crawl tests then failed on DNS.
+
+ -- Xavier Roche <xavier@debian.org>  Wed, 05 Aug 2026 12:28:23 +0200
+
+httrack (3.49.16-1) unstable; urgency=medium
+
+  * New upstream release: a stack overflow in the cache header writer, which a
+    server's response headers could trigger in httrack and libhttrack3 as well
+    as in proxytrack, and a ProxyTrack DAV buffer overflow; chunked trailer
+    handling, relocatable installs, crash-report backtraces on armhf, a hicolor
+    icon theme and translation fixes; full list in history.txt.
+
+ -- Xavier Roche <xavier@debian.org>  Tue, 04 Aug 2026 18:32:40 +0200
+
+httrack (3.49.15-1) unstable; urgency=medium
+
+  * New upstream release: single-file mirrors with inlined assets, sitemap
+    ingestion, a change report between crawls, and numerous --update, FTP and
+    parser fixes; full list in history.txt.
+  * httrack-doc grows by roughly 1 MB: the offline guide now ships screenshots
+    of the WinHTTrack, WebHTTrack and Android interfaces.
+
+ -- Xavier Roche <xavier@debian.org>  Thu, 30 Jul 2026 10:40:08 +0200
+
+httrack (3.49.14-1) unstable; urgency=medium
+
+  * New upstream release: WARC/WACZ archive output, Windows long-path support,
+    named -%F footer fields, and encoding fixes for non-ASCII project paths;
+    full list in history.txt.
+
+ -- Xavier Roche <xavier@debian.org>  Fri, 24 Jul 2026 08:01:43 +0200
+
+httrack (3.49.13-1) unstable; urgency=medium
+
+  * New upstream release: SOCKS5 and CONNECT proxy support, brotli and zstd
+    content decoding, --update data-loss fixes, and hardening of several
+    network-facing parsers; full list in history.txt.
+  * Add libbrotli-dev and libzstd-dev to Build-Depends for the new content
+    codings.
+  * libhttrack3 and libhttrack-dev no longer ship libhtsjava.so.3*: the
+    obsolete Java-applet parser was removed upstream. It was a dlopen plugin
+    with no reverse dependencies, so this is a plain file drop on upgrade;
+    libhttrack.so.3 itself is unchanged and needs no rename.
+  * Drop the htsjava attribution from debian/copyright.
+
+ -- Xavier Roche <xavier@debian.org>  Fri, 17 Jul 2026 10:49:52 +0200
+
+httrack (3.49.12-1) unstable; urgency=medium
+
+  * New upstream release: security and crawl-correctness fixes (remote stack
+    overflow in Content-Type/-Encoding parsing, fuzzer-found parser over-reads,
+    world-readable cookies.txt, filter-pattern denial of service) plus a new
+    --why filter diagnostic; full list in history.txt.
+  * Build with _FORTIFY_SOURCE and -fstack-protector-strong.
+
+ -- Xavier Roche <xavier@debian.org>  Fri, 10 Jul 2026 21:11:09 +0200
+
+httrack (3.49.11-1) unstable; urgency=medium
+
+  * New upstream release: crawl correctness and security fixes (network-facing
+    buffer overflows, file-type detection, redirect handling) and modernized
+    web defaults; full list in history.txt.
+  * Add DEP-12 upstream metadata (#466).
+  * Bump debhelper compat to 14 (#466).
+  * Drop the redundant Priority field and update the NMU lintian override to
+    the current tag names (#466).
+
+ -- Xavier Roche <xavier@debian.org>  Sun, 05 Jul 2026 00:03:18 +0200
+
+httrack (3.49.10-2) unstable; urgency=medium
+
+  * Fix FTBFS: tests/28_local-pause failed instead of skipping when python3 is
+    absent (the local-server tests need python3, which the buildds lack). Add
+    patches/skip-local-pause-test-without-python3.patch to guard the test on
+    python3 up front, like its siblings, so it skips cleanly.
+
+ -- Xavier Roche <xavier@debian.org>  Sun, 28 Jun 2026 20:18:46 +0200
+
+httrack (3.49.10-1) unstable; urgency=medium
+
+  * New upstream release: new download-pacing and URL-handling options plus a
+    batch of crawl and robustness fixes (full list in history.txt).
+  * Rewrite debian/copyright in machine-readable DEP-5 format, crediting the
+    bundled minizip, md5 and coucal sources (#415).
+  * Lead the webhttrack browser dependency with chromium so httrack is not
+    dragged into the firefox-esr autoremoval cascade (#436).
+  * Override the embedded-library lint for the bundled minizip (#419).
+  * Bump Standards-Version to 4.7.4 (no changes required).
+
+ -- Xavier Roche <xavier@debian.org>  Sun, 28 Jun 2026 14:01:53 +0200
+
+httrack (3.49.9-1) unstable; urgency=medium
+
+  * New upstream release: Content-Type and file-type detection fixes (trust a
+    declared Content-Type over a binary URL extension, honor --assume under the
+    delayed type check, keep a known extension against a bogus or empty
+    Content-Type, and avoid an uninitialised read on an empty Content-Type), and
+    restored C++ source-compatibility of the installed headers so reverse
+    dependencies (httraqt) build again.
+
+ -- Xavier Roche <xavier@debian.org>  Sun, 21 Jun 2026 17:59:38 +0200
+
+httrack (3.49.8-2) unstable; urgency=medium
+
+  * Rename libhttrack2 to libhttrack3 to follow the SONAME, which the 3.49.8
+    ABI bump moved to libhttrack.so.3 (package-name-doesnt-match-sonames). In
+    3.49.8-1 the libhttrack2.files glob still matched .so.2, so the runtime
+    libraries fell through into the httrack package and libhttrack2 shipped no
+    library. The new .files uses a .so.3* wildcard so a future SONAME bump no
+    longer silently misplaces the libraries. New binary package, via NEW.
+  * Drop the stale debian/libhttrack-swf1.files: the swf module is no longer
+    built and no libhttrack-swf1 package exists.
+
+ -- Xavier Roche <xavier@debian.org>  Sat, 20 Jun 2026 14:42:13 +0200
+
+httrack (3.49.8-1) unstable; urgency=medium
+
+  * New upstream release: HTTPS-proxy CONNECT tunnelling and wider srcset
+    parsing, a batch of crawler and parser fixes (CSS @import, xmlns
+    namespaces, relative paths, RFC 6265 cookies), and security hardening of
+    the parser and of buffer copies throughout the engine.
+  * Drop the OpenSSL linking exception from the license: OpenSSL 3.0+ is
+    Apache-2.0 and GPL-compatible, so it is no longer needed. httrack is now
+    plain GPL-3.0-or-later. Updated debian/copyright accordingly.
+  * Fix a batch of lintian tags: depend on sensible-utils, point to
+    common-licenses/GPL-3, use a secure version=4 watch file, add
+    Rules-Requires-Root and Vcs-Browser, and override the false-positive
+    source-is-missing on the bundled HTML documentation.
+  * Refresh the webhttrack browser dependency: drop the removed alternatives
+    (iceape-browser, iceweasel, icecat, mozilla, firefox, mozilla-firefox)
+    that no longer exist in Debian and triggered half-broken relationships on
+    the QA debcheck page. Depend on firefox-esr | chromium | www-browser
+    instead.
+
+ -- Xavier Roche <xavier@debian.org>  Sat, 20 Jun 2026 13:02:08 +0200
+
+httrack (3.49.7-2) unstable; urgency=medium
+
+  * Bump Standards-Version to 4.7.0 (no changes needed).
+  * Switch to debhelper-compat (= 13); drop the dh-autoreconf and
+    autotools-dev build dependencies.
+
+ -- Xavier Roche <xavier@debian.org>  Sun, 07 Jun 2026 14:13:39 +0200
+
+httrack (3.49.7-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Make config.h architecture-independent for Multi-Arch: same. closes:#1133728
+  * Fix man page rendering of the -%! security warning. closes:#1061053
+
+ -- Xavier Roche <xavier@debian.org>  Sat, 06 Jun 2026 21:03:05 +0200
+
 httrack (3.49.6-1) unstable; urgency=medium
 
   * Updated to 3.49.6 (3.49-6)
     Fixed CVE-2017-14062
 
- -- Xavier Roche <roche@proliant.localnet>  Tue, 11 Mar 2025 19:43:39 +0100
+ -- Xavier Roche <xavier@debian.org>  Tue, 11 Mar 2025 19:43:39 +0100
 
 httrack (3.49.5-1) unstable; urgency=medium
 
@@ -909,7 +1244,7 @@ httrack (3.39.6-1) unstable; urgency=low
 
 httrack (3.39.5-1) unstable; urgency=low
 
-  * Updated to 3.39.5 (3.40-alpha-5) 
+  * Updated to 3.39.5 (3.40-alpha-5)
 
  -- Xavier Roche <xavier@debian.org>  Fri, 29 Jul 2005 20:57:44 +0200
 
@@ -1591,4 +1926,3 @@ httrack (3.22-1) unstable; urgency=low
   * Initial Release.
 
  -- Xavier Roche <xavier@debian.org>  Fri, 27 Sep 2002 16:42:25 +0200
-

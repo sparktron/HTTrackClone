@@ -1,2 +1,4 @@
-httrack-doc: extra-license-file usr/share/httrack/html/license.txt
-httrack-doc: package-contains-documentation-outside-usr-share-doc usr/share/httrack/*
+# The bundled license sits beside the manual under /usr/share/doc/httrack. This
+# is a pointed hint whose match context is empty, so the path lives in the
+# display pointer, not the override -- match with '*'.
+httrack-doc: extra-license-file *

@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -31,12 +31,21 @@ Please visit our Website: http://www.httrack.com
 /* Author: Xavier Roche                                         */
 /* ------------------------------------------------------------ */
 
+/** @file htsbasenet.h
+    Base networking definitions: platform socket headers, the optional global
+    OpenSSL context, and the status-code/connection-state enumerations stored in
+    htsblk and lien_back. Pulled in by htsnet.h. */
+
 #ifndef HTS_DEFBASENETH
 #define HTS_DEFBASENETH
 
+/* Must precede the HTS_INET6 and HTS_USEOPENSSL tests below, which
+   HTS_DEFBASENETH lets only the first include reach. */
+#include "htsglobal.h"
+
 #ifdef _WIN32
 
-#if HTS_INET6==0
+#if HTS_INET6 == 0
 #include <winsock2.h>
 #else
 
@@ -44,13 +53,12 @@ Please visit our Website: http://www.httrack.com
 #define WIN32_LEAN_AND_MEAN
 // KB955045 (http://support.microsoft.com/kb/955045)
 // To execute an application using this function on earlier versions of Windows
-// (Windows 2000, Windows NT, and Windows Me/98/95), then it is mandatary to #include Ws2tcpip.h
-// and also Wspiapi.h. When the Wspiapi.h header file is included, the 'getaddrinfo' function is
-// #defined to the 'WspiapiGetAddrInfo' inline function in Wspiapi.h. 
+// (Windows 2000, Windows NT, and Windows Me/98/95), then it is mandatary to
+// #include Ws2tcpip.h and also Wspiapi.h. When the Wspiapi.h header file is
+// included, the 'getaddrinfo' function is #defined to the 'WspiapiGetAddrInfo'
+// inline function in Wspiapi.h.
 #include <ws2tcpip.h>
 #include <Wspiapi.h>
-//#include <winsock2.h>
-//#include <tpipv6.h>
 
 #endif
 
@@ -76,14 +84,16 @@ extern "C" {
 #include <openssl/ssl.h>
 #include <openssl/crypto.h>
 #include <openssl/err.h>
-#include <openssl/rand.h>
-#include <openssl/x509v3.h>
 
 /* OpenSSL structure */
 #include <openssl/bio.h>
 
-/* Global SSL context */
+/* Engine-only: not exported, so the installed header must not offer it. */
+#ifdef HTS_INTERNAL_BYTECODE
+/** Process-wide OpenSSL client context, created lazily on first TLS use;
+    shared by all connections. NULL until initialized. */
 extern SSL_CTX *openssl_ctx;
+#endif
 
 #endif
 #endif
@@ -124,6 +134,8 @@ typedef enum HTTPStatusCode {
   HTTP_UNSUPPORTED_MEDIA_TYPE = 415,
   HTTP_REQUESTED_RANGE_NOT_SATISFIABLE = 416,
   HTTP_EXPECTATION_FAILED = 417,
+  HTTP_TOO_MANY_REQUESTS = 429,
+  HTTP_UNAVAILABLE_FOR_LEGAL_REASONS = 451,
   HTTP_INTERNAL_SERVER_ERROR = 500,
   HTTP_NOT_IMPLEMENTED = 501,
   HTTP_BAD_GATEWAY = 502,
@@ -141,8 +153,18 @@ typedef enum BackStatusCode {
   STATUSCODE_NON_FATAL = -5,
   STATUSCODE_SSL_HANDSHAKE = -6,
   STATUSCODE_TOO_BIG = -7,
-  STATUSCODE_TEST_OK = -10
+  STATUSCODE_TEST_OK = -10,
+  STATUSCODE_EXCLUDED = -11, /* aborted: MIME excluded by a -mime: filter */
+  STATUSCODE_IO_FATAL = -12, /* the body write hit a fatal I/O errno */
+  STATUSCODE_IO_ERROR = -13  /* the body write failed, but not fatally */
 } BackStatusCode;
+
+/** Either write-error class: r.size counts bytes read, so a size-based
+    completion test reads a body a failed write cut short as a clean end. **/
+static HTS_INLINE HTS_UNUSED hts_boolean statuscode_is_write_error(int code) {
+  return code == STATUSCODE_IO_FATAL || code == STATUSCODE_IO_ERROR ? HTS_TRUE
+                                                                    : HTS_FALSE;
+}
 
 /** HTTrack status ('status' member of of 'lien_back') **/
 typedef enum HTTrackStatus {

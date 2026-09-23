@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -31,55 +31,122 @@ Please visit our Website: http://www.httrack.com
 /* Author: Xavier Roche                                         */
 /* ------------------------------------------------------------ */
 
+/** @file htsbauth.h
+    HTTP Basic authentication storage: a per-session list of (URL-prefix,
+    credentials) pairs, plus the cookie jar that holds it. */
+
 #ifndef HTSBAUTH_DEFH
 #define HTSBAUTH_DEFH
 
 #include <sys/types.h>
 
-// robots wizard
+#include "htsglobal.h" /* hts_boolean */
+
+/** One stored credential: the longest-prefix match against a request's
+    host+path selects which auth header to send. */
 #ifndef HTS_DEF_FWSTRUCT_bauth_chain
 #define HTS_DEF_FWSTRUCT_bauth_chain
 typedef struct bauth_chain bauth_chain;
 #endif
 struct bauth_chain {
-  char prefix[1024];            /* www.foo.com/secure/ */
-  char auth[1024];              /* base-64 encoded user:pass */
-  struct bauth_chain *next;     /* next element */
+  char prefix[1024]; /* host + path prefix, e.g. www.foo.com/secure/ */
+  char auth[1024];   /* base-64 encoded user:pass (Authorization payload) */
+  struct bauth_chain *next; /* next element, NULL-terminated list */
 };
 
-// buffer pour les cookies et authentification
+/** Per-session cookie jar; also holds the basic-auth list head (auth).
+    The head node (auth) is embedded, not heap-allocated. */
 #ifndef HTS_DEF_FWSTRUCT_t_cookie
 #define HTS_DEF_FWSTRUCT_t_cookie
 typedef struct t_cookie t_cookie;
 #endif
 struct t_cookie {
-  int max_len;
-  char data[32768];
-  bauth_chain auth;
+  size_t max_len;   /* capacity of data[] in use */
+  char data[32768]; /* raw cookie store (NUL-terminated field list) */
+  bauth_chain auth; /* embedded head of the basic-auth list */
 };
 
 /* Library internal definictions */
 #ifdef HTS_INTERNAL_BYTECODE
 
-// cookies
-int cookie_add(t_cookie * cookie, const  char *cook_name, const  char *cook_value,
-               const  char *domain, const  char *path);
-int cookie_del(t_cookie * cookie, const char *cook_name, const char *domain, const char *path);
-int cookie_load(t_cookie * cookie, const char *path, const char *name);
-int cookie_save(t_cookie * cookie, const char *name);
-void cookie_insert(char *s, size_t size, const char *ins);
-void cookie_delete(char *s, size_t size, size_t pos);
-const char *cookie_get(char *buffer, size_t size, const char *cookie_base,
-                       int param);
-int cookie_matches_domain(const char *chk_dom, const char *domain);
-char *cookie_find(char *s, const char *cook_name, const char *domain, const char *path);
+#ifndef HTS_DEF_FWSTRUCT_httrackp
+#define HTS_DEF_FWSTRUCT_httrackp
+typedef struct httrackp httrackp;
+#endif
+
+/* cookies */
+
+/** Copy ADR's host into DST, lowercased and without identification, IPv6
+    brackets or port. RFC 6265 scopes a cookie to a host, matches that host
+    without case, and a browser jar records no port. A bracketed literal's
+    zone id keeps the bare '%' that a jar carries, not the URI's "%25".
+    HTS_FALSE means the caller sends no cookie. */
+hts_boolean cookie_host(const char *adr, char *dst, size_t dst_size);
+
+/** Store cook_name=cook_value for domain/path, with domain normalised by
+    cookie_host. !=0 if the jar refused it, an empty domain included. */
+int cookie_add(t_cookie *cookie, const char *cook_name, const char *cook_value,
+               const char *domain, const char *path);
+
+/** Erase cook_name for domain/path, with domain normalised by cookie_host as
+    cookie_add does. Always 0: a domain nothing can be stored under holds
+    nothing to erase. */
+int cookie_del(t_cookie *cookie, const char *cook_name, const char *domain,
+               const char *path);
+
+/** Load the Netscape jar <path>/<name> into cookie (plus the copied IE jars in
+    <path> on Windows). A line whose field does not fit is refused, not clipped,
+    and reported through opt, which may be NULL. Returns 0 if the jar was
+    opened, -1 otherwise. */
+int cookie_load(httrackp *opt, t_cookie *cookie, const char *path,
+                const char *name);
+
+int cookie_save(t_cookie *cookie, const char *name);
+
+void cookie_insert(char *s, size_t s_size, const char *ins);
+
+void cookie_delete(char *s, size_t s_size, size_t pos);
+
+const char *cookie_get(char *buffer, const char *cookie_base, int param);
+
+/** Does the jar domain JAR_DOM cover the host HOST? RFC 6265 5.1.3 says it
+    does when the two name the same host, or when JAR_DOM ends a whole label of
+    HOST and HOST is not an address literal. A leading dot on JAR_DOM, the
+    Netscape jar form, names the same domain. Case folds on both sides, but
+    nothing is normalised here, so pass HOST through cookie_host first. */
+hts_boolean cookie_domain_match(const char *jar_dom, const char *host);
+
+/** First jar record at or after S matching cook_name (empty: any name),
+    domain and path, or NULL. The domain match ignores case, the path match
+    does not. */
+char *cookie_find(char *s, const char *cook_name, const char *domain,
+                  const char *path);
+
 char *cookie_nextfield(char *a);
 
-// basic auth
-int bauth_add(t_cookie * cookie, const char *adr, const char *fil, const char *auth);
-char *bauth_check(t_cookie * cookie, const char *adr, const char *fil);
-char *bauth_prefix(char *buffer, size_t size, const char *adr,
-                   const char *fil);
+/* basic auth */
+
+/** Register credentials (auth = base-64 user:pass) for the prefix derived from
+    adr (host) and fil (path). No-op returning 0 if cookie is NULL, allocation
+    fails, a matching prefix is already stored, bauth_prefix builds no key, or
+    either string is too long for bauth_chain; returns 1 on insertion. */
+int bauth_add(t_cookie *cookie, const char *adr, const char *fil,
+              const char *auth);
+
+/** Return the stored base-64 credentials whose prefix matches adr+fil, or NULL
+    if none (or cookie is NULL). Returned pointer aliases the jar's bauth_chain;
+    caller must not free it. */
+char *bauth_check(t_cookie *cookie, const char *adr, const char *fil);
+
+/** Drop every stored credential, leaving the jar's embedded head empty. Safe on
+    a NULL jar and on a jar already freed; the jar itself is not released. */
+void bauth_free(t_cookie *cookie);
+
+/** Build the auth lookup key (host + path, query string stripped, truncated at
+    the last '/') from adr and fil into prefix; returns prefix, or NULL when
+    adr+fil does not fit, since a clipped key would match URLs nobody
+    authenticated. Caller must supply a buffer of HTS_URLMAXSIZE * 2 bytes. */
+char *bauth_prefix(char *buffer, const char *adr, const char *fil);
 
 #endif
 

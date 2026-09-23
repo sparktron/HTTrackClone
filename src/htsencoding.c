@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 2013 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -30,50 +30,48 @@ Please visit our Website: http://www.httrack.com
 /* Author: Xavier Roche                                         */
 /* ------------------------------------------------------------ */
 
+#include <stdint.h>
+
 #include "htscharset.h"
 #include "htsencoding.h"
 #include "htssafe.h"
 
-/* static int decode_entity(const unsigned int hash, const size_t len);
-*/
+/* static int decode_entity(const uint64_t hash, const size_t len);
+ */
 #include "htsentities.h"
 
-/* hexadecimal conversion */
-static int get_hex_value(char c) {
-  if (c >= '0' && c <= '9')
-    return c - '0';
-  else if (c >= 'a' && c <= 'f')
-    return (c - 'a' + 10);
-  else if (c >= 'A' && c <= 'F')
-    return (c - 'A' + 10);
-  else
-    return -1;
-}
-
-/* Numerical Recipes,
-   see <http://en.wikipedia.org/wiki/Linear_congruential_generator> */
-#define HASH_PRIME ( 1664525 )
-#define HASH_CONST ( 1013904223 )
-#define HASH_ADD(HASH, C) do {                  \
-    (HASH) *= HASH_PRIME;                       \
-    (HASH) += HASH_CONST;                       \
-    (HASH) += (C);                              \
-  } while(0)
+/* 64-bit FNV-1a; must match htsentities.sh, which keys the entity table on it.
+ */
+#define HASH_INIT 0xcbf29ce484222325ULL
+#define HASH_PRIME 0x100000001b3ULL
+#define HASH_ADD(HASH, C)                                                      \
+  do {                                                                         \
+    (HASH) ^= (unsigned char) (C);                                             \
+    (HASH) *= HASH_PRIME;                                                      \
+  } while (0)
 
 int hts_unescapeEntitiesWithCharset(const char *src, char *dest, const size_t max, const char *charset) {
+  return hts_unescapeEntitiesWithCharsetSpecial(src, dest, max, charset, 0);
+}
+
+int hts_unescapeEntitiesWithCharsetSpecial(const char *src, char *dest,
+                                           const size_t max,
+                                           const char *charset,
+                                           const int flags) {
   size_t i, j, ampStart, ampStartDest;
   int uc;
   int hex;
-  unsigned int hash;
+  uint64_t hash;
 
   assertf(max != 0);
-  for(i = 0, j = 0, ampStart = (size_t) -1, ampStartDest = 0,
-        uc = -1, hex = 0, hash = 0 ; src[i] != '\0' ; i++) {
+  for (i = 0, j = 0, ampStart = (size_t) -1, ampStartDest = 0, uc = -1, hex = 0,
+      hash = HASH_INIT;
+       src[i] != '\0'; i++) {
     /* start of entity */
     if (src[i] == '&') {
       ampStart = i;
       ampStartDest = j;
-      hash = 0;
+      hash = HASH_INIT;
       uc = -1;
     }
     /* inside a potential entity */
@@ -117,9 +115,18 @@ int hts_unescapeEntitiesWithCharset(const char *src, char *dest, const size_t ma
             char buffer[32];
             len = 0;
             if ( ( ulen = hts_writeUTF8(uc, buffer, sizeof(buffer)) ) != 0) {
+              const hts_boolean urlQuery =
+                  (flags & UNESCAPE_ENTITIES_URL_QUERY) != 0;
               char *s;
               buffer[ulen] = '\0';
-              s = hts_convertStringFromUTF8(buffer, strlen(buffer), charset);
+              /* Strict for a query only: a substituted '?' must not pass for
+                 the code point the document wrote. */
+              if (urlQuery) {
+                s = hts_convertStringFromUTF8Strict(buffer, strlen(buffer),
+                                                    charset);
+              } else {
+                s = hts_convertStringFromUTF8(buffer, strlen(buffer), charset);
+              }
               if (s != NULL) {
                 const size_t sLen = strlen(s);
                 if (sLen < maxOut) {
@@ -127,7 +134,18 @@ int hts_unescapeEntitiesWithCharset(const char *src, char *dest, const size_t ma
                   memcpy(&dest[ampStartDest], s, sLen);
                   len = sLen;
                 }
-                free(s);
+                freet(s);
+              } else if (urlQuery) {
+                /* URL Standard: an unrepresentable code point is written
+                   %26%23<decimal>%3B rather than left as source text. */
+                char esc[32];
+                const int escLen =
+                    snprintf(esc, sizeof(esc), "%%26%%23%d%%3B", uc);
+
+                if (escLen > 0 && (size_t) escLen < maxOut) {
+                  memcpy(&dest[ampStartDest], esc, (size_t) escLen);
+                  len = (size_t) escLen;
+                }
               }
             }
           }
@@ -145,8 +163,13 @@ int hts_unescapeEntitiesWithCharset(const char *src, char *dest, const size_t ma
         if (!hex) {
           if (src[i] >= '0' && src[i] <= '9') {
             const int h = src[i] - '0';
-            uc *= 10;
-            uc += h;
+            /* Guard before multiplying: a codepoint past the Unicode max
+               (0x10FFFF) is invalid anyway, so stop rather than overflow uc. */
+            if (uc > (0x10FFFF - h) / 10) {
+              ampStart = (size_t) -1;
+            } else {
+              uc = uc * 10 + h;
+            }
           } else {
             /* abandon */
             ampStart = (size_t) -1;
@@ -154,10 +177,13 @@ int hts_unescapeEntitiesWithCharset(const char *src, char *dest, const size_t ma
         }
         /* hex */
         else {
-          const int h = get_hex_value(src[i]);
+          const int h = hts_ehexh(src[i]);
           if (h != -1) {
-            uc *= 16;
-            uc += h;
+            if (uc > (0x10FFFF - h) / 16) {
+              ampStart = (size_t) -1;
+            } else {
+              uc = uc * 16 + h;
+            }
           } else {
             /* abandon */
             ampStart = (size_t) -1;
@@ -166,14 +192,11 @@ int hts_unescapeEntitiesWithCharset(const char *src, char *dest, const size_t ma
       }
       /* alphanumerical entity */
       else {
-        /* alphanum and not too far ('&thetasym;' is the longest) */
-        if (i <= ampStart + 10 &&
-            (
-             (src[i] >= '0' && src[i] <= '9')
-             || (src[i] >= 'A' && src[i] <= 'Z')
-             || (src[i] >= 'a' && src[i] <= 'z')
-             )
-            ) {
+        /* alphanum, capped at the longest name
+         * '&CounterClockwiseContourIntegral;' (31) */
+        if (i <= ampStart + 31 && ((src[i] >= '0' && src[i] <= '9') ||
+                                   (src[i] >= 'A' && src[i] <= 'Z') ||
+                                   (src[i] >= 'a' && src[i] <= 'z'))) {
           /* compute hash */
           HASH_ADD(hash, (unsigned char) src[i]);
         } else {
@@ -182,9 +205,9 @@ int hts_unescapeEntitiesWithCharset(const char *src, char *dest, const size_t ma
         }
       }
     }
-    
-    /* copy */
-    if (j + 1 > max) {
+
+    /* reserve one byte for the trailing NUL written after the loop */
+    if (j + 1 >= max) {
       /* overflow */
       return -1;
     }
@@ -231,8 +254,8 @@ int hts_unescapeUrlSpecial(const char *src, char *dest, const size_t max,
     }
     /* End of sequence seen */
     else if (i >= 2 && i == lastI + 2) {
-      const int a1 = get_hex_value(src[lastI + 1]);
-      const int a2 = get_hex_value(src[lastI + 2]);
+      const int a1 = hts_ehexh(src[lastI + 1]);
+      const int a2 = hts_ehexh(src[lastI + 2]);
       if (a1 != -1 && a2 != -1) {
         const char ec = a1*16 + a2;  /* new character */
         cUtf = (unsigned char) ec;
@@ -292,6 +315,11 @@ int hts_unescapeUrlSpecial(const char *src, char *dest, const size_t max,
 
           /* Was the character read successfully ? */
           if (nRead == utfBufferSize) {
+            /* the 'continue' below skips the NUL-reserve guard: re-check */
+            if (utfBufferJ + utfBufferSize >= max) {
+              return -1;
+            }
+
             /* Rollback write position to sequence start write position */
             j = utfBufferJ;
 
@@ -306,8 +334,8 @@ int hts_unescapeUrlSpecial(const char *src, char *dest, const size_t max,
       }
     }
 
-    /* Check for overflow */
-    if (j + 1 > max) {
+    /* reserve one byte for the trailing NUL written after the loop */
+    if (j + 1 >= max) {
       return -1;
     }
 

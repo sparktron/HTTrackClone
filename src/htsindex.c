@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -37,6 +37,7 @@ Please visit our Website: http://www.httrack.com
 #include "htsindex.h"
 #include "htsglobal.h"
 #include "htslib.h"
+#include "htsio.h"
 
 #if HTS_MAKE_KEYWORD_INDEX
 #include "htshash.h"
@@ -142,8 +143,6 @@ int index_keyword(const char *html_data, LLint size, const char *mime,
   char keyword[KEYW_LEN + 32];
   int i = 0;
 
-  //
-  //int WordIndexSize = 1024;
   coucal WordIndexHash = NULL;
   FILE *tmpfp = NULL;
 
@@ -174,12 +173,8 @@ int index_keyword(const char *html_data, LLint size, const char *mime,
   else if ((strfield2(mime, "image/svg+xml"))
            || (strfield2(mime, "image/svg-xml"))) {
     inscript = 0;
-  } else if ((strfield2(mime, "application/x-javascript"))
-             || (strfield2(mime, "text/css"))
-    ) {
+  } else if (is_javascript_mime_type(mime) || (strfield2(mime, "text/css"))) {
     inscript = 1;
-    //} else if (strfield2(mime, "text/vnd.wap.wml")) {   // humm won't work in many cases
-    //  inscript=0;
   } else
     return 0;
 
@@ -275,8 +270,6 @@ int index_keyword(const char *html_data, LLint size, const char *mime,
 
   // Process indexing for this page
   {
-    //FILE* fp=NULL;
-    //fp=fopen(concat(indexpath,"index.txt"),"ab");
     if (fp_tmpproject) {
       while(!feof(tmpfp)) {
         char line[KEYW_LEN + 32];
@@ -286,7 +279,6 @@ int index_keyword(const char *html_data, LLint size, const char *mime,
           intptr_t e = 0;
 
           if (coucal_read(WordIndexHash, line, &e)) {
-            //if (e) {
             char BIGSTK savelst[HTS_URLMAXSIZE * 2];
 
             e++;                /* 0 means "once" */
@@ -300,11 +292,9 @@ int index_keyword(const char *html_data, LLint size, const char *mime,
             fprintf(fp_tmpproject, "%s %d %s\n", line,
                     (int) (KEYW_SORT_MAXCOUNT - e), savelst);
             hts_primindex_size++;
-            //}
           }
         }
       }
-      //fclose(fp);
     }
   }
 
@@ -327,22 +317,25 @@ void index_finish(const char *indexpath, int mode) {
   char catbuff[CATBUFF_SIZE];
   char **tab;
   char *blk;
-  off_t size = fpsize(fp_tmpproject);
+  const LLint fs = fpsize(fp_tmpproject);
+  /* fail closed on a size size_t cannot hold: malloct() wraps short while
+     the reader and the terminator keep the 64-bit length */
+  const size_t size = fs > 0 ? llint_to_size_t(fs) : (size_t) -1;
 
-  if (size > 0) {
-    //FILE* fp=fopen(concat(indexpath,"index.txt"),"rb");
+  if (size != (size_t) -1) {
     if (fp_tmpproject) {
       tab = (char **) malloct(sizeof(char *) * (hts_primindex_size + 2));
       if (tab) {
-        blk = malloct(size + 4);
+        blk = malloct(size + 1);
         if (blk) {
           fseek(fp_tmpproject, 0, SEEK_SET);
-          if ((INTsys) fread(blk, 1, size, fp_tmpproject) == size) {
+          if (hts_fread_exact(blk, size, fp_tmpproject)) {
             char *a = blk, *b;
             int index = 0;
             int i;
             FILE *fp;
 
+            blk[size] = '\0';
             while((b = strchr(a, '\n')) && (index < hts_primindex_size)) {
               tab[index++] = a;
               *b = '\0';
@@ -358,9 +351,13 @@ void index_finish(const char *indexpath, int mode) {
 
             // Write new file
             if (mode == 1)      // TEXT
-              fp = fopen(concat(catbuff, sizeof(catbuff), indexpath, "index.txt"), "wb");
+              fp = FOPEN(
+                  concat(catbuff, sizeof(catbuff), indexpath, "index.txt"),
+                  "wb");
             else                // HTML
-              fp = fopen(concat(catbuff, sizeof(catbuff), indexpath, "sindex.html"), "wb");
+              fp = FOPEN(
+                  concat(catbuff, sizeof(catbuff), indexpath, "sindex.html"),
+                  "wb");
             if (fp) {
               char current_word[KEYW_LEN + 32];
               char word[KEYW_LEN + 32];
@@ -397,8 +394,6 @@ void index_finish(const char *indexpath, int mode) {
                       if (total_hit) {
                         if (mode == 1)  // TEXT
                           fprintf(fp, "\t=%d\r\n", total_hit);
-                        //else                // HTML
-                        //  fprintf(fp,"<br>(%d total hits)\r\n",total_hit);
                         if ((((total_hit * 1000) / hts_primindex_words) >=
                              KEYW_USELESS1K)
                             || (((total_line * 1000) / index) >=
@@ -415,8 +410,6 @@ void index_finish(const char *indexpath, int mode) {
                           if (mode == 1)        // TEXT
                             fprintf(fp, "\t(%d)\r\n",
                                     ((total_hit * 1000) / hts_primindex_words));
-                          //else                // HTML
-                          //  fprintf(fp,"(%d)\r\n",((total_hit*1000)/hts_primindex_words));
                         }
                       }
                       if (mode == 1)    // TEXT
@@ -449,7 +442,6 @@ void index_finish(const char *indexpath, int mode) {
                 fprintf(fp, "</td></tr>\r\n</table>\r\n");
               fclose(fp);
             }
-
           }
           freet(blk);
         }

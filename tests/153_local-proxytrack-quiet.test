@@ -1,0 +1,186 @@
+#!/bin/bash
+#
+# coucal logs a per-table statistics summary when a table is deleted, and with
+# no handler installed it writes it itself, prefixed with the table address.
+# proxytrack builds and drops one table per WebDAV enumeration, so every
+# unauthenticated PROPFIND dumped a line to the operator's console (#918).
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+# shellcheck source=tests/arclib.sh
+. "${0%"${0##*/}"}./arclib.sh"
+
+python=$(find_python) || skip "python3 missing"
+curl=$(find_curl) || skip "curl missing"
+# A leak on a fully buffered stdout shows only through the pty below, and Windows
+# builds neither Python's pty module nor os.fork; proxytrack also skips the PID=
+# line, which request_log() cuts the banner off at.
+skip_on_windows "windows: python has no pty, so a buffered leak would be invisible"
+
+dir=$(mktemp -d)
+quietpid=
+loudpid=
+ptpid= # start_proxytrack's, until the launch below takes it over
+cleanup() {
+    stop_server "$ptpid"
+    stop_server "$quietpid"
+    stop_server "$loudpid"
+    rm -rf "$dir"
+}
+cleanup_push cleanup
+
+printf 'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 5\r\n\r\n' >"$dir/hdr"
+printf 'hello' >"$dir/body"
+{
+    arc_filedesc
+    arc_record http://example.com/page.html text/html 200 "$dir/hdr" "$dir/body"
+} >"$dir/in.arc"
+
+# stdout to a file is fully buffered and SIGTERM never flushes it, so a leak on
+# stdout would be lost; a pty line-buffers it. The exec keeps $! on proxytrack.
+pty_exec='
+import os, pty, sys
+master, slave = pty.openpty()
+if os.fork() == 0:
+    os.close(slave)
+    with open(sys.argv[1], "wb", 0) as log:
+        while True:
+            try:
+                data = os.read(master, 65536)
+            except OSError:
+                break
+            if not data:
+                break
+            log.write(data)
+    open(sys.argv[1] + ".done", "wb").close()
+    os._exit(0)
+os.close(master)
+os.dup2(slave, 1)
+os.dup2(slave, 2)
+if slave > 2:
+    os.close(slave)
+os.execvp(sys.argv[2], sys.argv[2:])
+'
+
+propfind() { # port path
+    "$curl" -s -i --max-time 30 -X PROPFIND -H "Depth: 1" \
+        "http://127.0.0.1:$1/webdav/example.com/$2"
+}
+
+# Whatever the process wrote once serving. The banner ends on the PID line on
+# stdout and on the loaded archive on stderr, and the sanitizer legs run the
+# engine through a shim that relays stderr from another process (#1374), so the
+# two reach this pty in either order: cut past whichever landed last.
+request_log() { # log
+    tr -d '\r' <"$1" | awk '
+        /^PID=/ || /^processed: / { banner = NR }
+        { line[NR] = $0 }
+        END { for (i = banner + 1; i <= NR; i++) print line[i] }'
+}
+
+# That cut is only sound while both halves precede anything served, so wait for
+# them before issuing a request rather than sorting it out afterwards.
+wait_banner() { # log
+    local waited=0
+    until grep -q '^PID=' "$1" && grep -q '^processed: ' "$1"; do
+        test "$waited" -lt 100 || fail "proxytrack never finished its startup banner: $(<"$1")"
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+}
+
+# The drainer is proxytrack's child, not this shell's, so it cannot be waited
+# on; it marks the log once the pty has closed and the copy is complete.
+wait_drained() { # log
+    local waited=0
+    until test -e "$1.done"; do
+        test "$waited" -lt 100 || fail "the pty drainer never finished copying the output"
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+}
+
+# Subshell, not env(1): uutils' env forks rather than execs, so stop_server would
+# kill the wrapper and leave proxytrack holding the pty open (#1042).
+launch_quiet() {
+    (
+        unset HTS_LOG
+        exec "$python" -c "$pty_exec" "$ptlog" \
+            proxytrack "127.0.0.1:$proxyport" "127.0.0.1:$icpport" "$dir/in.arc"
+    ) &
+    ptpid=$!
+}
+start_proxytrack "$dir/quiet" launch_quiet
+quietlog=$ptlog quietport=$proxyport quietpid=$ptpid ptpid=
+wait_banner "$quietlog"
+
+# Both on one connection: the access log is written before send(), and only
+# proxytrack's keep-alive loop orders anything written after it, since the
+# second request is not read until the first one's teardown has run.
+resp=$("$curl" -s -i --max-time 30 -X PROPFIND -H "Depth: 1" \
+    "http://127.0.0.1:$quietport/webdav/example.com/" \
+    "http://127.0.0.1:$quietport/webdav/example.com/page.html") ||
+    fail_dump "the PROPFINDs did not answer" "$quietlog"
+served=$(count_matching_lines '^HTTP/1\.[01] 207 ' <<<"$resp")
+test "$served" -eq 2 ||
+    fail "expected two 207 Multi-Status replies, got $served: $resp"
+# The collection and its entry, then that entry and its default document. An
+# empty listing builds no table and would make the check below vacuous.
+listed=$(count_matching_lines '<response ' <<<"$resp")
+test "$listed" -eq 4 ||
+    fail "the two listings enumerated $listed entries, wanted 4: $resp"
+
+# The enumeration is what builds the table, so the served 207s are what make
+# the check below mean anything.
+waited=0
+until test "$(request_log "$quietlog" | grep -ci ' \* log: HTTP [^ ]* 207 [0-9]* propfind ' || true)" -ge 2; do
+    test "$waited" -lt 50 ||
+        fail_dump "fewer than two PROPFINDs were answered 207, so the check below proves nothing" "$quietlog"
+    sleep 0.1
+    waited=$((waited + 1))
+done
+
+# Only the access log is written before send(), so read the capture once
+# proxytrack is gone and the drainer has copied all of it: whatever a teardown
+# or keep-alive path writes has no ordering against the fence above, and no
+# sleep is short enough to be sound or long enough to be reliable.
+stop_server "$quietpid"
+quietpid=
+wait_drained "$quietlog"
+
+# The property is that serving adds nothing but the access log, so whitelist
+# what a line may be; naming strings that must be absent would pass any
+# reworded or differently shaped leak.
+extra=$(request_log "$quietlog" | grep -vE '^( \* log: (HTTP|ICP) .*)?$' || true)
+test -z "$extra" ||
+    fail "serving a PROPFIND wrote this to proxytrack's console:: $extra"
+
+# HTS_LOG brings the summary back, so the silence above is a routed handler and
+# not a deleted message, and the grep that asserted it does match when fed one.
+launch_loud() {
+    HTS_LOG=1 "$python" -c "$pty_exec" "$ptlog" \
+        proxytrack "127.0.0.1:$proxyport" "127.0.0.1:$icpport" "$dir/in.arc" &
+    ptpid=$!
+}
+start_proxytrack "$dir/loud" launch_loud
+loudlog=$ptlog loudport=$proxyport loudpid=$ptpid ptpid=
+
+resp=$(propfind "$loudport" "") ||
+    fail_dump "PROPFIND under HTS_LOG did not answer" "$loudlog"
+grep -q '^HTTP/1\.[01] 207 ' <<<"$resp" ||
+    fail "expected 207 Multi-Status under HTS_LOG: $resp"
+waited=0
+until grep -qE 'hashtable .*summary:' "$loudlog"; do
+    test "$waited" -lt 50 ||
+        fail_dump "HTS_LOG=1 did not restore the hashtable summary" "$loudlog"
+    sleep 0.1
+    waited=$((waited + 1))
+done
+# Pin the routed shape whole: a severity, then the message, and nothing in
+# between where the table address used to be.
+grep -qE '^ \* debug: hashtable "[^"]*" summary:' "$loudlog" ||
+    fail_dump "the summary under HTS_LOG did not come through proxytrack's log" "$loudlog"
+
+echo "OK: PROPFIND leaves no hashtable statistics on the console, HTS_LOG restores them"

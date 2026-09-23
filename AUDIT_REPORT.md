@@ -1,5 +1,7 @@
 # HTTrackClone Repository Audit
 
+> **Historical.** This describes the fork before it merged upstream 3.50.3 (2026-09-22). The engine code, file names and line numbers it cites have since been replaced by upstream's; see `history.txt` and `AGENTS.md`.
+
 ## A) Entrypoints and build/test execution
 - [Confirmed] CLI entrypoint: `src/httrack.c` (`main`).
 - [Confirmed] Web/server entrypoint: `src/htsweb.c` (`main`).

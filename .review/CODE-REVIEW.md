@@ -1,5 +1,7 @@
 # HTTrack fork — code review
 
+> **Historical.** This describes the fork before it merged upstream 3.50.3 (2026-09-22). The engine code, file names and line numbers it cites have since been replaced by upstream's; see `history.txt` and `AGENTS.md`.
+
 Scope: `src/` (~52k lines C), HEAD `748c35de` (3.49.6), branch `master`.
 
 Method: read-through of the network/parse/name/cookie/server paths, plus

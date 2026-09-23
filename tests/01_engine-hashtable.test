@@ -1,5 +1,9 @@
 #!/bin/bash
 #
 
-# httrack internal hashtable autotest on 100K keys
-httrack -#7 100000
+set -euo pipefail
+
+# httrack internal hashtable autotest on 100K keys. Assert the success line (on
+# stderr) so a misrouted registry entry can't pass on exit code alone.
+out=$(httrack -#test=hashtable 100000 2>&1)
+grep -q "all hashtable tests were successful!" <<<"$out" || exit 1

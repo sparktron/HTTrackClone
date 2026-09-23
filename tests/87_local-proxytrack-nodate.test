@@ -1,0 +1,48 @@
+#!/bin/bash
+# A cached entry whose Last-Modified is missing or unparseable must still
+# convert: the ARC writer used to dereference the parsed date unchecked.
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+# shellcheck source=tests/arclib.sh
+. "${0%"${0##*/}"}./arclib.sh"
+
+dir=$(mktemp -d)
+cleanup_push rm -rf "$dir"
+
+# $1 Last-Modified value (empty = omit the header), $2 expected archive date,
+# $3 label. The date is asserted exactly: a guard that fires unconditionally
+# would clobber the valid case, and one that skips the year/day would emit a
+# month and day of 00.
+run_case() {
+    lastmod=$1
+    wantdate=$2
+    what=$3
+
+    {
+        printf 'HTTP/1.1 200 OK\r\n'
+        printf 'Content-Type: text/html\r\n'
+        test -z "$lastmod" || printf 'Last-Modified: %s\r\n' "$lastmod"
+        printf 'Content-Length: 5\r\n\r\n'
+    } >"$dir/hdr"
+    printf 'hello' >"$dir/body"
+    {
+        arc_filedesc
+        arc_record http://example.com/p.html text/html 200 "$dir/hdr" "$dir/body"
+    } >"$dir/in.arc"
+
+    proxytrack --convert "$dir/out.arc" "$dir/in.arc" >/dev/null 2>&1 || fail "proxytrack crashed on $what"
+    grep -aq "^http://example.com/p.html 0.0.0.0 ${wantdate} " "$dir/out.arc" || {
+        echo "FAIL: $what: expected archive date ${wantdate}, got:" >&2
+        grep -a '^http://example.com/' "$dir/out.arc" >&2 || echo "(entry dropped)" >&2
+        exit 1
+    }
+}
+
+# the epoch stands in for "date unknown"
+run_case '' 19700101000000 'a missing Last-Modified'
+run_case 'not a date at all' 19700101000000 'an unparseable Last-Modified'
+run_case '0' 19700101000000 'a bare 0 Last-Modified'
+# a parseable date must still come through untouched
+run_case 'Sun, 06 Nov 1994 08:49:37 GMT' 19941106084937 'a valid Last-Modified'

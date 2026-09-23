@@ -1,0 +1,33 @@
+# Only rc.exe reads these and it takes LF, so nothing here earns a CRLF pin.
+*.rc text eol=lf
+
+# The test scripts run under Git Bash on the Windows CI; a CRLF checkout makes
+# bash die on $'\r' on every line of them.
+*.test text eol=lf
+*.sh text eol=lf
+
+# The count pin is parsed field by field; a CRLF checkout makes every line malformed.
+tests/*.counts text eol=lf
+
+# The engine pastes these into the generated index verbatim; LF so a Windows
+# checkout cannot put CRs there and so the compiled-in copies match on POSIX.
+templates/*.html text eol=lf
+
+# Tab-separated data: the generator rejects a stray CR by design.
+*.tsv text eol=lf
+
+# A CR here triggers rpmlint's warning and a packager's dos2unix.
+httrack-doc.html text eol=lf
+src/proxy/AUTHORS text eol=lf
+src/proxy/changelog.txt text eol=lf
+
+# Both out-of-tree catalog readers drop CR: WinHTTrack's own linput() and
+# httrack-android's tools/build_strings.sh. lang.indexes is stricter, because
+# lang_index() in src/webhttrack.in greps it raw, so a CR reaches the language
+# number.
+lang.def text eol=lf
+lang/*.txt text eol=lf
+lang.indexes text eol=lf
+
+# Byte-exact fuzz vectors, whatever their line endings look like.
+fuzz/corpus/** -text

@@ -1,0 +1,419 @@
+#!/bin/bash
+#
+
+# Offline HTML parser tests: each section crawls a file:// fixture (no network)
+# and checks which assets the parser captured and how it rewrote the links.
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/httrack_parse.XXXXXX") || exit 1
+cleanup_push rm -rf "$tmp"
+
+# a minimal valid 1x1 GIF, reused for every referenced asset
+gif() {
+    printf 'GIF89a\1\0\1\0\200\0\0\0\0\0\377\377\377!\371\4\1\0\0\0\0,\0\0\0\0\1\0\1\0\0\2\2D\1\0;' >"$1"
+}
+
+# crawl <fixture-html> into <out> with link rewriting on, no extra fetching
+crawl() {
+    local html="$1" out="$2"
+    rm -rf "$out"
+    mkdir -p "$out"
+    # the crawl's own exit status is irrelevant here; the assertions below check
+    # the mirrored files, so don't let set -e trip on a non-zero httrack exit
+    httrack "file://$html" -O "$out" --quiet --near -n >"$out/.log" 2>&1 || true
+}
+
+# assert a file with the given basename was saved somewhere under <out>
+found() {
+    test -n "$(find "$2" -type f -name "$1" -print -quit)" ||
+        fail "expected '$1' to be downloaded under $2"
+}
+
+# assert NO file with the given basename was saved (e.g. a descriptor token must
+# not be mistaken for a URL)
+notfound() {
+    test -z "$(find "$2" -type f -name "$1" -print -quit)" ||
+        fail "'$1' should not have been downloaded under $2"
+}
+
+# the mirrored fixture page (under "file/"), not HTTrack's own landing index
+savedhtml() {
+    find "$1" -type f -path '*/file/*' -name index.html -print -quit
+}
+
+# An absolute URL inside a fixture names a path the ENGINE resolves, so it must
+# be the native form: under wsl2 the shell holds /mnt/d/... and the engine D:/... .
+fileurl() { printf 'file://%s' "$(nativepath "$1")"; }
+
+# srcset on <img> and <source> (#235, #236): every candidate captured and
+# rewritten, descriptors preserved, following attributes left intact.
+site="$tmp/srcset"
+mkdir -p "$site"
+for f in a b c d e f g h i j v dz; do gif "$site/$f.gif"; done
+# unquoted heredoc: the absolute-URL candidate below is expanded here
+cat >"$site/index.html" <<EOF
+<html><body>
+<img src="a.gif" srcset="b.gif 480w, c.gif 800w">
+<picture><source srcset="d.gif 1x, c.gif 2x"><img src="a.gif"></picture>
+<img srcset="e.gif, f.gif">
+<img srcset="g.gif 2x" alt="trailing attr after srcset">
+<img srcset="  h.gif   2x ,  i.gif  ">
+<video><source src="v.gif"></video>
+<img srcset="$(fileurl "$site")/j.gif 2x">
+<img srcset="data:image/gif;base64,R0lGODlhAQABAAAAACw= 1x, dz.gif 2x">
+<img srcset="">
+<a href="a.gif">plain link still works</a>
+</body></html>
+EOF
+out="$tmp/srcset-out"
+crawl "$site/index.html" "$out"
+
+# every candidate downloads, incl. unique tails (catches first-only parsing),
+# whitespace-padded (h,i), <source src> (v), absolute (j), post-data: URI (dz)
+for f in a b c d e f g h i j v dz; do found "$f.gif" "$out"; done
+
+# the width/density descriptors are not URLs and must not be fetched
+notfound "480w" "$out"
+notfound "800w" "$out"
+notfound "2x" "$out"
+
+saved=$(savedhtml "$out")
+test -n "$saved" || fail "saved index.html not found"
+
+# descriptors must survive the rewrite (no "b.gif 480w" mangled into a path)
+grep -Eq 'srcset="[^"]*480w[^"]*800w' "$saved" ||
+    fail "srcset width descriptors lost/reordered in rewritten HTML"
+grep -Eq 'srcset="[^"]*1x[^"]*2x' "$saved" ||
+    fail "srcset density descriptors lost/reordered in rewritten HTML"
+# the descriptor-less comma form keeps both candidates and the separator verbatim
+grep -Eq 'srcset="e\.gif, f\.gif"' "$saved" ||
+    fail "comma-separated srcset without descriptors was altered"
+# an attribute following srcset in the same tag must be left intact
+grep -q 'alt="trailing attr after srcset"' "$saved" ||
+    fail "srcset swallowed a following attribute"
+
+# a comma inside a URL (data: URI, CDN path) is part of the URL, not a split
+# point (WHATWG): the data: URI stays verbatim; the next candidate (dz) downloads
+grep -Fq 'data:image/gif;base64,R0lGODlhAQABAAAAACw= 1x' "$saved" ||
+    fail "a comma inside a data: URI srcset candidate was mis-split"
+
+# real rewrite, not passthrough: the absolute file:// candidate becomes local
+# (a flat fixture can't show this; the footer comment's file:// is not in srcset)
+grep -Eq 'srcset="j\.gif 2x"' "$saved" ||
+    fail "absolute file:// srcset URL was not rewritten to a local link"
+! grep -Eq 'srcset="[^"]*file://' "$saved" ||
+    fail "a file:// URL survived inside a rewritten srcset attribute"
+
+# xlink:href (#298) and CSS background-image (#237): detected and rewritten to
+# local. background-image is covered in both an external <style> block and an
+# inline style attribute, with the URL unquoted, double-quoted and single-quoted
+# (the quote style is preserved on rewrite). No-detect attributes (title, alt,
+# ...) are left untouched. Asserted by rewrite (deterministic), not download.
+site2="$tmp/attrs"
+mkdir -p "$site2"
+for f in xl ibg ibgs cex cexd cexs tt; do gif "$site2/$f.gif"; done
+cat >"$site2/index.html" <<EOF
+<html><head><style>
+.a { background-image: url($(fileurl "$site2")/cex.gif); }
+.b { background-image: url("$(fileurl "$site2")/cexd.gif"); }
+.c { background-image: url('$(fileurl "$site2")/cexs.gif'); }
+</style></head><body>
+<a xlink:href="$(fileurl "$site2")/xl.gif">xlink:href (#298)</a>
+<div style="background-image:url($(fileurl "$site2")/ibg.gif)"></div>
+<div style="background-image:url('$(fileurl "$site2")/ibgs.gif')"></div>
+<span title="$(fileurl "$site2")/tt.gif">excluded attribute</span>
+</body></html>
+EOF
+out2="$tmp/attrs-out"
+crawl "$site2/index.html" "$out2"
+saved2=$(savedhtml "$out2")
+test -n "$saved2" || fail "saved attrs page not found"
+
+# detected attributes: the absolute URL is rewritten to a local link
+grep -Eq 'xlink:href="xl\.gif"' "$saved2" ||
+    fail "#298: xlink:href not detected/rewritten"
+
+# #237 external <style> block, each quoting form, quote style preserved
+grep -Eq 'url\(cex\.gif\)' "$saved2" ||
+    fail "#237: unquoted background-image in <style> not rewritten"
+grep -Eq 'url\("cexd\.gif"\)' "$saved2" ||
+    fail "#237: double-quoted background-image in <style> not rewritten"
+grep -Eq "url\('cexs\.gif'\)" "$saved2" ||
+    fail "#237: single-quoted background-image in <style> not rewritten"
+
+# #237 inline style attribute, unquoted and single-quoted url()
+grep -Eq 'style="background-image:url\(ibg\.gif\)"' "$saved2" ||
+    fail "#237: inline unquoted background-image not rewritten"
+grep -Eq "style=\"background-image:url\('ibgs\.gif'\)\"" "$saved2" ||
+    fail "#237: inline single-quoted background-image not rewritten"
+
+# no file:// URL survived inside any rewritten background-image
+! grep -Eq 'background-image:[^;"]*file://' "$saved2" ||
+    fail "#237: a file:// URL survived inside a rewritten background-image"
+
+# excluded attribute: title is on the no-detect list, so its value is left as-is
+grep -q 'title="file://' "$saved2" ||
+    fail "a no-detect attribute (title) was wrongly rewritten"
+
+# xmlns / xmlns:prefix decls must not be crawled (#191). Local file:// targets so a
+# regression downloads them; each is the LAST attr (heuristic only scans a value before '>').
+site3="$tmp/xmlns"
+mkdir -p "$site3"
+for f in ns og rdfs real; do gif "$site3/$f.gif"; done
+cat >"$site3/index.html" <<EOF
+<html xmlns="$(fileurl "$site3")/ns.gif"><body>
+<svg xmlns:og="$(fileurl "$site3")/og.gif"></svg>
+<div class="c" xmlns:rdfs="$(fileurl "$site3")/rdfs.gif"></div>
+<a href="$(fileurl "$site3")/real.gif">real link</a>
+</body></html>
+EOF
+out3="$tmp/xmlns-out"
+crawl "$site3/index.html" "$out3"
+
+# the real link is still captured
+found "real.gif" "$out3"
+# namespace-declaration targets must not be fetched (default + prefixed forms)
+notfound "ns.gif" "$out3"
+notfound "og.gif" "$out3"
+notfound "rdfs.gif" "$out3"
+
+# CSS @import (#94): every form's target is captured, crawling the .css directly.
+# The "cond"/"sup"/"spc" cases carry a trailing media/supports/layer condition (or
+# a space before ';'); they are the negative controls: without the parser fix the
+# URL is dropped, so a regression fails these found() checks.
+site4="$tmp/cssimport"
+mkdir -p "$site4"
+for f in nq dqu squ dqs sqs med cond sup lay spc; do printf 'body{}\n' >"$site4/$f.css"; done
+cat >"$site4/main.css" <<'EOF'
+@import url(nq.css);
+@import url("dqu.css");
+@import url('squ.css');
+@import "dqs.css";
+@import 'sqs.css';
+@import url(med.css) screen and (min-width: 400px);
+@import "cond.css" screen;
+@import "sup.css" supports(display: flex);
+@import url(lay.css) layer(base);
+@import "spc.css" ;
+EOF
+out4="$tmp/cssimport-out"
+crawl "$site4/main.css" "$out4"
+for f in nq dqu squ dqs sqs med cond sup lay spc; do found "$f.css" "$out4"; done
+
+# Over-capture guard: the trailing condition is not part of the URL, so it must
+# survive the rewrite verbatim. A regression that grabs it would mangle these.
+m4=$(find "$out4" -type f -path '*/file/*' -name main.css -print -quit)
+test -n "$m4" || fail "saved main.css not found"
+for cond in '@import "cond.css" screen;' 'supports(display: flex)' 'layer(base)'; do
+    grep -Fq "$cond" "$m4" ||
+        fail "#94: '$cond' altered on rewrite (condition captured as URL?)"
+done
+
+# Malformed input: an unterminated @import quote (truncated CSS) must not crash or
+# capture a bogus link; a valid sibling import is still captured. Guards a heap
+# overflow on the URL-end scan that aborts under ASan (CI sanitizer job).
+site5="$tmp/cssimport-trunc"
+mkdir -p "$site5"
+printf 'body{}\n' >"$site5/good.css"
+printf '@import "good.css";\n@import "trunc' >"$site5/main.css"
+out5="$tmp/cssimport-trunc-out"
+crawl "$site5/main.css" "$out5"
+found "good.css" "$out5"
+notfound "trunc" "$out5"
+
+# Offset-0 underflow (#396): a token at the buffer start makes the detector's
+# word-boundary guard read *(html-1) one byte early (aborts under ASan). The
+# url() target is still captured; here it just must not underflow.
+site6="$tmp/parse-off0"
+mkdir -p "$site6"
+printf 'body{}\n' >"$site6/off0.css"
+printf 'url(off0.css)\n' >"$site6/main.css"
+out6="$tmp/parse-off0-out"
+crawl "$site6/main.css" "$out6"
+found "off0.css" "$out6"
+
+# XMLHttpRequest.open(method, url) (#218): the first argument is an HTTP method,
+# not a URL. Without the fix "GET" is captured as a link and fetched (the offline
+# fixture saves a bare file named GET; a live server mangles it to GET.html).
+# window.open(url) detection must be unaffected.
+site7="$tmp/xhropen"
+mkdir -p "$site7"
+gif "$site7/winopen.gif"
+cat >"$site7/index.html" <<EOF
+<html><body><script>
+var x = new XMLHttpRequest();
+x.open("GET", "ajax_info.txt");
+var y = new XMLHttpRequest();
+y.open("Post", "submit.cgi");
+window.open("$(fileurl "$site7")/winopen.gif");
+</script></body></html>
+EOF
+out7="$tmp/xhropen-out"
+crawl "$site7/index.html" "$out7"
+# negative control: without the fix a file named exactly GET is downloaded
+notfound "GET" "$out7"
+# methods are matched case-insensitively (XHR spec normalizes them): a mixed-case
+# method is rejected too, so a file named Post must not appear either
+notfound "Post" "$out7"
+# regression guard: window.open(url) is still detected, so its absolute URL is
+# rewritten to a local link. The rewrite only happens if the parser saw it, so
+# these two assertions fail if .open detection broke (not a trivial --near save).
+saved7=$(savedhtml "$out7")
+test -n "$saved7" || fail "saved xhr page not found"
+grep -Fq 'window.open("winopen.gif")' "$saved7" ||
+    fail "#218: window.open(url) no longer detected/rewritten"
+! grep -Fq 'window.open("file://' "$saved7" ||
+    fail "#218: window.open URL left absolute (not rewritten)"
+
+# Parens in an unquoted url(...) (#163): the source %28/%29 decode to literal
+# '(' ')' in the saved name, but a literal ')' in the rewritten url() closes the
+# token early, so they must stay encoded. Negative control: without the fix the
+# %281%29 greps fail (parens are RFC2396 "mark" chars the escaper leaves alone).
+site8="$tmp/cssparens"
+mkdir -p "$site8"
+for f in 'img (1).gif' 'a(b)c(1).gif' 'q (4).gif'; do gif "$site8/$f"; done
+cat >"$site8/style.css" <<'EOF'
+.a { background: url(img%20%281%29.gif); }
+.b { background: url(a%28b%29c%281%29.gif); }
+.c { background: url("q%20%284%29.gif"); }
+EOF
+out8="$tmp/cssparens-out"
+crawl "$site8/style.css" "$out8"
+found "img (1).gif" "$out8"
+found "a(b)c(1).gif" "$out8"
+found "q (4).gif" "$out8"
+css8=$(find "$out8" -type f -path '*/file/*' -name style.css -print -quit)
+test -n "$css8" || fail "saved style.css not found"
+grep -Fq 'url(img%20%281%29.gif)' "$css8" ||
+    fail "#163: parens in unquoted url() not percent-encoded on rewrite"
+grep -Fq 'url(a%28b%29c%281%29.gif)' "$css8" ||
+    fail "#163: not every paren in a url() was percent-encoded"
+grep -Fq 'url("q%20%284%29.gif")' "$css8" ||
+    fail "#163: quoted url() altered or parens left literal on rewrite"
+
+# The url() detector is not CSS-specific: <script> and inline style= get the
+# same encoding, but ordinary href/src (ending_p is the quote, not ')') keep
+# literal parens -- the attribute checks guard the gate against over-firing.
+site9="$tmp/urlparens"
+mkdir -p "$site9"
+for f in 'js (1).gif' 'inl (2).gif' 'asrc (3).gif' 'ahref (4).gif'; do gif "$site9/$f"; done
+cat >"$site9/index.html" <<EOF
+<html><body>
+<script>var bg = "url(js%20%281%29.gif)";</script>
+<div style="background-image:url(inl%20%282%29.gif)"></div>
+<img src="asrc%20%283%29.gif">
+<a href="ahref%20%284%29.gif">link</a>
+</body></html>
+EOF
+out9="$tmp/urlparens-out"
+crawl "$site9/index.html" "$out9"
+saved9=$(savedhtml "$out9")
+test -n "$saved9" || fail "saved urlparens page not found"
+# rewrite-only: the JS-string asset is not queued for download
+grep -Fq 'url(js%20%281%29.gif)' "$saved9" ||
+    fail "#163: parens in <script> url() not percent-encoded"
+found "inl (2).gif" "$out9"
+grep -Fq 'url(inl%20%282%29.gif)' "$saved9" ||
+    fail "#163: parens in inline style url() not percent-encoded"
+found "asrc (3).gif" "$out9"
+found "ahref (4).gif" "$out9"
+grep -Fq 'src="asrc%20(3).gif"' "$saved9" ||
+    fail "#163: parens in a plain src attribute were wrongly encoded"
+grep -Fq 'href="ahref%20(4).gif"' "$saved9" ||
+    fail "#163: parens in a plain href attribute were wrongly encoded"
+! grep -Eq '(src|href)="[^"]*%28' "$saved9" ||
+    fail "#163: gate over-fired onto a non-url() attribute link"
+
+# HTML5 <source>/<track> follow as embedded near-links past the -r2 depth boundary (#451).
+# img.gif positive control; plain.gif (bare <a href>) negative control proves the gate is selective.
+site10="$tmp/html5media"
+mkdir -p "$site10"
+for f in img ss plain; do gif "$site10/$f.gif"; done
+printf 'x' >"$site10/v.webm"
+printf 'x' >"$site10/subs.vtt"
+cat >"$site10/index.html" <<EOF
+<html><body><a href="leaf.html">leaf</a></body></html>
+EOF
+cat >"$site10/leaf.html" <<EOF
+<html><body>
+<img src="img.gif">
+<picture><source srcset="ss.gif 2x"></picture>
+<video><source src="v.webm"></video>
+<video><track src="subs.vtt"></video>
+<a href="plain.gif">plain link past the boundary</a>
+</body></html>
+EOF
+out10="$tmp/html5media-out"
+rm -rf "$out10"
+mkdir -p "$out10"
+httrack "file://$site10/index.html" -O "$out10" --quiet --near -r2 >"$out10/.log" 2>&1 || true
+found "img.gif" "$out10"
+found "ss.gif" "$out10"
+found "v.webm" "$out10"
+found "subs.vtt" "$out10"
+notfound "plain.gif" "$out10"
+
+# Unknown-attr (data-*) URLs (#201/#203): the script automaton state must reset at
+# </script>, or detection dies for the rest of the page after the first script.
+site11="$tmp/dataattr"
+mkdir -p "$site11"
+for f in pre post mid spdata handler handler2 jsdecoy jsdecoy2 nodecoy \
+    spalt glalt spxml jtail1 jtail2 textdecoy tagdecoy phantom; do gif "$site11/$f.gif"; done
+cat >"$site11/index.html" <<EOF
+<html><body>
+<img data-pre="$(fileurl "$site11")/pre.gif">
+<script>var x = 1;</script>
+<img data-post="$(fileurl "$site11")/post.gif">
+<img data-mid="$(fileurl "$site11")/mid.gif" alt="mid-tag attr, no delimiter after">
+<img data-sp = "$(fileurl "$site11")/spdata.gif" q=1>
+<img alt="nodecoy.gif" src="pre.gif">
+<img alt = "spalt.gif" id=x>
+<img src="pre.gif"alt="glalt.gif" id=x>
+<p xmlns:bar = "spxml.gif" id=x></p>
+<div data-json='["jtail1.gif","jtail2.gif"]' q=1></div>
+<p>t = "textdecoy.gif" q</p>
+<img ="tagdecoy.gif" q>
+<a onclick='q = 1; "h1'>x</a>
+<img data-h1="$(fileurl "$site11")/handler.gif">
+<a onclick='w = 1; "h2>x</a>
+<img data-h2="$(fileurl "$site11")/handler2.gif">
+<script>var s; s = 1; "jsdecoy.gif";</script>
+<script>var s2 = "jsdecoy2.gif" x;</script>
+<script>var f = "</script>
+<img alt="y" "phantom.gif">
+</body></html>
+EOF
+out11="$tmp/dataattr-out"
+crawl "$site11/index.html" "$out11"
+saved11=$(savedhtml "$out11")
+test -n "$saved11" || fail "saved dataattr page not found"
+grep -Fq 'data-pre="pre.gif"' "$saved11" ||
+    fail "#201: data-* URL before any script not detected/rewritten"
+grep -Fq 'data-post="post.gif"' "$saved11" ||
+    fail "#201: data-* URL after a script not detected (state leak)"
+grep -Fq 'data-mid="mid.gif"' "$saved11" ||
+    fail "#201: mid-tag data-* URL not detected"
+grep -Fq 'data-sp = "spdata.gif"' "$saved11" ||
+    fail "#201: spaced-= data-* URL not detected"
+found "handler.gif" "$out11"  # automaton reset at the handler-terminator exit
+found "handler2.gif" "$out11" # ... and at the '>' exit of an unterminated handler
+# a JS string not preceded by =/(/, is still ignored after the reset
+notfound "jsdecoy.gif" "$out11"
+# in-script, the strict follower gate still applies (intag is 1 in script bodies)
+notfound "jsdecoy2.gif" "$out11"
+# no-detect attrs stay exempt, incl. spaced-'=' and glued-attr forms
+notfound "nodecoy.gif" "$out11"
+notfound "spalt.gif" "$out11"
+notfound "glalt.gif" "$out11"
+notfound "spxml.gif" "$out11"
+# not '='-preceded: comma-list tails and out-of-tag text tokens stay ignored
+notfound "jtail2.gif" "$out11"
+notfound "textdecoy.gif" "$out11"
+notfound "tagdecoy.gif" "$out11" # a '=' glued to the tag name is not an attr
+# a </script> inside a JS string must not cause phantom fetches later
+notfound "phantom.gif" "$out11"
+
+exit 0

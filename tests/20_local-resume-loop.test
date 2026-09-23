@@ -1,0 +1,79 @@
+#!/bin/bash
+# Issue #206: a continue/update crawl looped forever when the resume Range got a
+# 416. Pass 1 leaves a partial + temp-ref; pass 2 must terminate and not loop.
+set -u
+
+# shellcheck source=tests/crawllib.sh
+. "${0%"${0##*/}"}./crawllib.sh"
+root=$(nativepath "${testdir}/server-root")
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/httrack_206.XXXXXX") || exit 1
+crawlpid=
+cleanup() {
+    test -n "$crawlpid" && kill -9 "$crawlpid" 2>/dev/null
+    rm -rf "$tmpdir"
+}
+cleanup_push cleanup
+
+# RESUME_COUNTER gets a byte per /resume/blob.txt request (pass-2 delta bounds re-gets).
+counter="${tmpdir}/blobcount"
+local_server_start --env RESUME_COUNTER="$counter" --root "$root"
+
+require_httrack
+out="${tmpdir}/crawl"
+mkdir "$out"
+common=(-O "$out" --quiet --disable-security-limits --robots=0 --timeout=30 --retries=0)
+refdir="${out}/hts-cache/ref"
+
+# --- pass 1: crawl, interrupt once the blob download is underway -------------
+printf '[pass 1: interrupt mid-download] ..\t'
+httrack "${common[@]}" "${BASEURL}/resume/index.html" >"${tmpdir}/log1" 2>&1 &
+crawlpid=$!
+# Wait until blob.txt is requested, then SIGTERM so httrack's exit handler
+# finalizes the cache and serializes the temp-ref.
+for _ in $(seq 1 300); do
+    test -s "$counter" && break
+    kill -0 "$crawlpid" 2>/dev/null || break
+    sleep 0.1
+done
+sleep 0.5
+kill -TERM "$crawlpid" 2>/dev/null
+wait "$crawlpid" 2>/dev/null
+crawlpid=
+test -n "$(find "$refdir" -name '*.ref' 2>/dev/null)" || fail "no temp-ref survived pass 1; cannot drive #206"
+echo "OK (temp-ref present)"
+before=$(wc -c <"$counter" 2>/dev/null || echo 0)
+
+# --- pass 2: --continue -> resume Range -> 416, bounded against the #206 loop -
+# Kill pass 2 after a deadline (portable stand-in for `timeout`, absent on macOS).
+printf '[pass 2: resume must terminate] ..\t'
+HANG_RC=137 # 128 + SIGKILL
+httrack "${common[@]}" --continue "${BASEURL}/resume/index.html" >"${tmpdir}/log2" 2>&1 &
+crawlpid=$!
+(sleep 30 && kill -9 "$crawlpid" 2>/dev/null) &
+guard=$!
+rc=0
+wait "$crawlpid" 2>/dev/null || rc=$?
+crawlpid=
+kill "$guard" 2>/dev/null || true
+wait "$guard" 2>/dev/null || true
+if test "$rc" -eq "$HANG_RC"; then
+    echo "FAIL: pass 2 did not terminate (#206 resume->416 loop)"
+    exit 1
+fi
+echo "OK (terminated, rc=$rc)"
+
+# The fix re-gets once (resume Range + range-less re-get = 2): the lower bound
+# rejects a drop-the-link non-fix (1), the upper bound rejects the loop (many).
+after=$(wc -c <"$counter" 2>/dev/null || echo 0)
+hits=$((after - before))
+printf '[bounded re-get count] ..\t'
+if test "$hits" -lt 2; then
+    echo "FAIL: only ${hits} pass-2 request(s); the stale partial was not re-got"
+    exit 1
+fi
+if test "$hits" -gt 8; then
+    echo "FAIL: ${hits} pass-2 requests for blob.txt (resume is looping)"
+    exit 1
+fi
+echo "OK (${hits} requests)"

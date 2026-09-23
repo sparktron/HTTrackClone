@@ -1,0 +1,56 @@
+#!/bin/bash
+#
+# htsserver's $HOME lookup, through the web UI it actually renders. An exported
+# but empty $HOME must not resolve the default base path against the root.
+
+set -euo pipefail
+
+# shellcheck source=tests/webhttracklib.sh
+. "${0%"${0##*/}"}./webhttracklib.sh"
+
+htsserver_require
+
+cleanup_push htsserver_cleanup
+
+savedhome=${HOME:-}
+
+# Render htsserver's default base path into ${pathfor_result}, under the given
+# $HOME ("-" = leave $HOME unset). Assigns rather than echoes: a command
+# substitution would hide the server from the cleanup trap.
+pathfor() {
+    local homeval=$1
+    if test -n "${homeval}" && test "${homeval}" != -; then
+        htsserver_start --home "${homeval}"
+    else
+        # --home names a directory, so the empty and unset cases ride this
+        # shell's own environment across the fork.
+        if test "${homeval}" = -; then unset HOME; else export HOME=""; fi
+        htsserver_start
+        export HOME="${savedhome}"
+    fi
+
+    pathfor_result=$(firstline "$(htsserver_client --path /server/step2.html \
+        --timeout 20 | sed -n 's/.*name="path" value="\([^"]*\)".*/\1/p')")
+
+    htsserver_stop
+    test -n "${pathfor_result}" || fail "no path field in the rendered step2.html"
+}
+
+check() {
+    local desc=$1 homeval=$2 want=$3
+    pathfor "${homeval}"
+    test "${pathfor_result}" = "${want}" ||
+        fail "${desc}: want ${want}, got ${pathfor_result}"
+    echo "ok: ${desc} -> ${pathfor_result}"
+}
+
+# A real HOME must reach the page, or the two cases below are vacuous: they
+# also pass when gethomedir() ignores the environment and always answers ".".
+check 'a set HOME is used' /nonexistent/hts-home /nonexistent/hts-home/websites
+
+# Exported but empty is the regression: getenv() returns "", not NULL, so a
+# bare NULL check let the base path collapse onto /websites.
+check 'an empty HOME' '' ./websites
+check 'an unset HOME' - ./websites
+
+echo "PASS"

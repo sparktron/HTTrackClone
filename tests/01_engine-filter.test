@@ -1,0 +1,198 @@
+#!/bin/bash
+#
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# wildcard filter engine (strjoker), the core of +/- include/exclude rules.
+# -#test=filter <filter> <string> prints "<string> does match <filter>" or "... does NOT match ...".
+
+match() { selftest_queue "$2 does match $1" filter "$1" "$2"; }
+nomatch() { selftest_queue "$2 does NOT match $1" filter "$1" "$2"; }
+# single-arg call means an empty subject (unreachable as a CLI arg); '*(' used
+# to force max=1 and over-read past it.
+nomatch_empty() { selftest_queue " does NOT match $1" filter "$1"; }
+
+# bare star matches everything
+match '*' 'anything/at/all'
+
+# prefix / suffix
+match 'foo*' 'foobar'
+nomatch 'foo*' 'xfoobar'
+match '*.gif' 'a/b/c.gif'
+
+# extension match is case-insensitive
+match '*.GIF' 'a.gif'
+
+# character classes
+match '*[A-Z].txt' 'B.txt'
+nomatch '*[A-Z].txt' 'b.txt'
+match '*[0-9]' '5'
+nomatch '*[0-9]' 'x'
+
+# comma-separated class: both ranges are active, the comma is not matched
+# literally and a char in neither range fails
+match '*[A-Z,0-9]' 'Q'
+match '*[A-Z,0-9]' '3'
+nomatch '*[A-Z,0-9]' 'a'
+
+# named groups: [file] stops at '/', [path] spans it
+match '*[file].html' 'foo.html'
+nomatch '*[file].html' 'foo/bar.html'
+match '*[path]x' 'a/b/x'
+
+# *[] means "nothing more after the star"
+nomatch '*[]' 'abc'
+
+# multiple stars
+match '*foo*bar' 'foozbar'
+
+# '?' is the query-string marker, not a single-char wildcard
+nomatch 'a?c' 'abc'
+
+# Inside a class, backslash escapes the next char as a literal member (#148):
+# '\X' matches X only (not '\'), and an escaped ']' is a member, not the terminator.
+match '*[\*]' '*'
+nomatch '*[\*]' "\\"
+match '*[\\]' "\\"
+nomatch '*[\\]' '*'
+match '*[\[]' '['
+nomatch '*[\[]' "\\"
+match '*[\]]' ']'
+nomatch '*[\]]' "\\"
+
+# '*[\[\]]' is "the [ or ] character", as the filter guide documents.
+match '*[\[\]]' '['
+match '*[\[\]]' ']'
+nomatch '*[\[\]]' 'a'
+match '*[\[,\]]' '[' # comma between members is optional
+match '*[\[,\]]' ']'
+match '*[a,\[]' 'a' # an escaped member no longer eats the preceding one
+match '*[a,\[]' '['
+
+# Escape is decoded before the range/separator/size checks, so '\-' '\,' '\<'
+# are literal members, not operators.
+match '*[a\-z]' 'a'
+match '*[a\-z]' 'z'
+nomatch '*[a\-z]' 'b' # not the a..z range
+match '*[\,]' ','
+nomatch '*[\,]' "\\" # the escape must not leak '\' into the class
+match '*[\<]' '<'
+nomatch '*[\<]' "\\"
+match '*[\[,\],a]' '['
+match '*[\[,\],a]' ']'
+match '*[\[,\],a]' 'a'
+
+# A truncated range '*[a-' is the literal members {a,-}; the parser must not
+# read past the end decoding it (was a 1-byte heap over-read in the range arm).
+match '*[a-' 'a'
+nomatch '*[a-' 'b'
+
+# *(...) matches exactly one char from the class; *[...] matches a run.
+match '*(a,b)' 'a'
+nomatch '*(a,b)' 'aa'
+nomatch '*(a,b)' 'c'
+
+# documented composite filters (filters.html)
+match 'www.*[path].com/*[path].zip' 'www.foo.com/a/b.zip'
+nomatch 'www.*[path].com/*[path].zip' 'www.foo.com/a/b.tar'
+match '*.html*[]' 'page.html'
+nomatch '*.html*[]' 'page.html?x=1' # *[] forbids the trailing query
+
+# Size-based rules: a size exclusion must stay neutral while the size is unknown,
+# so the file is fetched and only cancelled once it is known (#143).
+fsize 'verdict=allowed size_flag=0' -1 foo.jpg -* '+*.jpg' '-*.jpg*[<10]'   # scan time: keep
+fsize 'verdict=forbidden size_flag=1' 5 foo.jpg -* '+*.jpg' '-*.jpg*[<10]'  # <10KB: cancel
+fsize 'verdict=allowed size_flag=1' 20 foo.jpg -* '+*.jpg' '-*.jpg*[<10]'   # >=10KB: keep
+fsize 'verdict=forbidden size_flag=0' -1 foo.txt -* '+*.jpg' '-*.jpg*[<10]' # not a jpg
+# the '>' operator is just as neutral at scan time, and fires once size is known
+fsize 'verdict=allowed size_flag=0' -1 foo.jpg -* '+*.jpg' '-*.jpg*[>10]'   # scan time: keep
+fsize 'verdict=forbidden size_flag=1' 20 foo.jpg -* '+*.jpg' '-*.jpg*[>10]' # >10KB: cancel
+
+# [name]/[file]/[path] never span '?' mid-string; a trailing query is still
+# tolerated by the global '?' rule (same as plain *.aspx), not the class (#144).
+nomatch '*[path]/end' 'a?b/end'
+nomatch '*[file]end' 'foo?xend'
+nomatch '*[name]X' 'abc?X'
+match '*[file]' 'foo?x=1' # trailing query: tolerated, as for *.aspx
+match '*.aspx' 'page.aspx?y=2'
+
+# empty subject against a unique-match allow-all pattern (heap over-read regress)
+nomatch_empty '*(('
+nomatch_empty '**(('
+
+# near-miss negatives: word order, exact tails, range boundaries, class case
+nomatch 'foo*bar' 'foobaz'
+nomatch '*foo*bar' 'barfoo' # both words present, wrong order
+nomatch '*.gif' 'a.gifx'    # trailing junk after the extension
+nomatch '*.gif' 'a.gi'
+nomatch '*[b-y]' 'a'
+nomatch '*[b-y]' 'z'
+nomatch '*[a-z].txt' 'B.txt' # classes are case-sensitive...
+match 'FoO*' 'foobar'        # ...literals are not
+
+# a star may match an empty run, but never skip a required literal
+match '*[0-9].gif' '.gif'
+nomatch '*[0-9].gif' 'x.gif'
+
+# a descending range *[c-a] is an empty class, not c..a reversed
+match '*[c-a]x' 'x'
+nomatch '*[c-a]x' 'cx'
+
+# *[param] is all-or-nothing on '?': spans everything after one, else nothing
+match 'a*[param]' 'a?x=1'
+nomatch 'a*[param]' 'ab?x=1'
+
+# the latest matching rule wins, regardless of sign
+fsize 'verdict=forbidden size_flag=0' -1 a.gif '+*.gif' '-*.gif'
+fsize 'verdict=allowed size_flag=0' -1 a.gif '-*.gif' '+*.gif'
+
+# a failed size test sets size_flag but leaves the rule unmatched
+fsize 'verdict=unknown size_flag=1' 5 foo.jpg '-*.jpg*[>10]'
+
+# mime filters (-#test=filtermime = fa_strjoker type=1): only mime: rules
+# apply to a mime type, and mime: rules never apply to a URL
+fmime() {
+    local want=$1
+    shift
+    selftest_queue "verdict=$want" filtermime "$@"
+}
+fmime allowed 'image/png' '+mime:image/*'
+fmime unknown 'text/html' '+mime:image/*'
+fmime forbidden 'image/png' '+mime:image/*' '-mime:image/png' # last wins
+fmime allowed 'image/png' '-mime:image/png' '+mime:image/*'
+fmime unknown 'image/png' '+image/*'                               # URL rule: skipped
+fsize 'verdict=unknown size_flag=0' -1 'image/png' '+mime:image/*' # and vice versa
+
+# memoized vs no-memo differential over seeded random patterns and subjects,
+# matching and non-matching (the self-test asserts both polarities occurred)
+selftest_queue "filtermemo: 20000 cases OK" filtermemo
+
+# star-heavy non-match must stay polynomial (#501); 400 chars also exercises
+# the heap-allocated memo. timeout (where available) turns a hang into a FAIL.
+with_timeout() {
+    if command -v timeout >/dev/null; then timeout 60 "$@"; else "$@"; fi
+}
+pat=$(printf '*[a]%.0s' $(seq 1 12))b
+subj=$(printf 'a%.0s' $(seq 1 400))
+assert_eq "$subj does NOT match $pat" "$(with_timeout httrack -O /dev/null -#test=filter "$pat" "$subj")"
+
+# a later star's class dead-end must re-extend the earlier star, not give up
+# (guards against a single-backtrack-point matcher rewrite)
+match '*[aX]X*[a]Y' 'aXaXaY'
+nomatch '*[aX]X*[a]Y' 'aXbXaY'
+
+# hostile patterns must not stack-overflow or hang: length + depth + work caps
+assert_eq "filterbounds: OK" "$(with_timeout httrack -O /dev/null -#test=filterbounds)"
+
+# and the depth cap must hold on the 1MB stack a Windows thread gets (#574):
+# uncapped, the same pattern recursed ~900KB deep. Skipped where 512K is too
+# small to even start the binary.
+if (ulimit -s 512 && httrack --version >/dev/null 2>&1); then
+    out=$(ulimit -s 512 && with_timeout httrack -O /dev/null -#test=filterbounds)
+    assert_eq "filterbounds: OK" "$out" "filterbounds on a 512K stack"
+fi
+
+selftest_run_queued

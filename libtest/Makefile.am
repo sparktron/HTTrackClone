@@ -1,6 +1,8 @@
 
 exemplesdir = $(datadir)/httrack/libtest
-exemples_DATA = *.c *.h *.txt
+# Glob against $(srcdir), not the build dir: a bare "*.c" is resolved relative to
+# the build dir and stays unexpanded (breaking "make") in an out-of-tree build.
+exemples_DATA = $(srcdir)/*.c $(srcdir)/*.h $(srcdir)/*.txt
 EXTRA_DIST = $(exemples_DATA) libtest.mak libtest.vcproj
 
 AM_CPPFLAGS = \
@@ -12,13 +14,21 @@ AM_CPPFLAGS = \
 	-DSYSCONFDIR=\""$(sysconfdir)"\" \
 	-DDATADIR=\""$(datadir)"\" \
 	-DLIBDIR=\""$(libdir)"\"
-AM_CPPFLAGS += -I../src
+# Use $(top_srcdir)/src, not ../src: the latter is relative to the build dir and
+# misses the source headers (e.g. httrack-library.h) in an out-of-tree build.
+AM_CPPFLAGS += -I$(top_srcdir)/src
 
+# The callback examples reference libc only through libhttrack, so the direct
+# libc edge gets dropped from DT_NEEDED (library-not-linked-against-libc).
+# Force libc back; configure gates the flag since only a GNU-style linker
+# accepts it (LIBC_FORCE_LINK is empty on e.g. macOS).
 AM_LDFLAGS = \
 	@DEFAULT_LDFLAGS@ \
-	-L../src
+	-L../src \
+	@LIBC_FORCE_LINK@
 
-# Examples
+# Examples; --disable-example-libs keeps the sources above and drops these.
+if EXAMPLE_LIBS
 libbaselinks_la_SOURCES =  callbacks-example-baselinks.c
 libbaselinks_la_LIBADD = $(THREADS_LIBS) $(SOCKET_LIBS) $(top_builddir)/src/libhttrack.la
 libbaselinks_la_LDFLAGS = $(AM_LDFLAGS) -version-info 1:0:0
@@ -50,3 +60,4 @@ libsimple_la_SOURCES =  callbacks-example-simple.c
 libsimple_la_LIBADD = $(THREADS_LIBS) $(SOCKET_LIBS) $(top_builddir)/src/libhttrack.la
 libsimple_la_LDFLAGS = $(AM_LDFLAGS) -version-info 1:0:0
 pkglib_LTLIBRARIES = libbaselinks.la libchangecontent.la libcontentfilter.la libdisplayheader.la libfilename2.la libfilename.la libfilenameiisbug.la liblistlinks.la liblog.la libsimple.la
+endif

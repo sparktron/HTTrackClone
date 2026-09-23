@@ -1,0 +1,87 @@
+#!/bin/bash
+#
+# The end-of-mirror purge read old.lst with linput(fp, line, 1000), which caps a
+# chunk at 999 bytes. filenote() writes "[<save path>]", so a 998-byte save path
+# makes a 1000-byte line that comes back as 999 bytes plus a one-byte "]" tail.
+# For that tail `line + 1` is empty, and with no -O so is path_html, so the purge
+# indexed file[-1] (#770). Needs no -O, hence not local-crawl.sh.
+#
+# The OOB write lands in stack padding, so only the sanitized CI leg fails on
+# unfixed code; the length assertion below is what keeps this from passing
+# vacuously if the save path ever stops landing on the chunk boundary.
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# python3 is required; mirror check-network.sh's skip-with-77 convention.
+python=$(find_python) || skip "python3 not found"
+
+# Resolve httrack now: the harness prepends a RELATIVE dir to PATH, so the cd
+# below would otherwise silently fall through to an installed copy.
+httrack_bin=$(httrack_path)
+
+work=$(mktemp -d)
+cleanup_push rm -rf "$work"
+
+mkdir -p "$work/root" "$work/proj"
+
+"$python" "$top_srcdir/tests/local-server.py" --root "$work/root" \
+    >"$work/server.out" 2>"$work/server.err" &
+spid=$!
+# Pushed here rather than with the temp dir: the pid exists only now, and LIFO
+# reaps the server before its root is removed.
+cleanup_push stop_server "$spid"
+
+port=$(discover_server_port "$work/server.out" "$spid") || exit 1
+
+# Save path is "127.0.0.1_<port>/" + the URL path; target 998 bytes total.
+prefix="127.0.0.1_${port}/"
+need=$((998 - ${#prefix}))
+
+# macOS caps PATH_MAX at 1024, so neither the docroot nor the mirror can hold a
+# 998-byte path, and httrack's own HTS_MAX_PATH_LEN clamps below it too. The
+# trigger is simply not reachable there.
+pathmax=$(getconf PATH_MAX / 2>/dev/null || echo 4096)
+test "$pathmax" -ge $((need + ${#work} + 128)) || skip "PATH_MAX $pathmax too small for a $need-byte path"
+
+# Same on Win32, where MAX_PATH clamps the save path; getconf answers for the
+# MSYS emulation, not the Win32 API httrack calls, so it cannot see this.
+if target_is_windows; then
+    echo "Win32 MAX_PATH cannot hold a $need-byte save path; skipping" >&2
+    exit 77
+fi
+
+urlpath=""
+while test $((need - ${#urlpath})) -gt 60; do
+    urlpath="${urlpath}$(printf 'd%02d' ${#urlpath})$(printf 'a%.0s' $(seq 1 46))/"
+done
+urlpath="${urlpath}$(printf 'f%.0s' $(seq 1 $((need - ${#urlpath} - 5)))).html"
+test ${#urlpath} -eq "$need"
+
+mkdir -p "$work/root/$(dirname "$urlpath")"
+printf '<html><body>leaf</body></html>\n' >"$work/root/$urlpath"
+printf '<html><body><a href="/%s">x</a></body></html>\n' "$urlpath" \
+    >"$work/root/index.html"
+
+cd "$work/proj" # no -O: opt->path_html stays empty
+
+"$httrack_bin" "http://127.0.0.1:$port/" -q -%v0 -s0 -r3 >"$work/crawl1.log" 2>&1 || true
+
+lst=$work/proj/hts-cache/new.lst
+test -f "$lst" || fail "pass 1 produced no new.lst"
+# Arms the test: without a line of exactly 1000 bytes linput() never splits and
+# the purge never sees a one-byte tail.
+awk 'length == 1000 { found = 1 } END { exit !found }' "$lst" || {
+    echo "no 1000-byte line in new.lst; the chunk split is not exercised" >&2
+    awk '{ print length }' "$lst" | sort -n | tail -3 >&2
+    echo "--- urlpath len ${#urlpath}, prefix $prefix" >&2
+    tail -20 "$work/crawl1.log" >&2
+    exit 1
+}
+
+# Pass 2 renames new.lst to old.lst and runs it through the purge loop.
+"$httrack_bin" "http://127.0.0.1:$port/" -q -%v0 -s0 -r3 >"$work/crawl2.log" 2>&1
+
+test -s "$work/proj/$prefix$urlpath" || fail "the mirrored leaf did not survive the purge"

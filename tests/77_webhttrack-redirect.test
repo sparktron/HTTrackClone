@@ -1,0 +1,105 @@
+#!/bin/bash
+#
+# htsserver's POST redirect: the Location header is built from a client-supplied
+# value, and the listen address is loopback unless --bind widens it.
+
+set -euo pipefail
+
+# shellcheck source=tests/webhttracklib.sh
+. "${0%"${0##*/}"}./webhttracklib.sh"
+
+htsserver_require
+
+bindlog=$(mktemp)
+cleanup() {
+    htsserver_cleanup
+    rm -f "${bindlog}"
+}
+cleanup_push cleanup
+
+# POST redirect=$1 with session id $2, printing the raw headers. Stopping at the
+# header block matters: an unbounded recv() hung the macOS runner for over an hour.
+post_redirect() {
+    htsserver_client --headers-only --field "sid=$2" --field "redirect=$1"
+}
+
+# "free"/"inuse"/"unusable": can $1 still be bound on 127.0.0.2? A wildcard
+# listener takes the port on every address, a loopback-only one does not, so
+# this discriminates where the announced URL cannot.
+probe_alias() {
+    "${HTS_PYTHON}" -c 'import socket, sys
+sys.stdout.reconfigure(newline="\n")  # the word below is compared byte for byte
+s = socket.socket()
+try:
+    s.bind(("127.0.0.2", int(sys.argv[1])))
+except OSError as e:
+    print("unusable" if e.errno in (99, 49, 10049) else "inuse")
+else:
+    print("free")
+finally:
+    s.close()' "$1"
+}
+
+# Non-repeating and not a round number: a truncation, a reorder or a dropped
+# interior byte all stay visible.
+long=$("${HTS_PYTHON}" -c 'import sys
+sys.stdout.reconfigure(newline="\n")  # a CR here would be a 4098th byte to echo
+print("".join(chr(33 + i % 90) for i in range(4097)))')
+htsserver_start
+sid=$(htsserver_sid)
+test "${#sid}" -eq 32 || fail "did not scrape a 32-hex sid (got '${sid}')"
+resp=$(post_redirect "${long}" "${sid}") ||
+    fail "no response to an oversized redirect value"
+htsserver_stop
+loc=$(printf '%s' "${resp}" | sed -n 's/^Location: //p' | tr -d '\r')
+test "${loc}" = "${long}" ||
+    fail "oversized redirect not echoed whole (got ${#loc} bytes, want ${#long})"
+
+# CR/LF must suppress the header outright. Sanitising it instead would keep the
+# grep for an injected header quiet while still emitting a mangled Location.
+htsserver_start
+sid=$(htsserver_sid)
+resp=$(post_redirect '/foo
+X-Injected: pwned' "${sid}") || fail "no response to a CRLF redirect value"
+htsserver_stop
+# Here-string, not a pipe: grep -q SIGPIPEs the producer on the first match, and
+# pipefail then turns the hit into a silent pass.
+grep -qi 'X-Injected' <<<"${resp}" &&
+    fail "CRLF in the redirect value reached the response"
+test "$(grep -ci '^Location:' <<<"${resp}")" -eq 0 ||
+    fail "CRLF redirect still emitted a Location header"
+test "$(grep -c '^HTTP/1\.' <<<"${resp}")" -eq 1 ||
+    fail "CRLF redirect did not yield exactly one status line"
+
+# Loopback unless asked otherwise. Assert the socket, not the announcement.
+htsserver_start
+alias_state=$(probe_alias "${HTS_PORT}")
+htsserver_stop
+# The alias is what tells a loopback-only socket from a wildcard one, so
+# without it the listen-address assertions below cannot fail.
+unobserved=""
+if test "${alias_state}" = unusable; then
+    unobserved="no 127.0.0.2 alias here"
+else
+    test "${alias_state}" = free ||
+        fail "default listen address is not loopback-only (127.0.0.2:${HTS_PORT} taken)"
+    case "${HTS_URL}" in
+    http://127.0.0.1:*) ;;
+    *) fail "default announcement is not loopback: ${HTS_URL}" ;;
+    esac
+
+    htsserver_start --bind 0.0.0.0
+    alias_state=$(probe_alias "${HTS_PORT}")
+    htsserver_stop
+    test "${alias_state}" = inuse ||
+        fail "--bind 0.0.0.0 did not take the wildcard (127.0.0.2:${HTS_PORT} ${alias_state})"
+fi
+
+# An empty --bind must not quietly fall back to every interface. Bounded: if it
+# were accepted the server would listen instead of exiting.
+run_with_timeout 15 htsserver "${HTS_DISTDIR}/" --bind "" >"${bindlog}" 2>&1 || true
+grep -q -- "--bind needs an address" "${bindlog}" ||
+    fail "empty --bind not refused: $(<"${bindlog}")"
+
+test -z "${unobserved}" || skip "${unobserved}: the listen-address half never ran"
+echo "PASS"

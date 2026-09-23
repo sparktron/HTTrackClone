@@ -1,11 +1,12 @@
 Source: httrack
 Section: web
-Priority: optional
 Maintainer: Xavier Roche <roche@httrack.com>
-Standards-Version: 4.6.2
-Build-Depends: debhelper (>= 12.0.0), dh-autoreconf, autotools-dev, autoconf, autoconf-archive, automake, libtool, zlib1g-dev, libssl-dev
-Homepage: http://www.httrack.com
+Standards-Version: 4.7.4
+Build-Depends: debhelper-compat (= 14), autoconf, autoconf-archive, automake, libtool, pkgconf, zlib1g-dev, libssl-dev, libbrotli-dev, libzstd-dev
+Rules-Requires-Root: no
+Homepage: https://www.httrack.com
 Vcs-Git: https://github.com/xroche/httrack.git
+Vcs-Browser: https://github.com/xroche/httrack
 
 Package: httrack
 Architecture: any
@@ -23,15 +24,19 @@ Description: Copy websites to your computer (Offline browser)
  browse the site from link to link, as if you were viewing it online.
  HTTrack can also update an existing mirrored site, and resume
  interrupted downloads. HTTrack is fully configurable, and has an
- integrated help system. 
+ integrated help system.
 
 Package: webhttrack
 Architecture: any
 Multi-Arch: foreign
-Depends: ${misc:Depends}, ${shlibs:Depends}, webhttrack-common, iceape-browser | iceweasel | icecat | mozilla | firefox | mozilla-firefox | www-browser | sensible-utils
+Depends: ${misc:Depends}, ${shlibs:Depends}, webhttrack-common, sensible-utils
+# Recommends, not Depends: the autoremoval gatherer follows only a disjunction's
+# first alternative, which ties the httrack source to whichever browser leads it.
+# httrack-doc, not a Suggests: without it the panel's help links open nothing.
+Recommends: firefox-esr | chromium | www-browser, httrack-doc
 Replaces: webhttrack-common (<< 3.43.9-2)
 Breaks: webhttrack-common (<< 3.43.9-2)
-Suggests: httrack, httrack-doc
+Suggests: httrack
 Enhances: httrack
 Description: Copy websites to your computer, httrack with a Web interface
  WebHTTrack is an offline browser utility, allowing you to download a World
@@ -46,7 +51,7 @@ Description: Copy websites to your computer, httrack with a Web interface
  interrupted downloads. WebHTTrack is fully configurable, and has an
  integrated help system.
  .
-  Snapshots: http://www.httrack.com/page/21/
+  Snapshots: https://www.httrack.com/page/21/
 
 Package: webhttrack-common
 Architecture: all
@@ -56,13 +61,13 @@ Description: webhttrack common files
  This package is the common files of webhttrack, website copier and
  mirroring utility
 
-Package: libhttrack2
+Package: libhttrack3
 Architecture: any
 Multi-Arch: same
 Section: libs
-Replaces: libhttrack1
-Conflicts: libhttrack1
 Depends: ${misc:Depends}, ${shlibs:Depends}
+Replaces: libhttrack2, httrack (<< 3.49.8-2~)
+Breaks: libhttrack2, httrack (<< 3.49.8-2~)
 Description: Httrack website copier library
  This package is the library part of httrack, website copier and mirroring
  utility
@@ -71,7 +76,10 @@ Package: libhttrack-dev
 Architecture: any
 Multi-Arch: same
 Section: libdevel
-Depends: ${misc:Depends}, ${shlibs:Depends}, zlib1g-dev
+# libhttrack3: what the .so symlink and libhttrack.pc's -lhttrack resolve onto. The
+# other -dev packages: libhttrack.pc names their modules in Requires.private, and
+# pkg-config fails outright when one of those .pc files is missing.
+Depends: ${misc:Depends}, ${shlibs:Depends}, libhttrack3 (= ${binary:Version}), zlib1g-dev, libssl-dev, libbrotli-dev, libzstd-dev
 Description: Httrack website copier includes and development files
  This package adds supplemental files for using the httrack website copier
  library

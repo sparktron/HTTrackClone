@@ -1,0 +1,43 @@
+#!/bin/bash
+#
+# The committed man/httrack.1 must match what man/makeman.sh produces from the
+# current "httrack --help" output. This catches a --help change that was not
+# followed by "make -C man regen-man".
+
+set -eu
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+gen="$top_srcdir/man/makeman.sh"
+committed="$top_srcdir/man/httrack.1"
+
+# Need the generator and a runnable httrack.
+test -f "$gen" || {
+    echo "makeman.sh not found; skipping" >&2
+    exit 77
+}
+command -v httrack >/dev/null 2>&1 || {
+    echo "httrack not in PATH; skipping" >&2
+    exit 77
+}
+
+tmp=$(mktemp) || exit 1
+committed_clean=$(mktemp) || exit 1
+generated_clean=$(mktemp) || exit 1
+cleanup_push rm -f "$tmp" "$committed_clean" "$generated_clean"
+
+README="$top_srcdir/README" bash "$gen" httrack >"$tmp" 2>/dev/null || fail "makeman.sh failed"
+
+# Ignore the two intentionally date-dependent lines (page date, copyright year).
+# Temp files, not process substitution, so this works under a POSIX /bin/sh.
+strip_volatile() { grep -vE '^\.TH httrack |^Copyright \(C\) 1998-'; }
+strip_volatile <"$committed" >"$committed_clean"
+strip_volatile <"$tmp" >"$generated_clean"
+
+if diff "$committed_clean" "$generated_clean" >/dev/null; then
+    exit 0
+fi
+
+echo "man/httrack.1 is out of date. Regenerate with: make -C man regen-man" >&2
+diff "$committed_clean" "$generated_clean" | head -40 >&2
+exit 1

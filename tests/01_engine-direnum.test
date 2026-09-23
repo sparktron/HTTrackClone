@@ -1,0 +1,14 @@
+#!/bin/bash
+#
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# Drives -#test=direnum: enumerate a long+non-ASCII directory through the
+# opendir/readdir wrappers, checking each child round-trips as UTF-8 (#133,#630).
+dir=$(mktemp -d)
+cleanup_push rm -rf "$dir"
+
+selftest_queue_base_lengths head "direnum: enumerated 2 non-ASCII leaves" direnum "$dir"
+selftest_run_queued

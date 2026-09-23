@@ -1,0 +1,132 @@
+#!/bin/bash
+#
+# The 62 tests behind local-crawl.sh read nothing but its exit status, so a
+# harness that swallowed a failed crawl would turn every one of them green.
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+find_python >/dev/null || skip "python3 not found"
+command -v httrack >/dev/null || skip "no httrack in PATH"
+
+crawl="${testdir}/local-crawl.sh"
+url='BASEURL/simple/basic.html'
+rc=0 out=
+
+run() { # run ARGS...
+    rc=0
+    out=$(bash "$crawl" "$@" 2>&1) || rc=$?
+}
+
+# Floor: the same crawl unmutated has to pass, or the failures below could be
+# coming from a broken fixture rather than from what they mean to exercise.
+run --errors 0 httrack "$url"
+test "$rc" -eq 0 || fail "a healthy crawl exited $rc: $out"
+ok "a healthy crawl succeeds"
+
+# A crawl the engine refuses: the status, the pass that failed and the engine's
+# own output must all reach the caller.
+run --errors 0 httrack "$url" --no-such-option
+test "$rc" -ne 0 || fail "a refused crawl reported success: $out"
+assert_match "crawl exited" "$out" "the failing pass is named"
+assert_match "Unknown option" "$out" "the engine's log is dumped"
+ok "a crawl the engine refuses fails the run, log included"
+
+# The same on a later pass, whose failure leaves the first pass's mirror intact:
+# the audits below it all hold, so only ending the run there reports anything.
+run --errors 0 --rerun-args '--no-such-option' httrack "$url"
+test "$rc" -ne 0 || fail "a failed second pass reported success: $out"
+assert_match "second pass exited" "$out" "the failing pass is named"
+ok "a later pass that fails ends the run, mirror notwithstanding"
+
+# An audit that does not hold fails too, naming what it wanted.
+run --errors 0 --files 999 httrack "$url"
+test "$rc" -ne 0 || fail "a wrong file count reported success: $out"
+assert_match "expected '999'" "$out" "the audit names the value it wanted"
+ok "a failing audit fails the run"
+
+# grep exits 2 on a file it cannot read, which reads as "no match" and makes the
+# audit meaningless (#1627). The runs below it prove it still passes on a real
+# miss, an empty file included.
+run --errors 0 --file-not-matches 'simple/nosuchfile.html' 'x' httrack "$url"
+test "$rc" -ne 0 || fail "a negative file audit passed on a missing file: $out"
+assert_match "no regular file" "$out" "the missing path is named"
+ok "a negative file audit fails when the file is missing"
+
+# A directory is not a readable file either, and grep's status for one varies
+# by platform.
+run --errors 0 --plant-dir simple/adir --file-not-matches 'simple/adir' 'x' \
+    httrack "$url"
+test "$rc" -ne 0 || fail "a negative file audit passed on a directory: $out"
+assert_match "no regular file" "$out" "the directory is not taken for a file"
+ok "a negative file audit fails on a directory at the audited path"
+
+# The other exit 2 comes from a regular file grep cannot open, and root reads
+# one regardless.
+if test "$(id -u)" -eq 0; then
+    ok "SKIP the unreadable-file case, root reads it regardless"
+else
+    # The host root sits three levels under $TMPDIR, so a layout change fails
+    # the assert below rather than passing quietly.
+    unread=$(mktemp -d "${TMPDIR:-/tmp}/httrack_unread.XXXXXX") || exit 1
+    cleanup_push rm -rf "$unread"
+    echo marker >"$unread/locked.dat"
+    chmod 000 "$unread/locked.dat"
+    rc=0
+    out=$(TMPDIR="$unread" bash "$crawl" --errors 0 \
+        --file-not-matches '../../../locked.dat' 'marker' \
+        httrack "$url" 2>&1) || rc=$?
+    test "$rc" -ne 0 || fail "an unreadable file passed the audit: $out"
+    assert_match "grep could not read" "$out" "the unreadable path is named"
+    ok "a negative file audit fails on a file grep cannot read"
+fi
+
+run --errors 0 --file-not-matches 'simple/basic.html' 'NOT-HERE' httrack "$url"
+test "$rc" -eq 0 || fail "a negative file audit failed on a present file: $out"
+ok "a negative file audit still passes on a file lacking the marker"
+
+# A 0-byte mirrored file lacks every marker, so it must pass rather than read
+# as absent. errpage/empty.html is the fixture's genuine zero-length 200.
+run --errors 1 --file-not-matches 'errpage/empty.html' 'x' \
+    httrack 'BASEURL/errpage/index.html'
+test "$rc" -eq 0 || fail "a negative file audit failed on an empty file: $out"
+ok "a negative file audit passes on an empty mirrored file"
+
+# The mirror bounds share the vacuity, because an empty mirror is under every
+# ceiling and only a floor says anything landed. Both runs use the healthy crawl
+# and bounds no platform can straddle, since how much a crawl saves varies.
+run --errors 0 --min-mirror-bytes 99999999 httrack "$url"
+test "$rc" -ne 0 || fail "a mirror floor passed under the bound: $out"
+assert_match "mirror too small" "$out" "the floor names what it wanted"
+ok "a mirror floor fails when the mirror is under the bound"
+
+run --errors 0 --min-mirror-bytes 1 httrack "$url"
+test "$rc" -eq 0 || fail "a mirror floor failed over the bound: $out"
+ok "a mirror floor passes when the mirror is over the bound"
+
+# A directory named after a searched word must not answer for the crawl (#1220):
+# TMPDIR plants one on the command line the log echoes.
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/httrack_logbody.XXXXXX") || exit 1
+cleanup_push rm -rf "$tmp"
+mkdir -p "$tmp/assert-and-panic"
+rc=0
+out=$(TMPDIR="$tmp/assert-and-panic" bash "$crawl" --errors 0 \
+    --log-not-found 'assert|[Pp]anic' httrack "$url" 2>&1) || rc=$?
+test "$rc" -eq 0 || fail "the audit matched the path the crawl ran from: $out"
+ok "a log audit ignores the command line the banner echoes"
+
+# Teeth: it still reads the body, or the line above would pass on anything.
+run --errors 0 --log-not-found 'Information, Warnings and Errors' httrack "$url"
+test "$rc" -ne 0 || fail "a log audit matched nothing in the body: $out"
+ok "a log audit still sees what the mirror wrote"
+
+# And the banner, which only the echo below it is skipped: dropping both is the
+# mistake this fix was written twice to avoid. 14_local-https covers it only
+# where TLS is built.
+run --errors 0 --log-found 'launched on' httrack "$url"
+test "$rc" -eq 0 || fail "a log audit stopped seeing the banner: $out"
+ok "a log audit still sees the launch banner"
+
+echo "PASS"

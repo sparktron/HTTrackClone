@@ -1,110 +1,83 @@
-<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
-
+<!DOCTYPE html>
+<html lang="en">
 <head>
-	<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />
-	<meta name="description" content="HTTrack is an easy-to-use website mirror utility. It allows you to download a World Wide website from the Internet to a local directory,building recursively all structures, getting html, images, and other files from the server to your computer. Links are rebuiltrelatively so that you can freely browse to the local site (works with any browser). You can mirror several sites together so that you can jump from one toanother. You can, also, update an existing mirror site, or resume an interrupted download. The robot is fully configurable, with an integrated help" />
-	<meta name="keywords" content="httrack, HTTRACK, HTTrack, winhttrack, WINHTTRACK, WinHTTrack, offline browser, web mirror utility, aspirateur web, surf offline, web capture, www mirror utility, browse offline, local  site builder, website mirroring, aspirateur www, internet grabber, capture de site web, internet tool, hors connexion, unix, dos, windows 95, windows 98, solaris, ibm580, AIX 4.0, HTS, HTGet, web aspirator, web aspirateur, libre, GPL, GNU, free software" />
-	<title>HTTrack Website Copier - Offline Browser</title>
-
-	<style type="text/css">
-	<!--
-
-body {
-	margin: 0;  padding: 0;  margin-bottom: 15px;  margin-top: 8px;
-	background: #77b;
-}
-body, td {
-	font: 14px "Trebuchet MS", Verdana, Arial, Helvetica, sans-serif;
-	}
-
-#subTitle {
-	background: #000;  color: #fff;  padding: 4px;  font-weight: bold; 
-	}
-
-#siteNavigation a, #siteNavigation .current {
-	font-weight: bold;  color: #448;
-	}
-#siteNavigation a:link    { text-decoration: none; }
-#siteNavigation a:visited { text-decoration: none; }
-
-#siteNavigation .current { background-color: #ccd; }
-
-#siteNavigation a:hover   { text-decoration: none;  background-color: #fff;  color: #000; }
-#siteNavigation a:active  { text-decoration: none;  background-color: #ccc; }
-
-
-a:link    { text-decoration: underline;  color: #00f; }
-a:visited { text-decoration: underline;  color: #000; }
-a:hover   { text-decoration: underline;  color: #c00; }
-a:active  { text-decoration: underline; }
-
-#pageContent {
-	clear: both;
-	border-bottom: 6px solid #000;
-	padding: 10px;  padding-top: 20px;
-	line-height: 1.65em;
-	background-image: url(images/bg_rings.gif);
-	background-repeat: no-repeat;
-	background-position: top right;
-	}
-
-#pageContent, #siteNavigation {
-	background-color: #ccd;
-	}
-
-
-.imgLeft  { float: left;   margin-right: 10px;  margin-bottom: 10px; }
-.imgRight { float: right;  margin-left: 10px;   margin-bottom: 10px; }
-
-hr { height: 1px;  color: #000;  background-color: #000;  margin-bottom: 15px; }
-
-h1 { margin: 0;  font-weight: bold;  font-size: 2em; }
-h2 { margin: 0;  font-weight: bold;  font-size: 1.6em; }
-h3 { margin: 0;  font-weight: bold;  font-size: 1.3em; }
-h4 { margin: 0;  font-weight: bold;  font-size: 1.18em; }
-
-.blak { background-color: #000; }
-.hide { display: none; }
-.tableWidth { min-width: 400px; }
-
-.tblRegular       { border-collapse: collapse; }
-.tblRegular td    { padding: 6px;  background-image: url(fade.gif);  border: 2px solid #99c; }
-.tblHeaderColor, .tblHeaderColor td { background: #99c; }
-.tblNoBorder td   { border: 0; }
-
-
-// -->
-</style>
-
+<!-- doc-chrome:head -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Fred Cohen's HTTrack Users Guide, written for release 3.10.">
+<link rel="stylesheet" href="doc.css">
+<script src="doc.js" defer></script>
+<!-- /doc-chrome:head -->
+<title>HTTrack Users Guide, by Fred Cohen (3.10)</title>
 </head>
+<body>
 
-<table width="76%" border="0" align="center" cellspacing="0" cellpadding="0" class="tableWidth">
-	<tr>
-	<td><img src="images/header_title_4.gif" width="400" height="34" alt="HTTrack Website Copier" title="" border="0" id="title" /></td>
-	</tr>
-</table>
-<table width="76%" border="0" align="center" cellspacing="0" cellpadding="3" class="tableWidth">
-	<tr>
-	<td id="subTitle">Open Source offline browser</td>
-	</tr>
-</table>
-<table width="76%" border="0" align="center" cellspacing="0" cellpadding="0" class="tableWidth">
-<tr class="blak">
-<td>
-	<table width="100%" border="0" align="center" cellspacing="1" cellpadding="0">
-	<tr>
-	<td colspan="6"> 
-		<table width="100%" border="0" align="center" cellspacing="0" cellpadding="10">
-		<tr> 
-		<td id="pageContent"> 
-<!-- ==================== End prologue ==================== -->
+<!-- doc-chrome:top -->
+<!-- doc-chrome:masthead -->
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="masthead">
+	<img src="images/wordmark.svg" width="400" height="36" alt="HTTrack Website Copier">
+	<div class="tagline">Free software offline browser</div>
+</header>
+<!-- /doc-chrome:masthead -->
+
+<div class="wrap">
+
+<nav class="toc" aria-label="Documentation">
+	<h2>On this page</h2>
+	<ul>
+		<li><a href="#background-and-introduction">Background and Introduction</a></li>
+		<li><a href="#basics">Basics</a></li>
+		<li><a href="#syntax">Syntax</a></li>
+		<li><a href="#a-thorough-going-over">A Thorough Going Over</a></li>
+		<li><a href="#filters">Filters</a></li>
+		<li><a href="#user-authentication-protocols">User Authentication Protocols</a></li>
+		<li><a href="#httrackrc">.httrackrc</a></li>
+		<li><a href="#release-notes">Release Notes</a></li>
+		<li><a href="#some-more-examples">Some More Examples</a></li>
+		<li><a href="#general-questions">General questions</a></li>
+		<li><a href="#troubleshooting">Troubleshooting</a></li>
+		<li><a href="#questions-concerning-a-mirror">Questions concerning a mirror</a></li>
+	</ul>
+	<h2>Start here</h2>
+	<ul>
+		<li><a href="guide.html">Interface guide</a></li>
+		<li><a href="faq.html">FAQ and troubleshooting</a></li>
+		<li><a href="abuse.html">Using HTTrack responsibly</a></li>
+	</ul>
+	<h2>Command line</h2>
+	<ul>
+		<li><a href="cmdguide.html">Command-line guide</a></li>
+		<li><a href="httrack.man.html">Option reference</a></li>
+		<li><a href="filters.html">Filter syntax</a></li>
+	</ul>
+	<h2>Developers</h2>
+	<ul>
+		<li><a href="dev.html">Programming</a></li>
+		<li><a href="library.html">libhttrack API</a></li>
+		<li><a href="plug.html">Callbacks</a></li>
+		<li><a href="scripting.html">Scripting</a></li>
+		<li><a href="cache.html">Cache format</a></li>
+		<li><a href="changes.html">Change report format</a></li>
+	</ul>
+	<h2>More</h2>
+	<ul>
+		<li><a href="fcguide.html" aria-current="page" class="here">Users Guide (3.10)</a></li>
+		<li><a href="contact.html">Contact and credits</a></li>
+		<li><a href="index.html">All documentation</a></li>
+	</ul>
+</nav>
+
+<main id="main">
+<!-- /doc-chrome:top -->
 
 <center><h1> Httrack Users Guide (3.10)</h1>
 By Fred Cohen </center>
 
 <hr>
 
-<h2> Background and Introduction </h2>
+<h2 id="background-and-introduction"> Background and Introduction </h2>
 
 <p align=justify> I started using httrack in mid-2000 and found it to be
 an excellent tool for imaging web sites.  Various words are used to
@@ -125,7 +98,7 @@ assistance from the authors I volunteered to write a users manual for
 httrack - and here it is.  I hope it gets the job done.
 
 <hr>
-<h2> Basics </h2>
+<h2 id="basics"> Basics </h2>
 
 <p align=justify> Httrack is a program that gets information from the
 Internet, looks for pointers to other information, gets that
@@ -181,17 +154,17 @@ used for some time.
 
 <p align=justify> The rest of this manual is dedicated to detailing what
 you find in the help message and providing examples - lots and lots of
-examples...  Here is what you get (page by page - use <enter> to move to
+examples...  Here is what you get (page by page - use &lt;enter&gt; to move to
 the next page in the real program) if you type 'httrack --help':
 
 <pre>
 >httrack --help
  HTTrack version 3.03BETAo4 (compiled Jul  1 2001)
-	usage: ./httrack <URLs [-option] [+<FILTERs>] [-<FILTERs>]
+	usage: ./httrack &lt;URLs&gt; [-option] [+&lt;FILTERs&gt;] [-&lt;FILTERs&gt;]
 	with options listed below: (* is the default value)
 
 General options:
-  O  path for mirror/logfiles+cache (-O path_mirror[,path_cache_and_logfiles]) (--path <param>)
+  O  path for mirror/logfiles+cache (-O path_mirror[,path_cache_and_logfiles]) (--path &lt;param&gt;)
  %O  top path if no path defined (-O path_mirror[,path_cache_and_logfiles])
 
 Action options:
@@ -202,8 +175,8 @@ Action options:
   Y   mirror ALL links located in the first level pages (mirror links) (--mirrorlinks)
 
 Proxy options:
-  P  proxy use (-P proxy:port or -P user:pass@proxy:port) (--proxy <param>)
- %f *use proxy for ftp (f0 don't use) (--httpproxy-ftp[=N])
+  P  proxy use (-P proxy:port or -P user:pass@proxy:port) (--proxy &lt;param&gt;)
+ %f *use proxy for ftp (f0 don't use) (--httpproxy-ftp[=0])
 
 Limits options:
   rN set the mirror depth to N (* r9999) (--depth[=N])
@@ -224,10 +197,10 @@ Flow control:
   HN host is abandoned if: 0=never, 1=timeout, 2=slow, 3=timeout or slow (--host-control[=N])
 
 Links options:
- %P *extended parsing, attempt to parse all links, even in unknown tags or Javascript (%P0 don't use) (--extended-parsing[=N])
+ %P *extended parsing, attempt to parse all links, even in unknown tags or Javascript (%P0 don't use) (--extended-parsing[=0])
   n  get non-html files 'near' an html file (ex: an image located outside) (--near)
   t  test all URLs (even forbidden ones) (--test)
- %L <file add all URL located in this text file (one URL per line) (--list <param>)
+ %L &lt;file&gt; add all URL located in this text file (one URL per line) (--list &lt;param&gt;)
 
 Build options:
   NN structure type (0 *original structure, 1+: see below) (--structure[=N])
@@ -237,23 +210,23 @@ Build options:
   x  replace external html links by error pages (--replace-external)
  %x  do not include any password for external password protected websites (%x0 include) (--no-passwords)
  %q *include query string for local files (useless, for information purpose only) (%q0 don't include) (--include-query-string)
-  o *generate output html file in case of error (404..) (o0 don't generate) (--generate-errors)
-  X *purge old files after update (X0 keep delete) (--purge-old[=N])
+  o *save the server's error pages (404..) (o0 discard them) (--generate-errors)
+  X *purge old files after update (X0 keep delete) (--purge-old[=0])
 
 Spider options:
   bN accept cookies in cookies.txt (0=do not accept,* 1=accept) (--cookies[=N])
   u  check document type if unknown (cgi,asp..) (u0 don't check, * u1 check but /, u2 check always) (--check-type[=N])
-  j *parse Java Classes (j0 don't parse) (--parse-java[=N])
+  j *parse scripts (j0 don't parse) (--parse-java[=N])
   sN follow robots.txt and meta robots tags (0=never,1=sometimes,* 2=always) (--robots[=N])
  %h  force HTTP/1.0 requests (reduce update features, only for old servers or proxies) (--http-10)
  %B  tolerant requests (accept bogus responses on some servers, but not standard!) (--tolerant)
  %s  update hacks: various hacks to limit re-transfers when updating (identical size, bogus response..) (--updatehack)
- %A  assume that a type (cgi,asp..) is always linked with a mime type (-%A php3=text/html) (--assume <param>)
+ %A  assume that a type (cgi,asp..) is always linked with a mime type (-%A php3=text/html) (--assume &lt;param&gt;)
 
 Browser ID:
-  F  user-agent field (-F "user-agent name") (--user-agent <param>)
- %F  footer string in Html code (-%F "Mirrored [from host %s [file %s [at %s]]]" (--footer <param>)
- %l  preffered language (-%l "fr, en, jp, *" (--language <param>)
+  F  user-agent field (-F "user-agent name") (--user-agent &lt;param&gt;)
+ %F  footer string in Html code (-%F "Mirrored [from host %s [file %s [at %s]]]" (--footer &lt;param&gt;)
+ %l  preferred language (-%l "fr, en, jp, *" (--language &lt;param&gt;)
 
 Log, index, cache
   C  create/use a cache for updates and retries (C0 no cache,C1 cache is prioritary,* C2 test update before) (--cache[=N])
@@ -303,8 +276,8 @@ Guru options: (do NOT use)
  #!  Execute a shell command (-#! "echo hello")
 
 Command-line specific options:
-  V execute system command after each files ($0 is the filename: -V "rm \$0") (--userdef-cmd <param>)
- %U run the engine with another id when called as root (-%U smith) (--user <param>)
+  V execute system command after each files ($0 is the filename: -V "rm \$0") (--userdef-cmd &lt;param&gt;)
+ %U run the engine with another id when called as root (-%U smith) (--user &lt;param&gt;)
 
 Details: Option N
   N0 Site-structure (default)
@@ -332,7 +305,7 @@ Details: User-defined option N
   %N Name of file, including file type (ex: image.gif)
   %t File type (ex: gif)
   %p Path [without ending /] (ex: /someimages)
-  %h Host name (ex: www.someweb.com) (--http-10)
+  %h Host name (ex: www.example.com) (--http-10)
   %M URL MD5 (128 bits, 32 ascii bytes)
   %Q query string MD5 (128 bits, 32 ascii bytes)
   %q small query string MD5 (16 bits, 4 ascii bytes) (--include-query-string)
@@ -340,14 +313,14 @@ Details: User-defined option N
   %[param] param variable in query string
 
 Shortcuts:
---mirror      <URLs *make a mirror of site(s) (default)
---get         <URLs  get the files indicated, do not seek other URLs (-qg)
---list   <text file  add all URL located in this text file (-%L)
---mirrorlinks <URLs  mirror all links in 1st level pages (-Y)
---testlinks   <URLs  test links in pages (-r1p0C0I0t)
---spider      <URLs  spider site(s), to test links: reports Errors & Warnings (-p0C0I0t)
---testsite    <URLs  identical to --spider
---skeleton    <URLs  make a mirror, but gets only html files (-p1)
+--mirror      &lt;URLs&gt; *make a mirror of site(s) (default)
+--get         &lt;URLs&gt;  get the files indicated, do not seek other URLs (-qg)
+--list   &lt;text file&gt;  add all URL located in this text file (-%L)
+--mirrorlinks &lt;URLs&gt;  mirror all links in 1st level pages (-Y)
+--testlinks   &lt;URLs&gt;  test links in pages (-r1p0C0I0t)
+--spider      &lt;URLs&gt;  spider site(s), to test links: reports Errors & Warnings (-p0C0I0t)
+--testsite    &lt;URLs&gt;  identical to --spider
+--skeleton    &lt;URLs&gt;  make a mirror, but gets only html files (-p1)
 --update              update a mirror, without confirmation (-iC2)
 --continue            continue a mirror, without confirmation (-iC1)
 
@@ -356,17 +329,17 @@ Shortcuts:
 
 --http10              force http/1.0 requests (-%h)
 
-example: httrack www.someweb.com/bob/
-means:   mirror site www.someweb.com/bob/ and only this site
+example: httrack www.example.com/bob/
+means:   mirror site www.example.com/bob/ and only this site
 
-example: httrack www.someweb.com/bob/ www.anothertest.com/mike/ +*.com/*.jpg
+example: httrack www.example.com/bob/ other.example.com/mike/ +*.com/*.jpg
 means:   mirror the two sites together (with shared links) and accept any .jpg files on .com sites
 
-example: httrack www.someweb.com/bob/bobby.html +* -r6
+example: httrack www.example.com/bob/bobby.html +* -r6
 means get all files starting from bobby.html, with 6 link-depth, and possibility of going everywhere on the web
 
-example: httrack www.someweb.com/bob/bobby.html --spider -P proxy.myhost.com:8080
-runs the spider on www.someweb.com/bob/bobby.html using a proxy
+example: httrack www.example.com/bob/bobby.html --spider -P proxy.example.com:8080
+runs the spider on www.example.com/bob/bobby.html using a proxy
 
 example: httrack --update
 updates a mirror in the current folder
@@ -385,15 +358,15 @@ the rest of us, I will now go through this listing one item at a time
 with examples... I will be here a while...
 
 <hr>
-<h2> Syntax </h2>
+<h2 id="syntax"> Syntax </h2>
 
-<pre><b><i>httrack <URLs> [-option] [+<FILTERs>] [-<FILTERs>] </i></b></pre>
+<pre><b><i>httrack &lt;URLs&gt; [-option] [+&lt;FILTERs&gt;] [-&lt;FILTERs&gt;] </i></b></pre>
 
 <p align=justify> The syntax of httrack is quite simple.  You specify
-the URLs you wish to start the process from (<URLS>), any options you
+the URLs you wish to start the process from (&lt;URLS&gt;), any options you
 might want to add ([-option], any filters specifying places you should
-([+<FILTERs>]) and should not ([-<FILTERs>]) go, and end the command
-line by pressing <enter>.  Httrack then goes off and does your bidding.
+([+&lt;FILTERs&gt;]) and should not ([-&lt;FILTERs&gt;]) go, and end the command
+line by pressing &lt;enter&gt;.  Httrack then goes off and does your bidding.
 For example:
 
 <pre><b><i>
@@ -413,11 +386,11 @@ site. Specifically, the defauls are:
   NN  name conversion type (0 *original structure, 1+: see below)
   LN  long names (L1 *long names / L0 8-3 conversion)
   K   keep original links (e.g. http://www.adr/link) (K0 *relative link)
-  o *generate output html file in case of error (404..) (o0 don't generate)
+  o *save the server's error pages (404..) (o0 discard them)
   X *purge old files after update (X0 keep delete)
   bN  accept cookies in cookies.txt (0=do not accept,* 1=accept)
   u check document type if unknown (cgi,asp..) (u0 don't check, * u1 check but /, u2 check always)
-  j *parse Java Classes (j0 don't parse)
+  j *parse scripts (j0 don't parse)
   sN  follow robots.txt and meta robots tags (0=never,1=sometimes,* 2=always)
   C  create/use a cache for updates and retries (C0 no cache,C1 cache is prioritary,* C2 test update before)
   f *log file mode
@@ -425,7 +398,7 @@ site. Specifically, the defauls are:
   pN priority mode: (* p3)  *3 save all files
   D  *can only go down into subdirs
   a  *stay on the same address
-  --mirror      <URLs> *make a mirror of site(s) (default)
+  --mirror      &lt;URLs&gt; *make a mirror of site(s) (default)
 </pre>
 
 <p align=justify> Here's what all of that means:
@@ -473,11 +446,11 @@ store them with the same names used on the web site.
 URLs within this web site are adjusted to point to the files in the
 mirror.
 
-<pre><b><i>  o *generate output html file in case of error (404..) (o0 don't generate) </i></b></pre>
+<pre><b><i>  o *save the server's error pages (404..) (o0 discard them) </i></b></pre>
 
-<p align=justify> IF there are errors in downloading, create a file that
-indicates that the URL was not found.  This makes browsing go a lot
-smoother.
+<p align=justify> IF a page cannot be downloaded, the error page the
+server sent is saved in its place, so a broken link still lands on the
+site's own 'not found' page.  This makes browsing go a lot smoother.
 
 <pre><b><i>  X *purge old files after update (X0 keep delete) </i></b></pre>
 
@@ -497,9 +470,9 @@ about your browser retaining them.
 <p align=justify> This causes different document types to be analyzed
 differently.
 
-<pre><b><i>  j *parse Java Classes (j0 don't parse) </i></b></pre>
+<pre><b><i>  j *parse scripts (j0 don't parse) </i></b></pre>
 
-<p align=justify> This causes Java class files to be parsed looking for
+<p align=justify> This causes scripts to be parsed looking for
 URLs.
 
 <pre><b><i>  sN  follow robots.txt and meta robots tags (0=never,1=sometimes,* 2=always) </i></b></pre>
@@ -542,7 +515,7 @@ subdirectories of the starting directory to be investigated.
 search started are to be collected.  Other sites they point to are not
 to be imaged. 
 
-<pre><b><i>  --mirror      <URLs> *make a mirror of site(s) (default) </i></b></pre>
+<pre><b><i>  --mirror      &lt;URLs&gt; *make a mirror of site(s) (default) </i></b></pre>
 
 <p align=justify> This indicates that the program should try to make a
 copy of the site as well as it can. 
@@ -571,7 +544,7 @@ www.all.net/bob/deeper/).
 
 <hr>
 
-<h2> A Thorough Going Over </h2>
+<h2 id="a-thorough-going-over"> A Thorough Going Over </h2>
 
 <p align=justify> Now that you have an introduction, it's time for a
 more though coverage.  This is where I go through each of the options
@@ -921,7 +894,7 @@ Links options:
  %P *extended parsing, attempt to parse all links, even in unknown tags or Javascript (%P0 don't use)
   n   get non-html files 'near' an html file (ex: an image located outside)
   t   test all URLs (even forbidden ones)
- %L <file> add all URL located in this text file (one URL per line)
+ %L &lt;file&gt; add all URL located in this text file (one URL per line)
 </i></b></pre>
 
 <p align=justify> The links options allow you to control what links are
@@ -1011,7 +984,7 @@ Build options:
   LN  long names (L1 *long names / L0 8-3 conversion)
   K   keep original links (e.g. http://www.adr/link) (K0 *relative link)
   x   replace external html links by error pages
-  o *generate output html file in case of error (404..) (o0 don't generate)
+  o *save the server's error pages (404..) (o0 discard them)
   X *purge old files after update (X0 keep delete)
   %x  do not include any password for external password protected websites (%x0 include) (--no-passwords)
   %q *include query string for local files (information only) (%q0 don't include) (--include-query-string)
@@ -1118,9 +1091,9 @@ deactivated byt his process.
 httrack http://www.shoesizes.com -O /tmp/shoesizes -x
 </i></b></pre>
 
-<p align=justify> This option prevents the generation of '404' error
-files to replace files that were not found even though there were URLs
-pointing to them.  It is useful for saving space as well as eliminating
+<p align=justify> This option keeps the server's '404' error pages out
+of the mirror, even though there were URLs pointing to the missing
+files.  It is useful for saving space as well as eliminating
 unnecessary files in operations where a working web site is not the
 desired result. 
 
@@ -1178,12 +1151,12 @@ accepted and sent back in order to allow access.
 Spider options:
  bN  accept cookies in cookies.txt (0=do not accept,* 1=accept)
  u   check document type if unknown (cgi,asp..) (u0 don't check, * u1 check but /, u2 check always)
- j   *parse Java Classes (j0 don't parse)
+ j   *parse scripts (j0 don't parse)
  sN  follow robots.txt and meta robots tags (0=never,1=sometimes,* 2=always)
  %h  force HTTP/1.0 requests (reduce update features, only for old servers or proxies)
  %B  tolerant requests (accept bogus responses on some servers, but not standard!)
  %s  update hacks: various hacks to limit re-transfers when updating
- %A  assume that a type (cgi,asp..) is always linked with a mime type (-%A php3=text/html) (--assume <param>)
+ %A  assume that a type (cgi,asp..) is always linked with a mime type (-%A php3=text/html) (--assume &lt;param&gt;)
 </i></b></pre>
 
 <p align=justify> By default, cookies are universally accepted and
@@ -1387,7 +1360,7 @@ web servers leave footprints in the browser.
 Browser ID:
   F  user-agent field (-F "user-agent name")
  %F  footer string in Html code (-%F "Mirrored [from host %s [file %s [at %s]]]"
- %l  preffered language (-%l "fr, en, jp, *" (--language <param>)
+ %l  preferred language (-%l "fr, en, jp, *" (--language &lt;param&gt;)
 </i></b></pre>
 
 <p align=justify> The user-agent field is used by browsers to determine
@@ -1729,7 +1702,7 @@ regularly (not buffered)
 </pre>
 
 <p align=justify> Use if if you want to use more than the maximum
-default number of filters, that is, 500 filters: -#F2000 for 2,000 filters
+default number of filters, that is, 200 filters: -#F2000 for 2,000 filters
 
 <pre>
  #h  Version info
@@ -1799,7 +1772,7 @@ based authentication)
 
 <pre><b><i>
 Command-line specific options:
-  V execute system command after each files ($0 is the filename: -V "rm \$0") (--userdef-cmd <param>)
+  V execute system command after each files ($0 is the filename: -V "rm \$0") (--userdef-cmd &lt;param&gt;)
 </i></b></pre>
 
 <p align=justify> This option is very nice for a wide array of actions
@@ -1811,7 +1784,7 @@ httrack http://www.shoesizes.com/bob/ -O /tmp/shoesizes -V "/bin/echo \$0"
 </i></b></pre>
 
 <pre>
- %U run the engine with another id when called as root (-%U smith) (--user <param>)
+ %U run the engine with another id when called as root (-%U smith) (--user &lt;param&gt;)
 </pre>
 
 <p align=justify> Change the UID of the owner when running as r00t
@@ -1856,14 +1829,14 @@ of other options that are commonly used.
 
 <pre><b><i>
 Shortcuts:
---mirror      <URLs> *make a mirror of site(s) (default)
---get         <URLs>  get the files indicated, do not seek other URLs (-qg)
---list   <text file>  add all URL located in this text file (-%L)
---mirrorlinks <URLs>  mirror all links in 1st level pages (-Y)
---testlinks   <URLs>  test links in pages (-r1p0C0I0t)
---spider      <URLs>  spider site(s), to test links: reports Errors & Warnings (-p0C0I0t)
---testsite    <URLs>  identical to --spider
---skeleton    <URLs>  make a mirror, but gets only html files (-p1)
+--mirror      &lt;URLs&gt; *make a mirror of site(s) (default)
+--get         &lt;URLs&gt;  get the files indicated, do not seek other URLs (-qg)
+--list   &lt;text file&gt;  add all URL located in this text file (-%L)
+--mirrorlinks &lt;URLs&gt;  mirror all links in 1st level pages (-Y)
+--testlinks   &lt;URLs&gt;  test links in pages (-r1p0C0I0t)
+--spider      &lt;URLs&gt;  spider site(s), to test links: reports Errors & Warnings (-p0C0I0t)
+--testsite    &lt;URLs&gt;  identical to --spider
+--skeleton    &lt;URLs&gt;  make a mirror, but gets only html files (-p1)
 --update              update a mirror, without confirmation (-iC2)
 --continue            continue a mirror, without confirmation (-iC1)
 --catchurl            create a temporary proxy to capture an URL or a form post URL
@@ -1907,7 +1880,7 @@ mirroring activity. This is useful for all sorts of mirror failures.
 
 <p align=justify> The catchurl option is a small application designed to
 catch difficult pages, like sites protected via formulas.  You can see
-at http://httrack.free.fr/HelpHtml/addurl.html a Windows description of
+in <a href="addurl.html">the add-URL documentation</a> a description of
 this application.  The purpose is to create a temporary proxy, that will
 catch the user request to a page, and then store this request to
 continue the mirror. For example,
@@ -1930,7 +1903,7 @@ as -%h).
 
 <hr>
 
-<h2> Filters </h2>
+<h2 id="filters"> Filters </h2>
 
 <p align=justify> Filters are normally placed at the end of the command
 line, but can be intermixed with other command line options if desired,
@@ -1976,12 +1949,12 @@ are in reverse priority order.  Here's an example:
 
     <table BORDER="1" CELLPADDING="2">
     <tr><td>
-    <b>+*.gif -image*.gif</b>
+    <b>+*.gif -*image*.gif</b>
     </td><td>
     Will accept all gif files BUT image1.gif,imageblue.gif,imagery.gif and so on
     </tr>
     <tr><td>
-    <b>-image*.gif +*.gif</b>
+    <b>-*image*.gif +*.gif</b>
     </td><td>
     Will accept all gif files, because the second pattern is prioritary (because it is defined AFTER the first one)
     </tr>
@@ -1996,11 +1969,11 @@ are in reverse priority order.  Here's an example:
       </tr>
       <tr>
         <td><b>*[file] or *[name]</b></td>
-        <td>any filename or name, e.g. not /,? and ; characters</td>
+        <td>a run of any characters, stopping at / or ?</td>
       </tr>
       <tr>
         <td><b>*[path]</b></td>
-        <td>any path (and filename), e.g. not ? and ; characters</td>
+        <td>a run of any characters, stopping at ? (/ is allowed)</td>
       </tr>
       <tr>
         <td><b>*[a,z,e,r,t,y]</b></td>
@@ -2008,7 +1981,7 @@ are in reverse priority order.  Here's an example:
       </tr>
       <tr>
         <td><b>*[a-z]</b></td>
-        <td>any letters</td>
+        <td>any lowercase letters from a to z (a range, and case-sensitive)</td>
       </tr>
       <tr>
         <td><b>*[0-9,a,z,e,r,t,y]</b></td>
@@ -2019,15 +1992,15 @@ are in reverse priority order.  Here's an example:
         <td>no characters must be present after</a></td>
       </tr>
 	<tr>
-		<td> <b> <filter>*[&lt NN]</b></td>
+		<td> <b> &lt;filter&gt;*[&lt NN]</b></td>
 		<td> size less than NN Kbytes</td>
 	</tr>
 	<tr>
-		<td> <b> <filter>*[&gt PP]</b></td>
+		<td> <b> &lt;filter&gt;*[&gt PP]</b></td>
 		<td> size more than PP Kbytes</td>
 	</tr>
 	<tr>
-		<td> <b> <filter>*[&lt NN &gt PP]</b></td>
+		<td> <b> &lt;filter&gt;*[&lt NN &gt PP]</b></td>
 		<td> size less than NN Kbytes and more than PP Kbytes</td>
 	</tr>
     </table>
@@ -2043,7 +2016,7 @@ generated automatically using the interface)
       </tr>
       <tr>
         <td><b>+*.com/*</b></td>
-        <td>This will accept all links that contains .com in them</td>
+        <td>This will accept links where .com is followed by a /, so a .com host but also a path such as www.example.org/dir.com/page</td>
       </tr>
       <tr>
         <td><b>-*cgi-bin* </b></td>
@@ -2051,11 +2024,11 @@ generated automatically using the interface)
       </tr>
       <tr>
         <td><b>+*.com/*[path].zip </b></td>
-        <td>This will accept all zip files in .com addresses</td>
+        <td>This will accept zip files on addresses starting with www. and containing .com/</td>
       </tr>
       <tr>
-        <td><b>-*someweb*/*.tar*</b></td>
-        <td>This will refuse all tar (or tar.gz etc.) files in hosts containing someweb</td>
+        <td><b>-*example*/*.tar*</b></td>
+        <td>This will refuse all tar (or tar.gz etc.) files in hosts containing example</td>
       </tr>
       <tr>
         <td><b>+*/*somepage*</b></td>
@@ -2079,7 +2052,7 @@ generated automatically using the interface)
 
 <hr>
 
-<h2> User Authentication Protocols </h2>
+<h2 id="user-authentication-protocols"> User Authentication Protocols </h2>
 
 <p align=justify> Smoe servers require user ID and password information
 in order to gain access.  In this example, the user ID smith with
@@ -2096,7 +2069,7 @@ capability is being provided through th URL capture features
 
 <hr>
 
-<h2> .httrackrc </h2>
+<h2 id="httrackrc"> .httrackrc </h2>
 
 <p align=justify> A file called '.httrackrc' can be placed in the
 current directory, or if not found there, in the home directory, to
@@ -2185,7 +2158,7 @@ added by the .httrackrc
 
 <hr>
 
-<h2> Release Notes </h2>
+<h2 id="release-notes"> Release Notes </h2>
 
 <p align=justify> Some things change between releases.  Here are some
 recent changes in httrack that may affect some of these options:
@@ -2223,7 +2196,7 @@ collision for large numbers of files.
 
 <hr>
 
-<h2> Some More Examples </h2>
+<h2 id="some-more-examples"> Some More Examples </h2>
 
 <p align=justify> Here are some examples of special purpose httrack
 command lines that might be useful for your situation.
@@ -2275,7 +2248,7 @@ httrack "http://www.somesite.com/~library/thing/thingmain.htm" -O /tmp/thing -R5
 
 <hr>
 
-<h2>General questions:</h2>
+<h2 id="general-questions">General questions:</h2>
 
 <p align=justify><b>Q:  The install is not working on NT without administrator rights! </b>
 
@@ -2327,7 +2300,7 @@ Un*x? </b>
 <p align=justify> A: No.  Unfortunately, we do not have enough time for
 that - if you want to help us, please write one!
 
-<hr><h2> Troubleshooting:</h2>
+<hr><h2 id="troubleshooting"> Troubleshooting:</h2>
 
 <p align=justify><b>Q: Only the first page is caught.  What's wrong?</b>
 </br> A: First, check the <b>hts-err.txt</b> error log file - this can
@@ -2451,12 +2424,10 @@ work.  We still are working to improve the mirror quality of HTTrack.
 
 <p align=justify><b>Q: Some Java applets do not work properly! </b>
 
-<p align=justify> A: Java applets may not work in some cases, for
-example if HTTrack failed to detect all included classes or files called
-within the class file.  Sometimes, Java applets need to be online,
-because remote files are directly caught.  Finally, the site structure
-can be incompatible with the class (always try to keep the original site
-structure when you want to get Java classes)
+<p align=justify> A: Java applets may not work in some cases, because
+HTTrack does not parse compiled class files to find the resources they
+load.  Java applets often need to be online anyway, since remote files
+are fetched directly at runtime.
 
 <p align=justify> If there is no way to make some classes work properly,
 you can exclude them with the filters.  They will be available, but only
@@ -2511,7 +2482,7 @@ considered as "newer" than the local ones..  even if there are
 identical! Unfortunately, there is no possibility to avoid this problem,
 which is strongly linked with the server abilities. 
 
-<p align=justify> <hr><h2> Questions concerning a mirror: </h2>
+<p align=justify> <hr><h2 id="questions-concerning-a-mirror"> Questions concerning a mirror: </h2>
 
 <p align=justify> <p align=justify><b>Q: I want to mirror a Web site,
 but there are some files outside the domain, too.  How to retrieve them?
@@ -2630,7 +2601,7 @@ allow that.
 <p align=justify><b>Q: How can I remove these annoying <b>&lt;!--
 Mirrored from...  --&gt;</b> from html files? </b>
 
-<p align=justify> A: Use the footer option (-&F, or see the WinHTTrack
+<p align=justify> A: Use the footer option (-%F, or see the WinHTTrack
 options)
 
 <p align=justify><b>Q: Do I have to select between ascii/binary transfer
@@ -2668,9 +2639,11 @@ files? </b>
 <p align=justify> A: Yes.  See the build options (-N, or see the
 WinHTTrack options)
 
-<p align=justify><b>Q: If there any SOCKS support? </b>
+<p align=justify><b>Q: Is there any SOCKS support? </b>
 
-<p align=justify> A: Not yet!
+<p align=justify> A: Yes.  HTTrack supports SOCKS5 and HTTP CONNECT
+proxies: <tt>-P socks5://host:port</tt> or <tt>-P connect://host:port</tt>.
+For an authenticated proxy, add <tt>user:pass@</tt> before the host.
 
 <p align=justify><b>Q: What's this hts-cache directory? Can I remove it?
 </b>
@@ -2695,25 +2668,19 @@ too many sessions, or your system may be unable to provide the necessary
 resources.  Try redusing this number - for example using the -c2 options
 for only 2 simultaneous sesions.
 
-<!-- ==================== Start epilogue ==================== -->
-		</td>
-		</tr>
-		</table>
-	</td>
-	</tr>
-	</table>
-</td>
-</tr>
-</table>
+<!-- doc-chrome:bottom -->
+</main>
+</div>
 
-<table width="76%" border="0" align="center" valign="bottom" cellspacing="0" cellpadding="0">
-	<tr>
-	<td id="footer"><small>&copy; 2007 Xavier Roche & other contributors - Web Design: Leto Kauler.</small></td>
-	</tr>
-</table>
+<dialog id="zoom" aria-label="Enlarged image"><img src="" alt=""></dialog>
+<!-- /doc-chrome:bottom -->
+
+<!-- doc-chrome:footer -->
+<footer>
+	<small>&copy; 1998-2026 Xavier Roche &amp; other contributors - Web Design: Leto Kauler.</small>
+	<a href="https://endsoftwarepatents.org/innovating-without-patents/" target="_blank" rel="noopener" title="This site is innovating without patents!"><img src="images/esp_chicklet.png" width="91" height="17" alt="End Software Patents"></a>
+</footer>
+<!-- /doc-chrome:footer -->
 
 </body>
-
 </html>
-
-

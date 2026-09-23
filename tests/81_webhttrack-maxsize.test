@@ -1,0 +1,85 @@
+#!/bin/bash
+#
+# The wizard's size fields must render as distinct caps: sizemax is -M, othermax
+# then maxhtml share -m.
+
+set -euo pipefail
+
+# shellcheck source=tests/webhttracklib.sh
+. "${0%"${0##*/}"}./webhttracklib.sh"
+
+htsserver_require
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/webhttrack_maxsize.XXXXXX") || fail "no tmpdir"
+cleanup_push htsserver_cleanup_dir "${work}"
+
+htsserver_start --home "${work}"
+
+# Audit what step4.html renders back; without command_do nothing is launched.
+htsserver_python - "${HTS_URL}" <<'PY' || fail "wizard rendered the wrong options (see above)"
+import sys
+
+from webtestlib import Session, textarea
+
+s = Session(sys.argv[1])
+html, other, site = "111111", "222222", "333333"
+
+
+def want(ok, msg, ctx):
+    if not ok:
+        sys.exit("%s\nrendered:%s" % (msg, ctx))
+
+
+page = s.post("step4.html", [("maxhtml", html), ("othermax", other),
+                             ("sizemax", site), ("dos", "2")])
+cmd = textarea(page, "command")
+want("--max-size=" + site in cmd, "site cap not emitted as --max-size", cmd)
+want("--max-files=" + site not in cmd, "site cap still an --max-files", cmd)
+# Positive controls: both per-file caps still ride -m, one option each.
+want("--max-files=" + other in cmd, "non-HTML cap not emitted as --max-files",
+     cmd)
+want("--max-files=," + html in cmd, "HTML cap not emitted as --max-files=,",
+     cmd)
+want(cmd.count("--max-files=") == 2, "unexpected --max-files count", cmd)
+want(cmd.index("--max-files=" + other) < cmd.index("--max-files=," + html),
+     "the bare --max-files must precede the --max-files=, form", cmd)
+
+# winprofile.ini feeds the same three caps to the Windows GUI, one key each.
+ini = textarea(page, "winprofile").replace("\r\n", "\n")  # the ini is CRLF
+want("\nDos=2" in ini, "Dos not written from the dos field", ini)
+want("\nMaxHtml=" + html + "\n" in ini, "MaxHtml not written from maxhtml", ini)
+want("\nMaxOther=" + other + "\n" in ini, "MaxOther not written from othermax",
+     ini)
+want("\nMaxAll=" + site + "\n" in ini, "MaxAll not written from sizemax", ini)
+
+# A bare --max-files= (an unguarded empty field) parses as -m with no digits,
+# silently clearing the html cap.
+page = s.post("step4.html", [("maxhtml", ""), ("othermax", ""), ("sizemax", ""),
+                             ("dos", "2")])
+cmd = textarea(page, "command")
+want("--max-rate=" in cmd, "empty size fields rendered no command line", cmd)
+want("--max-files" not in cmd and "--max-size" not in cmd,
+     "empty size fields still rendered a size option", cmd)
+
+# A mistyped ${LANG_OK] key renders the OK button's label empty.
+opts = s.get("option2b.html")
+want("LANG_OK" not in opts, "unexpanded LANG_OK in option2b.html", "")
+want('<input type="submit" value="OK"' in opts, "no OK label in option2b.html",
+     "")
+PY
+
+htsserver_cleanup_dir "${work}"
+
+# A bare -m<n> resets the html limit, so only the bare-then-comma order keeps
+# both caps live. basic.html is 487 bytes, well past the 10-byte html cap.
+crawl() {
+    bash "${HTS_DISTDIR}/tests/local-crawl.sh" "$@"
+}
+crawl --errors 1 --log-found 'File too big' \
+    httrack 'BASEURL/simple/basic.html' '--max-files=,10'
+crawl --errors 1 --log-found 'File too big' \
+    httrack 'BASEURL/simple/basic.html' '--max-files=500000' '--max-files=,10'
+crawl --errors 0 --found 'simple/basic.html' --log-not-found 'File too big' \
+    httrack 'BASEURL/simple/basic.html' '--max-files=,10' '--max-files=500000'
+
+echo "PASS"

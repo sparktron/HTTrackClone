@@ -3,26 +3,6 @@
 # Uncomment this to turn on verbose mode.
 #export DH_VERBOSE=1
 
-# *** Patch for s390, mips ..
-# It seems that htscore.c can not compile on several archs, due to compiler
-# capacity limits. These lines shall be removed when gcc is upgraded.
-# See discussions on 'Assembler messages: Branch out of range'
-# Addition (04/2004): gcc-3.3 on arm fcks up with htscoremain.c and -O3 (..)
-ifeq ($(DEB_HOST_ARCH),$(findstring $(DEB_HOST_ARCH),s390 mips mipsel m68k arm))
-	CFLAGS += -DNOSTRDEBUG
-endif
-
-DEB_CFLAGS_MAINT_APPEND=-O3
-
-# DEB_BUILD_OPTIONS flags
-ifneq (,$(findstring noopt,$(DEB_BUILD_OPTIONS)))
-	CFLAGS += -g3
-endif
-
-ifeq (,$(findstring nostrip,$(DEB_BUILD_OPTIONS)))
-	INSTALL_PROGRAM += -s
-endif
-
 # as suggested by Simon McVittie
 # (https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=744380)
 override_dh_auto_test:
@@ -34,7 +14,14 @@ configure-stamp:
 
 	dh_autoreconf
 	# note: dpkg-buildflags to be removed when compat=9
-	dh_auto_configure -- --enable-online-unit-tests=auto $(shell dpkg-buildflags --export=configure)
+	# Policy 4.9 forbids network access during a build, and "auto" made it a lottery:
+	# hurd-i386 FTBFS'd on a crawl whose DNS went away after the probe had said yes.
+	# --disable-auto-features makes the flags after it the whole optional set, so a
+	# dropped library Build-Depends FTBFSs instead of shipping a binary that decodes less.
+	dh_auto_configure -- --disable-online-unit-tests \
+		--disable-auto-features --with-brotli --with-zstd --enable-backtrace \
+		--with-iconv \
+		$(shell dpkg-buildflags --export=configure)
 
 	touch configure-stamp
 
@@ -44,7 +31,7 @@ build-indep:
 
 build-arch: build-stamp
 
-build-stamp: configure-stamp 
+build-stamp: configure-stamp
 	dh_testdir
 	dh_auto_build
 	dh_auto_test
@@ -66,20 +53,8 @@ install: build
 	dh_auto_install --destdir=$(CURDIR)/debian/httrack
 	##$(MAKE) install DESTDIR=$(CURDIR)/debian/httrack
 
-	# place html files (doc, webhttrack files)
-
-	# remove symlink created by html/Makefile's install-data-hook
-	rm $(CURDIR)/debian/httrack/usr/share/httrack/html
-	# and put back in place data
-	mv $(CURDIR)/debian/httrack/usr/share/doc/httrack \
-		$(CURDIR)/debian/httrack/usr/share/httrack/html
-	# create symlink on the other side
-	mkdir $(CURDIR)/debian/httrack/usr/share/doc/httrack
-	ln -s ../../httrack/html \
-		$(CURDIR)/debian/httrack/usr/share/doc/httrack/html
-	# and put in place the two outer files
-	mv $(CURDIR)/debian/httrack/usr/share/httrack/html/httrack-doc.html \
-		$(CURDIR)/debian/httrack/usr/share/doc/httrack/httrack-doc.html
+	# dh_installchangelogs already ships this as changelog.gz (duplicate-changelog-files).
+	rm $(CURDIR)/debian/httrack/usr/share/doc/httrack/history.txt
 
 	# remove *.la (https://wiki.debian.org/ReleaseGoals/LAFileRemoval)
 	rm -f $(CURDIR)/debian/httrack/usr/lib/$(DEB_HOST_MULTIARCH)/*.la
@@ -114,7 +89,9 @@ binary-indep: build install
 	dh_installdocs -i
 	dh_installchangelogs -i history.txt
 	dh_link -i
-	dh_compress -i
+	# -X.txt: the manual links greetings.txt, license.txt and fonts/OFL.txt by
+	# name, and the last two are over dh_compress's 4k threshold.
+	dh_compress -i -X.txt
 	dh_fixperms -i
 	dh_installdeb -i
 	dh_gencontrol -i
@@ -130,12 +107,12 @@ binary-arch: build install
 	dh_installchangelogs -a history.txt
 	dh_link -a
 	dh_strip -a
-	dh_compress -a
+	dh_compress -a -X.txt
 	dh_fixperms -a
 	dh_makeshlibs -a -X/usr/lib/$(DEB_HOST_MULTIARCH)/httrack/libtest --version-info
 	dh_installdeb -a
 	# we depend on the current version (ABI may change)
-	dh_shlibdeps -a -ldebian/libhttrack2/usr/lib/$(DEB_HOST_MULTIARCH)
+	dh_shlibdeps -a -ldebian/libhttrack3/usr/lib/$(DEB_HOST_MULTIARCH)
 	dh_gencontrol -a
 	dh_md5sums -a
 	dh_builddeb -a

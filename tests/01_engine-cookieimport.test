@@ -1,0 +1,15 @@
+#!/bin/bash
+#
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# Drives -#test=cookieimport: load a cookie jar (and, on Windows, copied IE
+# cookies *@*.txt) from a long, non-ASCII folder through the UTF-8/long-path
+# file wrappers (#133,#630).
+dir=$(mktemp -d)
+cleanup_push rm -rf "$dir"
+
+selftest_queue_base_lengths tail "-char non-ASCII dir: OK" cookieimport "$dir"
+selftest_run_queued

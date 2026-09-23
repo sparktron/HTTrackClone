@@ -1,0 +1,100 @@
+#!/bin/bash
+#
+
+# Config-file alias loading (no network). A .httrackrc in the working directory
+# is read by optinclude_file(), whose cmdl_ins() inserts each alias-expanded
+# token into the token block. Two properties are checked:
+#   1. No truncation: a long user-agent alias reaches doit.log intact.
+#      user-agent expands to two tokens (-F <value>), so it exercises both
+#      cmdl_ins insertions.
+#   2. The block grows: an rc file whose expansions outrun the first chunk many
+#      times over is read to the end, and its tokens still reach doit.log.
+
+# set -e with the intentional-nonzero httrack runs guarded explicitly (their
+# status is inspected by hand).
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# Resolve httrack to an absolute path before we cd: PATH may hold a build-relative
+# entry that would not resolve from the temp directory.
+bin=$(command -v httrack) || fail "httrack not found on PATH"
+case "$bin" in
+/*) ;;
+*) bin="$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")" ;;
+esac
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/httrack_rcfile.XXXXXX") || exit 1
+cleanup_push rm -rf "$tmp"
+
+# HTS_HTTRACKRC is ".httrackrc" on POSIX but "httrackrc" on Windows: write both,
+# each platform reads the one it knows.
+write_rc() {
+    cat >"$1/.httrackrc"
+    cp "$1/.httrackrc" "$1/httrackrc"
+}
+
+# --- 1. alias token survives the bound intact -------------------------------
+d1="$tmp/intact"
+mkdir -p "$d1"
+echo '<html><body>hello</body></html>' >"$d1/index.html"
+
+# optinclude_file() lowercases each config line, so the marker is lowercase to
+# survive the comparison verbatim.
+marker='zzz_rcfile_marker_0123456789_abcdefghijklmnopqrstuvwxyz_intact'
+printf 'user-agent=%s\n' "$marker" | write_rc "$d1"
+
+# Run with no -O so the working-directory .httrackrc is loaded (an -O path makes
+# the engine skip the rc files). Output lands in the temp dir. Guard the run so a
+# nonzero exit is captured for the assertion instead of tripping set -e.
+rc=0
+(cd "$d1" && "$bin" "file://$d1/index.html" --quiet -n >.log 2>&1) || rc=$?
+
+test "$rc" -eq 0 || fail "rc-file crawl exited $rc"
+assert_file "$d1/hts-cache/doit.log" "no doit.log, so the rc file was not processed"
+# A truncated copy would cut the token; require the full -F value.
+grep -q -- "-F $marker" "$d1/hts-cache/doit.log" || {
+    echo "FAIL: user-agent alias missing or truncated in doit.log"
+    head -1 "$d1/hts-cache/doit.log"
+    exit 1
+}
+
+# --- 2. the block grows past its first chunk --------------------------------
+d2="$tmp/grow"
+mkdir -p "$d2"
+echo '<html><body>hi</body></html>' >"$d2/index.html"
+
+# Two tokens of ~200 bytes per line, so 2000 lines need some 400 KB against a
+# 32 KB chunk floor. The first marker is read back after a dozen growths.
+val=$(printf 'a%.0s' $(seq 1 200))
+first='zzz_rcfile_marker_first_line_grown'
+last='zzz_rcfile_marker_last_line_grown'
+{
+    printf 'user-agent=%s\n' "$first"
+    for _ in $(seq 1 2000); do
+        printf 'user-agent=%s\n' "$val"
+    done
+    printf 'user-agent=%s\n' "$last"
+} | write_rc "$d2"
+
+rc=0
+(cd "$d2" && "$bin" "file://$d2/index.html" --quiet -n >.log 2>&1) || rc=$?
+
+# A block that cannot grow aborts in the bounded copy (exit 134).
+test "$rc" -eq 0 || {
+    echo "FAIL: large rc-file crawl exited $rc, the token block did not grow"
+    tail -3 "$d2/.log"
+    exit 1
+}
+assert_file "$d2/hts-cache/doit.log" "no doit.log, so the rc file was not processed"
+# Clipping a token to the room left, instead of growing, would keep both
+# markers: only the tokens straddling a chunk boundary lose bytes. Line 1 alone
+# is the command line, so the prose below it cannot answer for a token.
+short=$(sed -n '1p' "$d2/hts-cache/doit.log" | tr ' ' '\n' |
+    awk -v n="${#val}" '/^a+$/ && length($0) != n {c++} END {print c + 0}')
+test "$short" -eq 0 || fail "$short user-agent value(s) reached doit.log clipped"
+for marker in "$first" "$last"; do
+    grep -q -- "-F $marker" "$d2/hts-cache/doit.log" || fail "$marker never reached the rebuilt command line"
+done
+
+exit 0

@@ -1,0 +1,30 @@
+#!/bin/bash
+# An ARC entry's HTTP reason phrase must survive a proxytrack --convert
+# round-trip; it used to be clipped to sizeof(char*) - 1 bytes.
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+# shellcheck source=tests/arclib.sh
+. "${0%"${0##*/}"}./arclib.sh"
+
+dir=$(mktemp -d)
+cleanup_push rm -rf "$dir"
+
+printf 'HTTP/1.1 404 Not Found Here At All\r\nContent-Type: text/html\r\nLast-Modified: Wed, 01 Jan 2025 00:00:00 GMT\r\nContent-Length: 5\r\n\r\n' >"$dir/hdr"
+printf 'hello' >"$dir/body"
+
+{
+    arc_filedesc
+    arc_record http://example.com/page.html text/html 404 "$dir/hdr" "$dir/body"
+} >"$dir/in.arc"
+
+proxytrack --convert "$dir/out.arc" "$dir/in.arc" >/dev/null 2>&1
+
+# HTTP/1.0 is the writer's own prefix (the input says 1.1), so a verbatim copy
+# of the input cannot satisfy this match.
+grep -aqF 'HTTP/1.0 404 Not Found Here At All' "$dir/out.arc" || {
+    echo "reason phrase lost in the ARC round-trip:" >&2
+    grep -a '^HTTP/' "$dir/out.arc" >&2 || echo "(no status line at all)" >&2
+    exit 1
+}

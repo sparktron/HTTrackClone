@@ -1,0 +1,24 @@
+#!/bin/bash
+#
+# A user stop must drop every slot, waiting to connect (#1073) or receiving
+# (#1110), instead of holding the drain for the whole --timeout. All but the
+# FTP one, whose worker thread is still writing through it.
+
+set -euo pipefail
+
+command -v httrack >/dev/null || {
+    echo "could not find httrack" >&2
+    exit 1
+}
+
+out=$(httrack -#test=backstop) || {
+    status=$?
+    echo "$out"
+    # 77: the network answers for TEST-NET-1, so no connect stalls here.
+    exit "$status"
+}
+echo "$out"
+case "$out" in
+*"backstop self-test: OK") ;;
+*) exit 1 ;;
+esac

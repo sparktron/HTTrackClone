@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -90,23 +90,37 @@ typedef struct lien_adrfilsave lien_adrfilsave;
 #endif
 
 // note: 'headers' can either be null, or incomplete (only r member filled)
+// note: 'sback' can be null: the type-probing request is then skipped
 int url_savename(lien_adrfilsave *const afs,
                  lien_adrfil *const former,
                  const char *referer_adr, const char *referer_fil, 
                  httrackp * opt, struct_back * sback, cache_back * cache,
                  hash_struct * hash, int ptr, int numero_passe,
                  const lien_back * headers);
-void standard_name(char *b, size_t b_size, const char *dot_pos,
-                   const char *nom_pos,
-                   const char *fil_complete,
+void standard_name(char *b, size_t bsize, const char *dot_pos,
+                   const char *nom_pos, const char *fil_complete,
                    int short_ver);
-void url_savename_addstr(char *d, const char *s);
+/* Append s to d (mapping '\' to '/'), clipped to dsize bytes including the NUL.
+   Clips rather than aborts: s is a crawled link, hostile by construction. */
+void url_savename_addstr(char *d, size_t dsize, const char *s);
+/* Append sep+s to d whole, cutting d's tail (never inside a UTF-8 character)
+   for room, so the suffix always survives; nothing happens if it alone fills
+   dsize. */
+void url_savename_addtail(char *d, size_t dsize, const char *sep,
+                          const char *s);
+/* Leading len bytes of path into buf; returns how many were read (0 on any
+   failure), so a caller reading nothing decides for itself what that means. */
+size_t hts_read_file_head(const char *path, void *buf, size_t len);
+
+/* Contested wire-vs-ext verdict that a body sniff could settle (htssniff.h). */
+int hts_ext_sniff_wanted(httrackp *opt, const char *wiremime, const char *file);
 char *url_md5(char *digest_buffer, const char *fil_complete);
 void url_savename_refname(const char *adr, const char *fil, char *filename);
 char *url_savename_refname_fullpath(httrackp * opt, const char *adr,
                                     const char *fil);
-void url_savename_refname_remove(httrackp * opt, const char *adr,
-                                 const char *fil);
+/* Remove the temp-ref for (adr,fil); HTS_TRUE if it was removed. */
+hts_boolean url_savename_refname_remove(httrackp *opt, const char *adr,
+                                        const char *fil);
 #endif
 
 #endif

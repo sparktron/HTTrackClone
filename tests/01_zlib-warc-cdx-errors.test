@@ -1,0 +1,20 @@
+#!/bin/bash
+#
+# An index that cannot be written, or that would be left empty next to a
+# rewritten archive, must say so; a first run with nothing to index must not.
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+httrack_bin=$(httrack_path)
+
+scratch=$(mktemp -d)
+cleanup_push rm -rf "$scratch"
+
+out=$("$httrack_bin" -O /dev/null -#test=warc-cdx-errors "$scratch/")
+echo "$out"
+case "$out" in
+*": OK") ;;
+*) exit 1 ;;
+esac

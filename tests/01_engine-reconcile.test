@@ -1,0 +1,16 @@
+#!/bin/bash
+#
+# Cache generation reconcile policies (httrack -#test=reconcile <dir>):
+# promote a stranded old generation, keep the larger one after an aborted
+# run, and restore the old one when an update transferred nothing.
+
+set -eu
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+dir=$(mktemp -d)
+cleanup_push rm -rf "$dir"
+
+out=$(httrack -#test=reconcile "$dir")
+
+test "$out" = "cache-reconcile: OK" || fail "expected 'cache-reconcile: OK', got: $out"

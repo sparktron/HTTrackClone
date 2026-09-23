@@ -1,0 +1,62 @@
+#!/bin/bash
+#
+# A link carrying &#13;&#10; keeps raw CR/LF past the parser's control-byte
+# escape, so a request field built from it can start a header line of the
+# site's choosing. Graded on the wire bytes: a log cannot show a split line.
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+python=$(find_python) || skip "python3 missing"
+
+server=$(nativepath "$top_srcdir/tests/header-injection-server.py")
+checker=$(nativepath "$top_srcdir/tests/header-injection-check.py")
+tmpdir=$(mktemp -d)
+serverpid=
+
+cleanup() {
+    stop_server "$serverpid"
+    rm -rf "$tmpdir"
+}
+cleanup_push cleanup
+
+start_probe() {
+    local tag="$1"
+    # nativepath: the wire log is python.exe's to write under wsl2, not the shell's
+    "$python" "$server" "$(nativepath "$tmpdir/$tag.wire")" \
+        >"$tmpdir/$tag.out" 2>"$tmpdir/$tag.err" &
+    serverpid=$!
+    port=$(discover_server_port "$tmpdir/$tag.out" "$serverpid") || exit 1
+}
+
+# a crawl may end non-zero, but never on the deadline or on a signal: an
+# assertf abort would otherwise be graded on whatever it managed to send
+crawl() {
+    local rc=0
+    run_with_timeout 90 httrack "$@" >>"$tmpdir/log" 2>&1 || rc=$?
+    test "$rc" -ne 124 || fail "crawl hit the deadline"
+    test "$rc" -le 128 || fail "crawl ended abnormally ($rc)"
+}
+
+# 1. Referer: the poisoned page links onward, so its own URL is the referer of
+# the next request. No proxy involved; this is a plain crawl.
+start_probe direct
+crawl "http://127.0.0.1:$port/" -O "$tmpdir/m1" \
+    -c1 --robots=0 --retries=0 --quiet -%v0
+stop_server "$serverpid"
+serverpid=
+"$python" "$checker" "$(nativepath "$tmpdir/direct.wire")" direct "$port" ||
+    fail_dump "the direct crawl's wire failed the header checks" "$tmpdir/log"
+
+# 2. Host, the proxy absolute-URI request line and its ftp:// variant. Only
+# reachable through an http proxy: without one the poisoned authority fails to
+# resolve and no request is ever built.
+start_probe proxy
+crawl "http://start.example/" '+*' -P "127.0.0.1:$port" \
+    -O "$tmpdir/m2" -c1 --robots=0 --retries=0 --quiet -%v0
+stop_server "$serverpid"
+serverpid=
+"$python" "$checker" "$(nativepath "$tmpdir/proxy.wire")" proxy ||
+    fail_dump "the proxied crawl's wire failed the header checks" "$tmpdir/log"

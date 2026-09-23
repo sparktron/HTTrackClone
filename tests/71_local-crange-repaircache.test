@@ -1,0 +1,85 @@
+#!/bin/bash
+# A resume that has to repair the cache first must still reject an unusable 206
+# and refetch whole. Pass 1 leaves a partial + temp-ref; truncating new.zip past
+# its last local entry drops the central directory, so unzOpen fails and the
+# repair path runs. This does not exercise #581's fix, despite the shared
+# scenario: on POSIX the restart removes the partial and the temp-ref itself, so
+# the refetch carries no Range either way. Test 235 is the one with teeth there.
+set -u
+
+# shellcheck source=tests/crawllib.sh
+. "${0%"${0##*/}"}./crawllib.sh"
+
+python=$(find_python) || skip "python3 not found"
+
+# Pass 1 has to be interrupted mid-download to leave the temp-ref, and MSYS
+# cannot signal a native exe.
+skip_on_windows "Windows: the pass-1 interrupt needs a signal MSYS cannot deliver"
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/httrack_crangerep.XXXXXX") || exit 1
+crawlpid=
+cleanup() {
+    test -n "$crawlpid" && kill -9 "$crawlpid" 2>/dev/null
+    rm -rf "$tmpdir"
+}
+cleanup_push cleanup
+
+local_server_start
+
+require_httrack
+out="${tmpdir}/crawl"
+mkdir "$out"
+common=(-O "$out" --quiet --disable-security-limits --robots=0 --timeout=30 --retries=1 -c1)
+refdir="${out}/hts-cache/ref"
+newzip="${out}/hts-cache/new.zip"
+
+# --- pass 1: crawl, interrupt once the blob download is underway -------------
+printf '[pass 1: interrupt mid-download] ..\t'
+httrack "${common[@]}" "${BASEURL}/crange206mem/index.html" >"${tmpdir}/log1" 2>&1 &
+crawlpid=$!
+for _ in $(seq 1 300); do
+    test -n "$(find "$refdir" -name '*.ref' 2>/dev/null)" && break
+    kill -0 "$crawlpid" 2>/dev/null || break
+    sleep 0.1
+done
+sleep 0.3
+kill -TERM "$crawlpid" 2>/dev/null
+wait "$crawlpid" 2>/dev/null
+crawlpid=
+test -n "$(find "$refdir" -name '*.ref' 2>/dev/null)" || fail "no temp-ref survived pass 1; cannot drive the resume"
+echo "OK (temp-ref present)"
+
+# --- damage the cache: drop the central directory a hard kill never wrote ----
+printf '[damage new.zip -> forces repair] ..\t'
+"$python" - "$newzip" <<'PY' || exit 1
+import os, sys
+path = sys.argv[1]
+data = open(path, "rb").read()
+cut = data.find(b"PK\x01\x02")  # first central-directory header
+if cut <= 0:
+    sys.exit("no central directory to drop in %s" % path)
+os.truncate(path, cut)
+PY
+echo "OK"
+
+# --- pass 2: --continue -> repair -> resume -> hostile 206 -> refetch whole ---
+printf '[pass 2: repair, reject range, refetch] ..\t'
+rc=0
+local_crawl --log "${tmpdir}/log2" "${common[@]}" --continue "${BASEURL}/crange206mem/index.html" || rc=$?
+test "$rc" -eq 0 ||
+    fail_dump "httrack exited $rc" "${tmpdir}/log2"
+echo "OK (terminated)"
+
+# The repair path must actually have run, else this is just a copy of test 48.
+printf '[cache repair fired] ..\t'
+grep -q 'damaged cache' "${out}/hts-log.txt" 2>/dev/null || fail "repair path did not run; damage was ineffective"
+echo "OK"
+
+blob=$(find "$out" -name blob.bin 2>/dev/null | head -1)
+full=6008 # len(CRANGE206_BODY) = len("CR206DAT") + 6000
+
+printf '[file recovered whole] ..\t'
+test -s "$blob" || fail "blob.bin missing after the repaired-cache resume"
+got=$(wc -c <"$blob")
+test "$got" -eq "$full" || fail "blob.bin is ${got} bytes, expected ${full}"
+echo "OK (${got} bytes)"

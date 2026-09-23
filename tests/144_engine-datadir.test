@@ -1,0 +1,13 @@
+#!/bin/bash
+#
+# A relocated install must read its own templates rather than silently falling
+# back to the compiled-in defaults (#894).
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/datadir.XXXXXX") || fail "no tmpdir"
+cleanup_push rm -rf "${work}"
+
+httrack -#test=datadir "${work}"

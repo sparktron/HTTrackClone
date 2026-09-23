@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -34,12 +34,11 @@ Please visit our Website: http://www.httrack.com
 #define HTS_DEFTHREAD
 
 #include "htsglobal.h"
+#include "httrack-library.h"
 #ifndef _WIN32
 #include <pthread.h>
 #endif
-#ifdef _WIN32
-#include "windows.h"
-#endif
+#include "htswin32.h"
 #ifndef USE_BEGINTHREAD
 #error needs USE_BEGINTHREAD
 #endif
@@ -63,6 +62,28 @@ struct htsmutex_s {
 
 /* Library internal definictions */
 HTSEXT_API int hts_newthread(void (*fun) (void *arg), void *arg);
+
+/* Also runs 'tail(arg)' on the worker once the body is over, and only when this
+   returns 0. A thread runner (see hts_set_thread_runner()) that recovers from a
+   fault returns without running the rest of the body, so cleanup the engine
+   needs goes here. Not exported, because no caller outside the library spawns a
+   worker. */
+HTS_CHECK_RESULT int hts_newthread_tail(void (*fun)(void *arg), void *arg,
+                                        void (*tail)(void *arg));
+
+/* HTS_TRUE where a thread runner recovered from a fault, so a worker stopped
+   halfway through its body. Read on the crawl thread, which turns it into a
+   stop in back_check_worker_fault(). */
+hts_boolean hts_worker_faulted(void);
+/* Forget any fault, and take the next round so that a worker an earlier mirror
+   abandoned cannot abort this one. Called by a mirror as it starts. */
+void hts_worker_fault_clear(void);
+
+/* Extends per-thread state to the workers: 'enter' runs at each one's start,
+   'leave' at its end with the cookie 'enter' returned. Set before spawning; a
+   NULL in either clears the pair, since neither hook is useful alone. */
+HTSEXT_API void hts_set_thread_hooks(void *(*enter)(void),
+                                     void (*leave)(void *cookie));
 
 HTSEXT_API void htsthread_wait_n(int n_wait);
 

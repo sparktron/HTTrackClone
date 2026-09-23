@@ -1,0 +1,56 @@
+#!/bin/bash
+#
+# A non-ASCII -O output dir posted through the web UI must land under the UTF-8
+# directory and not an ISO-8859-1 twin (#629). The crawl target is a dead port:
+# only the directory name is under test, and htsserver creates it from the
+# decoded path before any fetch.
+
+set -euo pipefail
+
+# shellcheck source=tests/webhttracklib.sh
+. "${0%"${0##*/}"}./webhttracklib.sh"
+
+htsserver_require
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/webhttrack_charset.XXXXXX") || fail "no tmpdir"
+cleanup_push htsserver_cleanup_dir "${work}"
+
+htsserver_start --home "${work}"
+
+# Post a "start" whose -O dir is 'café', in the form's UTF-8.
+"${HTS_PYTHON}" - "${HTS_URL}" "${work}" <<'PY'
+import re, sys, urllib.parse, urllib.request
+
+url, work = sys.argv[1], sys.argv[2]
+outdir = work + "/caf\xe9"  # 'café'; the browser sends it UTF-8 encoded
+# Port 1 refuses at once: only the decoded -O dir matters, not the fetch.
+cmd = "httrack --quiet --robots=0 http://127.0.0.1:1/x.html -O " + outdir
+# The body is refused without the session id the server renders into each form.
+# Note the wizard page is under /server/; a bare /step4.html is the doc page.
+page = urllib.request.urlopen(url + "server/step4.html", timeout=20).read()
+m = re.search(rb'name="sid" value="([0-9a-f]+)"', page)
+if not m:
+    raise SystemExit("no session id in server/step4.html")
+fields = [("sid", m.group(1).decode()),
+          ("path", work), ("projname", "proj"), ("command_do", "start"),
+          ("winprofile", "x"), ("command", cmd)]
+body = "&".join("%s=%s" % (k, urllib.parse.quote(v, safe="", encoding="utf-8"))
+                for k, v in fields)
+req = urllib.request.Request(url + "step4.html", data=body.encode("ascii"),
+                             method="POST")
+urllib.request.urlopen(req, timeout=20).read()
+PY
+
+# The crawl runs inside htsserver; wait for the -O dir, then check it chose the
+# UTF-8 name and not the ISO-8859-1 twin.
+utf8dir="${work}/café"
+latin1dir="${work}/caf"$'\xe9'
+for _ in $(seq 1 80); do
+    test -e "${utf8dir}" && break
+    kill -0 "${HTS_BGPID}" 2>/dev/null || break
+    sleep 0.25
+done
+test -e "${utf8dir}" || fail "-O dir never landed as UTF-8 café/: $(find "${work}" -maxdepth 2 2>/dev/null)"
+test ! -e "${latin1dir}" || fail "-O dir created as the ISO-8859-1 twin instead"
+
+echo "PASS"

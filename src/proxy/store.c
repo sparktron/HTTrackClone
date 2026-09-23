@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -26,6 +28,8 @@ Please visit our Website: http://www.httrack.com
 /* Author: Xavier Roche                                         */
 /* ------------------------------------------------------------ */
 
+#include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +54,8 @@ Please visit our Website: http://www.httrack.com
 
 #include "htscore.h"
 #include "htsback.h"
+#include "htslib.h" /* hts_effective_mime */
+#include "htsio.h"
 
 #include "store.h"
 #include "proxystrings.h"
@@ -160,7 +166,7 @@ static _PT_Index_Functions _IndexFuncts[] = {
    PT_LookupCache__Old, NULL},
   {PT_LoadCache__Arc, PT_Index_Delete__Arc, PT_ReadCache__Arc,
    PT_LookupCache__Arc, PT_SaveCache__Arc},
-  {NULL, NULL, NULL, NULL, NULL}
+  {NULL, NULL, NULL, NULL}
 };
 
 #define PT_INDEX_COMMON_STRUCTURE \
@@ -182,6 +188,7 @@ struct _PT_Index__Old {
   char filenameDat[1024];
   char filenameNdx[1024];
   FILE *dat, *ndx;
+  long int datSize; /* bound for the lengths read out of the .dat */
   PT_Mutex fileLock;
   int version;
   char lastmodified[1024];
@@ -193,6 +200,7 @@ struct _PT_Index__Old {
 struct _PT_Index__Arc {
   PT_INDEX_COMMON_STRUCTURE;
   FILE *file;
+  long int fileSize; /* bound for the lengths read out of the file */
   PT_Mutex fileLock;
   int version;
   char lastmodified[1024];
@@ -218,19 +226,6 @@ struct _PT_Indexes {
   int index_size;
 };
 
-struct _PT_CacheItem {
-  time_t lastUsed;
-  size_t size;
-  void *data;
-};
-
-struct _PT_Cache {
-  coucal index;
-  size_t maxSize;
-  size_t totalSize;
-  int count;
-};
-
 PT_Indexes PT_New(void) {
   PT_Indexes index = (PT_Indexes) calloc(sizeof(_PT_Indexes), 1);
 
@@ -243,30 +238,43 @@ PT_Indexes PT_New(void) {
 
 void PT_Delete(PT_Indexes index) {
   if (index != NULL) {
+    int i;
+
+    /* PT_IndexMerge took ownership of each index, file handle included */
+    for (i = 0; i < index->index_size; i++) {
+      PT_Index_Delete(&index->index[i]);
+    }
+    free(index->index);
     coucal_delete(&index->cil);
     free(index);
   }
 }
 
-int PT_RemoveIndex(PT_Indexes index, int indexId) {
-  return 0;
-}
-
-static int binput(char *buff, char *s, int max) {
+/* Reads one line into "s" (at most "max" chars plus its NUL) and returns the
+   advance. *cut, when asked for, says the line did not fit. */
+static int binput(char *buff, char *s, int max, hts_boolean *cut) {
   int count = 0;
   int destCount = 0;
 
-  // Note: \0 will return 1
-  while(destCount < max && buff[count] != '\0' && buff[count] != '\n') {
+  if (cut != NULL) {
+    *cut = HTS_FALSE;
+  }
+  /* consumed whole: resuming inside a clipped line reads its tail as a field */
+  while (buff[count] != '\0' && buff[count] != '\n') {
     if (buff[count] != '\r') {
-      s[destCount++] = buff[count];
+      if (destCount < max) {
+        s[destCount++] = buff[count];
+      } else if (cut != NULL) {
+        *cut = HTS_TRUE;
+      }
     }
     count++;
   }
   s[destCount] = '\0';
 
-  // then return the supplemental jump offset
-  return count + 1;
+  /* only step over a real separator: past the terminating NUL leaves the
+     caller's buffer, past a truncated field's next byte silently eats it */
+  return buff[count] == '\n' ? count + 1 : count;
 }
 
 static time_t file_timestamp(const char *file) {
@@ -350,6 +358,11 @@ static void PT_Index_Delete__Arc(PT_Index * pindex) {
 
     if (index->file != NULL) {
       fclose(index->file);
+      index->file = NULL;
+    }
+    if (index->hash != NULL) {
+      coucal_delete(&index->hash);
+      index->hash = NULL;
     }
     MutexFree(&index->fileLock);
   }
@@ -402,9 +415,9 @@ PT_Element PT_Index_HTML_BuildRootInfo(PT_Indexes indexes) {
     elt->size = StringLength(html);
     elt->adr = StringAcquire(&html);
     elt->statuscode = HTTP_OK;
-    strcpy(elt->charset, "iso-8859-1");
-    strcpy(elt->contenttype, "text/html");
-    strcpy(elt->msg, "OK");
+    strcpybuff(elt->charset, "iso-8859-1");
+    strcpybuff(elt->contenttype, "text/html");
+    strcpybuff(elt->msg, "OK");
     StringFree(html);
     return elt;
   }
@@ -460,9 +473,10 @@ char **PT_Enumerate(PT_Indexes indexes, const char *url, int subtree) {
               if (len > 0)
                 StringMemcat(subitem, item, len);
               if (len == 0 || !coucal_exists(hdupes, StringBuff(subitem))) {
-                char *ptr = NULL;
+                /* an offset into list, turned into a pointer further down;
+                   NULL + n would be undefined (fork: clang UBSan) */
+                char *ptr = (char *) (uintptr_t) StringLength(list);
 
-                ptr += StringLength(list);
                 if (len > 0)
                   StringCat(list, StringBuff(subitem));
                 if (isFolder)
@@ -487,16 +501,17 @@ char **PT_Enumerate(PT_Indexes indexes, const char *url, int subtree) {
       void *blk;
       char *nullPointer = NULL;
       char *startStrings;
+      size_t startOffset;
 
       /* NULL terminated index */
       StringMemcat(listindexes, (char*) &nullPointer, sizeof(nullPointer));
       /* start of all strings (index) */
-      startStrings = nullPointer + StringLength(listindexes);
+      startOffset = StringLength(listindexes);
       /* copy list of URLs after indexes */
       StringMemcat(listindexes, StringBuff(list), StringLength(list));
       /* ---- no reallocation beyond this point (fixed addresses) ---- */
       /* start of all strings (pointer) */
-      startStrings = (startStrings - nullPointer) + StringBuffRW(listindexes);
+      startStrings = StringBuffRW(listindexes) + startOffset;
       /* transform indexes into references */
       for(i = 0; i < listCount; i++) {
         char *ptr = NULL;
@@ -504,7 +519,7 @@ char **PT_Enumerate(PT_Indexes indexes, const char *url, int subtree) {
 
         memcpy(&ptr, &StringBuff(listindexes)[i * sizeof(char *)],
                sizeof(char *));
-        ndx = (unsigned int) (ptr - nullPointer);
+        ndx = (unsigned int) (uintptr_t) ptr;
         ptr = startStrings + ndx;
         memcpy(&StringBuffRW(listindexes)[i * sizeof(char *)], &ptr,
                sizeof(char *));
@@ -556,8 +571,8 @@ PT_Index PT_LoadCache(const char *filename) {
         proxytrack_print_log(DEBUG,
                              "reading httrack cache (format #%d) %s : error",
                              type, filename);
-        free(index);
-        index = NULL;
+        /* the loader may already hold a file handle and entries */
+        PT_Index_Delete(&index);
         return NULL;
       } else {
         proxytrack_print_log(DEBUG,
@@ -574,9 +589,12 @@ PT_Index PT_LoadCache(const char *filename) {
           chain = coucal_enum_next(&en);
         }
         if (chain != NULL) {
-          if (!link_has_authority(chain->name))
-            strcat(index->slots.common.startUrl, "http://");
-          strcat(index->slots.common.startUrl, chain->name);
+          const char *scheme = link_has_authority(chain->name) ? "" : "http://";
+
+          /* dropped rather than truncated: empty already reads as "unset" */
+          if (!sprintfbuff(index->slots.common.startUrl, "%s%s", scheme,
+                           (const char *) chain->name))
+            index->slots.common.startUrl[0] = '\0';
         }
       }
     }
@@ -629,7 +647,7 @@ int PT_EnumCache(PT_Indexes indexes,
       const long int index_id = (long int) chain->value.intg;
       const char *const url = chain->name;
 
-      if (index_id >= 0 && index_id <= indexes->index_size) {
+      if (index_id >= 0 && index_id < indexes->index_size) {
         PT_Element item =
           PT_ReadCache(indexes->index[index_id], url,
                        FETCH_HEADERS | FETCH_BODY);
@@ -688,12 +706,16 @@ int PT_IndexMerge(PT_Indexes indexes, PT_Index * pindex) {
     PT_Index index = *pindex;
     struct_coucal_enum en = coucal_enum_new(index->slots.common.hash);
     coucal_item *chain;
-    int index_id = indexes->index_size++;
+    /* index_size counts a slot only once the array holds it, so a failed
+       realloc leaves neither a phantom entry nor a dropped array */
+    PT_Index *const grown = realloc(
+        indexes->index, sizeof(*indexes->index) * (indexes->index_size + 1));
+    int index_id;
     int nMerged = 0;
 
-    if ((indexes->index =
-         realloc(indexes->index,
-                 sizeof(struct _PT_Index) * indexes->index_size)) != NULL) {
+    if (grown != NULL) {
+      indexes->index = grown;
+      index_id = indexes->index_size++;
       indexes->index[index_id] = index;
       *pindex = NULL;
       while((chain = coucal_enum_next(&en)) != NULL) {
@@ -747,6 +769,13 @@ void PT_Element_Delete(PT_Element * pentry) {
   }
 }
 
+/* Both consumers emit element->size bytes whatever the status code, so a
+   partly-filled body would ship its uninitialised tail. */
+static void PT_Element_DropBody(PT_Element entry) {
+  free(entry->adr);
+  entry->adr = NULL;
+}
+
 PT_Element PT_ReadIndex(PT_Indexes indexes, const char *url, int flags) {
   if (indexes != NULL) {
     intptr_t index_id;
@@ -754,7 +783,7 @@ PT_Element PT_ReadIndex(PT_Indexes indexes, const char *url, int flags) {
     if (strncmp(url, "http://", 7) == 0)
       url += 7;
     if (coucal_read(indexes->cil, url, &index_id)) {
-      if (index_id >= 0 && index_id <= indexes->index_size) {
+      if (index_id >= 0 && index_id < indexes->index_size) {
         PT_Element item = PT_ReadCache(indexes->index[index_id], url, flags);
 
         if (item != NULL) {
@@ -777,7 +806,7 @@ int PT_LookupIndex(PT_Indexes indexes, const char *url) {
     if (strncmp(url, "http://", 7) == 0)
       url += 7;
     if (coucal_read(indexes->cil, url, &index_id)) {
-      if (index_id >= 0 && index_id <= indexes->index_size) {
+      if (index_id >= 0 && index_id < indexes->index_size) {
         return 1;
       } else {
         proxytrack_print_log(CRITICAL,
@@ -822,6 +851,10 @@ PT_Element PT_ElementNew(void) {
   return r;
 }
 
+/* ProxyTrack's htsblk_failf(): a clipped, diagnostic-only failure reason. */
+#define PT_Element_failf(R, ...)                                               \
+  slprintfbuff_clip((R)->msg, sizeof((R)->msg), __VA_ARGS__)
+
 PT_Element PT_ReadCache(PT_Index index, const char *url, int flags) {
   if (index != NULL && SAFE_INDEX(index)) {
     return _IndexFuncts[index->type].PT_ReadCache(index, url, flags);
@@ -844,28 +877,41 @@ static PT_Element PT_ReadCache__New(PT_Index index, const char *url, int flags) 
 /* New HTTrack cache (new.zip) format                           */
 /* ------------------------------------------------------------ */
 
-#define ZIP_FIELD_STRING(headers, headersSize, field, value) do { \
-  if ( (value != NULL) && (value)[0] != '\0') { \
-    sprintf(headers + headersSize, "%s: %s\r\n", field, (value != NULL) ? (value) : ""); \
-    (headersSize) += (int) strlen(headers + headersSize); \
-  } \
-} while(0)
-#define ZIP_FIELD_INT(headers, headersSize, field, value) do { \
-  if ( (value != 0) ) { \
-    sprintf(headers + headersSize, "%s: "LLintP"\r\n", field, (LLint)(value)); \
-    (headersSize) += (int) strlen(headers + headersSize); \
-  } \
-} while(0)
-#define ZIP_FIELD_INT_FORCE(headers, headersSize, field, value) do { \
-  sprintf(headers + headersSize, "%s: "LLintP"\r\n", field, (LLint)(value)); \
-  (headersSize) += (int) strlen(headers + headersSize); \
-} while(0)
-#define ZIP_READFIELD_STRING(line, value, refline, refvalue) do { \
-  if (line[0] != '\0' && strfield2(line, refline)) { \
-    strcpy(refvalue, value); \
-    line[0] = '\0'; \
-	} \
-} while(0)
+/* Values read back off a cache, so the block is bounded rather than trusted to
+   the element caps; a field that does not fit is dropped whole and counted,
+   since a clipped one reads back as valid. `headers` must be an array. */
+#define ZIP_FIELD_STRING(headers, headersSize, dropped, field, value)          \
+  do {                                                                         \
+    if ((value) != NULL && (value)[0] != '\0' &&                               \
+        !slcatprintfbuff(headers, sizeof(headers), &(headersSize),             \
+                         "%s: %s\r\n", field, value)) {                        \
+      (dropped)++;                                                             \
+    }                                                                          \
+  } while (0)
+#define ZIP_FIELD_INT(headers, headersSize, dropped, field, value)             \
+  do {                                                                         \
+    if ((value) != 0 &&                                                        \
+        !slcatprintfbuff(headers, sizeof(headers), &(headersSize),             \
+                         "%s: " LLintP "\r\n", field, (LLint) (value))) {      \
+      (dropped)++;                                                             \
+    }                                                                          \
+  } while (0)
+#define ZIP_FIELD_INT_FORCE(headers, headersSize, dropped, field, value)       \
+  do {                                                                         \
+    if (!slcatprintfbuff(headers, sizeof(headers), &(headersSize),             \
+                         "%s: " LLintP "\r\n", field, (LLint) (value))) {      \
+      (dropped)++;                                                             \
+    }                                                                          \
+  } while (0)
+/* refvalue_size is mandatory: the cache line is bounded only by the line
+   buffer, not by the destination. */
+#define ZIP_READFIELD_STRING(line, value, refline, refvalue, refvalue_size)    \
+  do {                                                                         \
+    if (line[0] != '\0' && strfield2(line, refline)) {                         \
+      (void) strclipbuff(refvalue, refvalue_size, value);                      \
+      line[0] = '\0';                                                          \
+    }                                                                          \
+  } while (0)
 #define ZIP_READFIELD_INT(line, value, refline, refvalue) do { \
   if (line[0] != '\0' && strfield2(line, refline)) { \
     int intval = 0; \
@@ -874,6 +920,40 @@ static PT_Element PT_ReadCache__New(PT_Index index, const char *url, int flags) 
     line[0] = '\0'; \
 	} \
 } while(0)
+#define ZIP_READFIELD_LLINT(line, value, refline, refvalue)                    \
+  do {                                                                         \
+    if (line[0] != '\0' && strfield2(line, refline)) {                         \
+      LLint intval = 0;                                                        \
+      sscanf(value, LLintP, &intval);                                          \
+      (refvalue) = intval;                                                     \
+      line[0] = '\0';                                                          \
+    }                                                                          \
+  } while (0)
+
+/* Set path (capacity size) to filename's parent directory, separator included,
+   from an absolute filename. Empty when there is none, or when it would not
+   fit: a truncated prefix names a different directory. */
+static void index_base_path(char *path, size_t size, const char *filename) {
+  const char *abpath;
+  int slashes;
+
+  for (slashes = 2, abpath = hts_lastcharptr(filename);
+       abpath > filename &&
+       ((*abpath != '/' && *abpath != '\\') || --slashes > 0);
+       abpath--)
+    ;
+  path[0] = '\0';
+  if (slashes == 0 && *abpath != 0 && (size_t) (abpath - filename) < size - 1) {
+    int i;
+
+    strlncatbuff(path, filename, size, (size_t) (abpath - filename) + 1);
+    for (i = 0; path[i] != 0; i++) {
+      if (path[i] == '\\') {
+        path[i] = '/';
+      }
+    }
+  }
+}
 
 int PT_LoadCache__New(PT_Index index_, const char *filename) {
   if (index_ != NULL && filename != NULL) {
@@ -885,26 +965,9 @@ int PT_LoadCache__New(PT_Index index_, const char *filename) {
 
     // Opened ?
     if (zFile != NULL) {
-      const char *abpath;
-      int slashes;
       coucal hashtable = index->hash;
 
-      /* Compute base path for this index - the filename MUST be absolute! */
-      for(slashes = 2, abpath = filename + (int) strlen(filename) - 1;
-          abpath > filename && ((*abpath != '/' && *abpath != '\\')
-                                || --slashes > 0);
-          abpath--) ;
-      index->path[0] = '\0';
-      if (slashes == 0 && *abpath != 0) {
-        int i;
-
-        strncat(index->path, filename, (int) (abpath - filename) + 1);
-        for(i = 0; index->path[i] != 0; i++) {
-          if (index->path[i] == '\\') {
-            index->path[i] = '/';
-          }
-        }
-      }
+      index_base_path(index->path, sizeof(index->path), filename);
 
       /* Ready directory entries */
       if (unzGoToFirstFile(zFile) == Z_OK) {
@@ -945,7 +1008,7 @@ int PT_LoadCache__New(PT_Index index_, const char *filename) {
                     char line[1024];
 
                     line[0] = '\0';
-                    a += binput(a, line, sizeof(line) - 2);
+                    a += binput(a, line, sizeof(line) - 2, NULL);
                     if (strncmp(line, "X-In-Cache:", 11) == 0) {
                       if (strcmp(line, "X-In-Cache: 1") == 0) {
                         dataincache = 1;
@@ -964,10 +1027,15 @@ int PT_LoadCache__New(PT_Index index_, const char *filename) {
                 /* First link as starting URL */
                 if (!firstSeen) {
                   if (strstr(filenameIndex, "/robots.txt") == NULL) {
-                    firstSeen = 1;
-                    if (!link_has_authority(filenameIndex))
-                      strcat(index->startUrl, "http://");
-                    strcat(index->startUrl, filenameIndex);
+                    const char *scheme =
+                        link_has_authority(filenameIndex) ? "" : "http://";
+
+                    /* dropped rather than truncated; try the next entry */
+                    if (sprintfbuff(index->startUrl, "%s%s", scheme,
+                                    filenameIndex))
+                      firstSeen = 1;
+                    else
+                      index->startUrl[0] = '\0';
                   }
                 }
               } else {
@@ -994,21 +1062,6 @@ int PT_LoadCache__New(PT_Index index_, const char *filename) {
   return 0;
 }
 
-static int PT_BuildCachePath(char *dest, size_t destSize,
-                             const char *base, const char *relative) {
-  int written;
-
-  if (dest == NULL || destSize == 0 || base == NULL || relative == NULL) {
-    return 0;
-  }
-  written = snprintf(dest, destSize, "%s%s", base, relative);
-  if (written < 0 || (size_t) written >= destSize) {
-    dest[0] = '\0';
-    return 0;
-  }
-  return 1;
-}
-
 static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
                                       int flags) {
   PT_Index__New index = (PT_Index__New) & index_->slots.formatNew;
@@ -1029,7 +1082,7 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
   previous_save[0] = previous_save_[0] = '\0';
   memset(r, 0, sizeof(_PT_Element));
   r->location = location_default;
-  strcpy(r->location, "");
+  r->location[0] = '\0';
   if (strncmp(url, "http://", 7) == 0)
     url += 7;
   hash_pos_return = coucal_read(index->hash, url, &hash_pos);
@@ -1047,8 +1100,9 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
       if (unzOpenCurrentFile(index->zFile) == Z_OK) {
         char headerBuff[8192 + 2];
         int readSizeHeader;
-        //int totalHeader = 0;
         int dataincache = 0;
+        /* signed, so a corrupt value is judged before it becomes a size_t */
+        LLint declared_size = 0;
 
         /* For BIG comments */
         headerBuff[0]
@@ -1060,69 +1114,81 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
              unzGetLocalExtrafield(index->zFile, headerBuff,
                                    sizeof(headerBuff) - 2)) > 0) {
           int offset = 0;
-          char line[HTS_URLMAXSIZE + 2];
+          /* the longest stored line is "Location: " plus a full-capacity URL;
+             a shorter buffer truncates it into a valid-looking wrong target */
+          char BIGSTK line[HTS_LOCATION_SIZE + 32];
           int lineEof = 0;
 
           headerBuff[readSizeHeader] = '\0';
           do {
             char *value;
+            hts_boolean cut;
 
             line[0] = '\0';
-            offset += binput(headerBuff + offset, line, sizeof(line) - 2);
+            offset += binput(headerBuff + offset, line, sizeof(line) - 2, &cut);
             if (line[0] == '\0') {
               lineEof = 1;
             }
-            value = strchr(line, ':');
+            /* no line HTTrack writes is this long, so a cut one is foreign or
+               damaged and its prefix would parse as a wrong value */
+            value = cut ? NULL : strchr(line, ':');
             if (value != NULL) {
               *value++ = '\0';
               if (*value == ' ' || *value == '\t')
                 value++;
               ZIP_READFIELD_INT(line, value, "X-In-Cache", dataincache);
               ZIP_READFIELD_INT(line, value, "X-Statuscode", r->statuscode);
-              ZIP_READFIELD_STRING(line, value, "X-StatusMessage", r->msg);     // msg
-              ZIP_READFIELD_INT(line, value, "X-Size", r->size);        // size
-              ZIP_READFIELD_STRING(line, value, "Content-Type", r->contenttype);        // contenttype
-              ZIP_READFIELD_STRING(line, value, "X-Charset", r->charset);       // contenttype
-              ZIP_READFIELD_STRING(line, value, "Last-Modified", r->lastmodified);      // last-modified
-              ZIP_READFIELD_STRING(line, value, "Etag", r->etag);       // Etag
-              ZIP_READFIELD_STRING(line, value, "Location", r->location);       // 'location' pour moved
-              ZIP_READFIELD_STRING(line, value, "Content-Disposition", r->cdispo);      // Content-disposition
-              //ZIP_READFIELD_STRING(line, value, "X-Addr", ..);            // Original address
-              //ZIP_READFIELD_STRING(line, value, "X-Fil", ..);            // Original URI filename
-              ZIP_READFIELD_STRING(line, value, "X-Save", previous_save_);      // Original save filename
+              ZIP_READFIELD_STRING(line, value, "X-StatusMessage", r->msg,
+                                   sizeof(r->msg));
+              ZIP_READFIELD_LLINT(line, value, "X-Size", declared_size); // size
+              ZIP_READFIELD_STRING(line, value, "Content-Type", r->contenttype,
+                                   sizeof(r->contenttype));
+              ZIP_READFIELD_STRING(line, value, "X-Charset", r->charset,
+                                   sizeof(r->charset));
+              ZIP_READFIELD_STRING(line, value, "Last-Modified",
+                                   r->lastmodified, sizeof(r->lastmodified));
+              ZIP_READFIELD_STRING(line, value, "Etag", r->etag,
+                                   sizeof(r->etag));
+              ZIP_READFIELD_STRING(line, value, "Location", r->location,
+                                   sizeof(location_default));
+              ZIP_READFIELD_STRING(line, value, "Content-Disposition",
+                                   r->cdispo, sizeof(r->cdispo));
+              ZIP_READFIELD_STRING(line, value, "X-Save", previous_save_,
+                                   sizeof(previous_save_));
               if (line[0] != '\0') {
-                int len = r->headers ? ((int) strlen(r->headers)) : 0;
-                int nlen =
-                  (int) (strlen(line) + 2 + strlen(value) + sizeof("\r\n") + 1);
-                r->headers = realloc(r->headers, len + nlen);
-                r->headers[len] = '\0';
-                strcat(r->headers, line);
-                strcat(r->headers, ": ");
-                strcat(r->headers, value);
-                strcat(r->headers, "\r\n");
+                const int len = r->headers ? ((int) strlen(r->headers)) : 0;
+                /* one byte more than the four appends below write */
+                const int nlen = (int) (strlen(line) + 2 + strlen(value) +
+                                        sizeof("\r\n") + 1);
+                char *const grown = realloct(r->headers, len + nlen);
+
+                /* keep the headers read so far rather than losing them */
+                if (grown != NULL) {
+                  r->headers = grown;
+                  r->headers[len] = '\0';
+                  strcat(r->headers, line);
+                  strcat(r->headers, ": ");
+                  strcat(r->headers, value);
+                  strcat(r->headers, "\r\n");
+                }
               }
             }
-          } while(offset < readSizeHeader && !lineEof);
-          //totalHeader = offset;
+          } while (offset < readSizeHeader && !lineEof);
 
           /* Previous entry */
           if (previous_save_[0] != '\0') {
             int pathLen = (int) strlen(index->path);
 
             if (pathLen > 0 && strncmp(previous_save_, index->path, pathLen) == 0) {    // old (<3.40) buggy format
-              strcpy(previous_save, previous_save_);
+              strcpybuff(previous_save, previous_save_);
             }
             // relative ? (hack)
             else if (index->safeCache || (previous_save_[0] != '/'      // /home/foo/bar.gif
                                           && (!isalpha(previous_save_[0]) || previous_save_[1] != ':')) // c:/home/foo/bar.gif
               ) {
               index->safeCache = 1;
-              if (!PT_BuildCachePath(previous_save, sizeof(previous_save),
-                                     index->path, previous_save_)) {
-                snprintf(r->msg, sizeof(r->msg),
-                         "Cached path is too long for %s", url);
-                r->statuscode = STATUSCODE_INVALID;
-              }
+              snprintf(previous_save, sizeof(previous_save), "%s%s",
+                       index->path, previous_save_);
             }
             // bogus format (includes buggy absolute path)
             else {
@@ -1130,8 +1196,7 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
               if (index->fixedPath == 0) {
                 const char *start = jump_protocol_and_auth(url);
                 const char *end = start ? strchr(start, '/') : NULL;
-                int len = (start != NULL && end != NULL)
-                  ? (int) (end - start) : 0;
+                int len = (int) (end - start);
 
                 if (start != NULL && end != NULL && len > 0 && len < 128) {
                   char piece[128 + 2];
@@ -1148,27 +1213,31 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
                 int saveLen = (int) strlen(previous_save_);
 
                 if (index->fixedPath < saveLen) {
-                  if (!PT_BuildCachePath(previous_save, sizeof(previous_save),
-                                         index->path,
-                                         previous_save_ + index->fixedPath)) {
-                    snprintf(r->msg, sizeof(r->msg),
-                             "Cached path is too long for %s", url);
-                    r->statuscode = STATUSCODE_INVALID;
-                  }
+                  snprintf(previous_save, sizeof(previous_save), "%s%s",
+                           index->path, previous_save_ + index->fixedPath);
                 } else {
-                  snprintf(r->msg, sizeof(r->msg), "Bogus fixePath prefix for %s (prefixLen=%d)",
-                          previous_save_, (int) index->fixedPath);
+                  PT_Element_failf(
+                      r, "Bogus fixePath prefix for %s (prefixLen=%d)",
+                      previous_save_, (int) index->fixedPath);
                   r->statuscode = STATUSCODE_INVALID;
                 }
               } else {
-                if (!PT_BuildCachePath(previous_save, sizeof(previous_save),
-                                       index->path, previous_save_)) {
-                  snprintf(r->msg, sizeof(r->msg),
-                           "Cached path is too long for %s", url);
-                  r->statuscode = STATUSCODE_INVALID;
-                }
+                snprintf(previous_save, sizeof(previous_save), "%s%s",
+                         index->path, previous_save_);
               }
             }
+          }
+
+          /* Corrupt: negative, or in-cache at or above what the 32-bit zip
+             writer could store. A headers-only entry above INT_MAX is
+             legitimate; one wider than size_t is refused, not truncated. */
+          if (declared_size < 0 ||
+              (LLint) (size_t) declared_size != declared_size ||
+              (dataincache && declared_size >= INT_MAX)) {
+            r->statuscode = STATUSCODE_INVALID;
+            strcpybuff(r->msg, "Cache Read Error : Bad Size");
+          } else {
+            r->size = (size_t) declared_size;
           }
 
           /* Complete fields */
@@ -1180,41 +1249,52 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
             // Peut-on stocker le fichier directement sur disque?
             if (ok) {
               if (r->msg[0] == '\0') {
-                strcpy(r->msg, "Cache Read Error : Unexpected error");
+                strcpybuff(r->msg, "Cache Read Error : Unexpected error");
               }
             } else {            // lire en mémoire
 
               if (!dataincache) {
                 /* Read in memory from cache */
                 if (flags & FETCH_BODY) {
-                  if (strnotempty(previous_save)) {
+                  if (!strnotempty(previous_save)) {
+                    r->statuscode = STATUSCODE_INVALID;
+                    strcpybuff(r->msg, "Cached file name is invalid");
+                  } else if (r->size >= INT_MAX) {
+                    /* Read whole into memory: htscache.c's own limit, past
+                       which r->size + 1 wraps to zero on a 32-bit size_t. */
+                    r->statuscode = STATUSCODE_INVALID;
+                    strcpybuff(r->msg, "Cache Read Error : Bad Size");
+                  } else {
                     FILE *fp = fopen(file_convert(catbuff, sizeof(catbuff), previous_save), "rb");
 
                     if (fp != NULL) {
-                      r->adr = (char *) malloc(r->size + 4);
+                      r->adr = (char *) malloc(r->size + 1);
                       if (r->adr != NULL) {
-                        if (r->size > 0
-                            && fread(r->adr, 1, r->size, fp) != r->size) {
+                        if (r->size > 0 &&
+                            !hts_fread_exact(r->adr, r->size, fp)) {
                           int last_errno = errno;
 
+                          PT_Element_DropBody(r);
                           r->statuscode = STATUSCODE_INVALID;
-                          sprintf(r->msg, "Read error in cache disk data: %s",
-                                  strerror(last_errno));
+                          PT_Element_failf(r,
+                                           "Read error in cache disk data: %s",
+                                           strerror(last_errno));
+                        } else {
+                          r->adr[r->size] = '\0';
                         }
                       } else {
                         r->statuscode = STATUSCODE_INVALID;
-                        strcpy(r->msg,
-                               "Read error (memory exhausted) from cache");
+                        strcpybuff(r->msg,
+                                   "Read error (memory exhausted) from cache");
                       }
                       fclose(fp);
                     } else {
                       r->statuscode = STATUSCODE_INVALID;
-                      snprintf(r->msg, sizeof(r->msg), "Read error (can't open '%s') from cache",
-                              file_convert(catbuff, sizeof(catbuff), previous_save));
+                      PT_Element_failf(
+                          r, "Read error (can't open '%s') from cache",
+                          file_convert(catbuff, sizeof(catbuff),
+                                       previous_save));
                     }
-                  } else {
-                    r->statuscode = STATUSCODE_INVALID;
-                    strcpy(r->msg, "Cached file name is invalid");
                   }
                 }
               } else {
@@ -1223,16 +1303,14 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
                   r->adr = (char *) malloc(r->size + 1);
                   if (r->adr != NULL) {
                     if (unzReadCurrentFile(index->zFile, r->adr, (unsigned int) r->size) != r->size) {  // erreur
-                      free(r->adr);
-                      r->adr = NULL;
+                      PT_Element_DropBody(r);
                       r->statuscode = STATUSCODE_INVALID;
-                      strcpy(r->msg, "Cache Read Error : Read Data");
+                      strcpybuff(r->msg, "Cache Read Error : Read Data");
                     } else
                       *(r->adr + r->size) = '\0';
-                    //printf(">%s status %d\n",back[p].r->contenttype,back[p].r->statuscode);
                   } else {      // erreur
                     r->statuscode = STATUSCODE_INVALID;
-                    strcpy(r->msg, "Cache Memory Error");
+                    strcpybuff(r->msg, "Cache Memory Error");
                   }
                 }
               }
@@ -1240,21 +1318,21 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
           }                     // si save==null, ne rien charger (juste en tête)
         } else {
           r->statuscode = STATUSCODE_INVALID;
-          strcpy(r->msg, "Cache Read Error : Read Header Data");
+          strcpybuff(r->msg, "Cache Read Error : Read Header Data");
         }
         unzCloseCurrentFile(index->zFile);
       } else {
         r->statuscode = STATUSCODE_INVALID;
-        strcpy(r->msg, "Cache Read Error : Open File");
+        strcpybuff(r->msg, "Cache Read Error : Open File");
       }
 
     } else {
       r->statuscode = STATUSCODE_INVALID;
-      strcpy(r->msg, "Cache Read Error : Bad Offset");
+      strcpybuff(r->msg, "Cache Read Error : Bad Offset");
     }
   } else {
     r->statuscode = STATUSCODE_INVALID;
-    strcpy(r->msg, "File Cache Entry Not Found");
+    strcpybuff(r->msg, "File Cache Entry Not Found");
   }
   if (r->location[0] != '\0') {
     r->location = strdup(r->location);
@@ -1264,21 +1342,25 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
   return r;
 }
 
+/* Bytes a writer may take from an element: a reader that could not fetch the
+   body still hands back the declared size (#931). */
+static size_t PT_Element_BodySize(const PT_Element element) {
+  return element->adr != NULL ? element->size : 0;
+}
+
 static int PT_SaveCache__New_Fun(void *arg, const char *url, PT_Element element) {
   zipFile zFileOut = (zipFile) arg;
+  const size_t body_size = PT_Element_BodySize(element);
   char headers[8192];
-  int headersSize;
+  size_t headersSize = 0;
+  int headersDropped = 0;
   zip_fileinfo fi;
   int zErr;
   const char *url_adr = "";
   const char *url_fil = "";
 
-  headers[0] = '\0';
-  headersSize = 0;
-
   /* Fields */
   headers[0] = '\0';
-  headersSize = 0;
   /* */
   {
     const char *message;
@@ -1289,25 +1371,43 @@ static int PT_SaveCache__New_Fun(void *arg, const char *url, PT_Element element)
       message = "(See X-StatusMessage)";
     }
     /* 64 characters MAX for first line */
-    sprintf(headers + headersSize, "HTTP/1.%c %d %s\r\n", '1',
-            element->statuscode, message);
+    if (!slcatprintfbuff(headers, sizeof(headers), &headersSize,
+                         "HTTP/1.%c %d %s\r\n", '1', element->statuscode,
+                         message)) {
+      headersDropped++;
+    }
   }
-  headersSize += (int) strlen(headers + headersSize);
 
   /* Second line MUST ALWAYS be X-In-Cache */
-  ZIP_FIELD_INT_FORCE(headers, headersSize, "X-In-Cache", 1);
-  ZIP_FIELD_INT(headers, headersSize, "X-StatusCode", element->statuscode);
-  ZIP_FIELD_STRING(headers, headersSize, "X-StatusMessage", element->msg);
-  ZIP_FIELD_INT(headers, headersSize, "X-Size", element->size); // size
-  ZIP_FIELD_STRING(headers, headersSize, "Content-Type", element->contenttype); // contenttype
-  ZIP_FIELD_STRING(headers, headersSize, "X-Charset", element->charset);        // contenttype
-  ZIP_FIELD_STRING(headers, headersSize, "Last-Modified", element->lastmodified);       // last-modified
-  ZIP_FIELD_STRING(headers, headersSize, "Etag", element->etag);        // Etag
-  ZIP_FIELD_STRING(headers, headersSize, "Location", element->location);        // 'location' pour moved
-  ZIP_FIELD_STRING(headers, headersSize, "Content-Disposition", element->cdispo);       // Content-disposition
-  ZIP_FIELD_STRING(headers, headersSize, "X-Addr", url_adr);    // Original address
-  ZIP_FIELD_STRING(headers, headersSize, "X-Fil", url_fil);     // Original URI filename
-  ZIP_FIELD_STRING(headers, headersSize, "X-Save", ""); // Original save filename
+  ZIP_FIELD_INT_FORCE(headers, headersSize, headersDropped, "X-In-Cache", 1);
+  ZIP_FIELD_INT(headers, headersSize, headersDropped, "X-StatusCode",
+                element->statuscode);
+  ZIP_FIELD_STRING(headers, headersSize, headersDropped, "X-StatusMessage",
+                   element->msg);
+  ZIP_FIELD_INT(headers, headersSize, headersDropped, "X-Size",
+                body_size); // size
+  ZIP_FIELD_STRING(headers, headersSize, headersDropped, "Content-Type",
+                   element->contenttype); // contenttype
+  ZIP_FIELD_STRING(headers, headersSize, headersDropped, "X-Charset",
+                   element->charset); // contenttype
+  ZIP_FIELD_STRING(headers, headersSize, headersDropped, "Last-Modified",
+                   element->lastmodified); // last-modified
+  ZIP_FIELD_STRING(headers, headersSize, headersDropped, "Etag",
+                   element->etag); // Etag
+  ZIP_FIELD_STRING(headers, headersSize, headersDropped, "Location",
+                   element->location); // 'location' pour moved
+  ZIP_FIELD_STRING(headers, headersSize, headersDropped, "Content-Disposition",
+                   element->cdispo); // Content-disposition
+  ZIP_FIELD_STRING(headers, headersSize, headersDropped, "X-Addr",
+                   url_adr); // Original address
+  ZIP_FIELD_STRING(headers, headersSize, headersDropped, "X-Fil",
+                   url_fil); // Original URI filename
+  ZIP_FIELD_STRING(headers, headersSize, headersDropped, "X-Save",
+                   ""); // Original save filename
+  if (headersDropped != 0) {
+    fprintf(stderr, "Headers of %s: %d field(s) dropped" LF, url,
+            headersDropped);
+  }
 
   /* Time */
   memset(&fi, 0, sizeof(fi));
@@ -1337,10 +1437,9 @@ static int PT_SaveCache__New_Fun(void *arg, const char *url, PT_Element element)
   }
 
   /* Write data in cache */
-  if (element->size > 0 && element->adr != NULL) {
-    if ((zErr =
-         zipWriteInFileInZip(zFileOut, element->adr,
-                             (int) element->size)) != Z_OK) {
+  if (body_size != 0) {
+    if ((zErr = zipWriteInFileInZip(zFileOut, element->adr, (int) body_size)) !=
+        Z_OK) {
       assertf(! "zip_zipWriteInFileInZip_failed");
     }
   }
@@ -1379,87 +1478,146 @@ static int PT_SaveCache__New(PT_Indexes indexes, const char *filename) {
 /* Old HTTrack cache (dat/ndx) format                           */
 /* ------------------------------------------------------------ */
 
-static int cache_brstr(char *adr, char *s) {
+/* Largest field the legacy format ever carried; past it the length is
+   corruption */
+#define CACHE_FIELD_MAXSIZE 32768
+
+static int cache_brstr(char *adr, char *s, size_t s_size) {
   int i;
   int off;
-  char buff[256 + 1];
+  char buff[256 + 4];
 
-  off = binput(adr, buff, 256);
-  adr += off;
-  sscanf(buff, "%d", &i);
-  if (i > 0)
-    strncpy(s, adr, i);
-  *(s + i) = '\0';
-  off += i;
+  off = binput(adr, buff, 256, NULL);
+  /* no length-prefixed value follows a field the terminating NUL stopped */
+  if (adr[off] == '\0') {
+    s[0] = '\0';
+    return off;
+  }
+  /* an empty/non-numeric field leaves i unset: treat as length 0 */
+  if (sscanf(buff, "%d", &i) != 1 || i < 0 || i > CACHE_FIELD_MAXSIZE)
+    i = 0;
+  if (i > 0) {
+    /* a corrupt cache may declare a length past the buffer end; bound the copy
+       and the advance to the bytes actually present */
+    const size_t avail = strnlen(adr + off, (size_t) i);
+    const size_t store = avail < s_size ? avail : s_size - 1;
+
+    memcpy(s, adr + off, store);
+    s[store] = '\0';
+    off += (int) avail;
+  } else {
+    s[0] = '\0';
+  }
   return off;
 }
 
-/* The length is read from the file, so it is only as trustworthy as the
-   cache is: storing it unchecked writes up to 32768 bytes into whatever the
-   caller supplied. Keep what fits, but consume the whole field either way --
-   the records that follow are read from the same stream. */
-static void cache_rstr(FILE * fp, char *s, size_t size) {
-  INTsys i;
-  char buff[256 + 4];
-  size_t keep, skip;
+/** Would reading n bytes at the current offset stay inside the .dat? A size
+    the host could not report is refused rather than waived: filesize() answers
+    in a long int, so a 32-bit build handed a .dat past 2 GB reads back a value
+    that bounds nothing. **/
+static hts_boolean cache_fits(FILE *fp, long int datSize, size_t n) {
+  const long int at = ftell(fp);
 
-  if (s == NULL || size == 0)
-    return;
-  linput(fp, buff, 256);
-  sscanf(buff, INTsysP, &i);
-  if (i < 0 || i > 32768)       /* error, something nasty happened */
-    i = 0;
-  keep = ((size_t) i < size) ? (size_t) i : size - 1;
-  skip = (size_t) i - keep;
-  if (keep > 0 && fread(s, 1, keep, fp) != keep) {
-    assertf(! "fread_cache_failed");
-  }
-  while(skip > 0) {
-    char discard[512];
-    const size_t chunk = (skip < sizeof(discard)) ? skip : sizeof(discard);
-
-    if (fread(discard, 1, chunk, fp) != chunk)
-      break;
-    skip -= chunk;
-  }
-  s[keep] = '\0';
+  if (at < 0 || datSize < 0)
+    return HTS_FALSE;
+  return at <= datSize && n <= (size_t) (datSize - at) ? HTS_TRUE : HTS_FALSE;
 }
 
-static char *cache_rstr_addr(FILE * fp) {
-  INTsys i;
-  char *addr = NULL;
+/** Read a field's length prefix. HTS_FALSE on a truncated line, an unparseable
+    or out-of-range length, or one running past the end of the file: the record
+    is unreadable, and refusing it is the only way to keep the fields after it
+    aligned. **/
+static hts_boolean cache_rlen(FILE *fp, long int datSize, size_t *len) {
+  INTsys i = 0;
   char buff[256 + 4];
 
+  *len = 0;
   linput(fp, buff, 256);
-  sscanf(buff, "%d", &i);
-  if (i < 0 || i > 32768)       /* error, something nasty happened */
-    i = 0;
-  if (i > 0) {
-    addr = malloc(i + 1);
-    if (addr != NULL) {
-      if ((int) fread(addr, 1, i, fp) != i) {
-        assertf(! "fread_cache_failed");
-      }
-      *(addr + i) = '\0';
-    }
-  }
-  return addr;
+  if (sscanf(buff, INTsysP, &i) != 1 || i < 0 || i > CACHE_FIELD_MAXSIZE)
+    return HTS_FALSE;
+  if (!cache_fits(fp, datSize, (size_t) i))
+    return HTS_FALSE;
+  *len = (size_t) i;
+  return HTS_TRUE;
 }
 
-static void cache_rint(FILE * fp, int *i) {
+/** Read one length-prefixed field into s. HTS_FALSE leaves s empty and the
+    stream at an unknown offset, so the caller must drop the whole record. **/
+static hts_boolean cache_rstr(FILE *fp, char *s, size_t s_size,
+                              long int datSize) {
+  size_t want;
+
+  s[0] = '\0';
+  if (!cache_rlen(fp, datSize, &want))
+    return HTS_FALSE;
+  if (want != 0) {
+    /* store at most s_size-1 bytes, but consume all of them so the next field
+       stays aligned when a cache declares more than the destination holds */
+    const size_t store = want < s_size ? want : s_size - 1;
+
+    if (!hts_fread_exact(s, store, fp))
+      return HTS_FALSE;
+    if (want > store && fseek(fp, (long) (want - store), SEEK_CUR) != 0)
+      return HTS_FALSE;
+    s[store] = '\0';
+  }
+  return HTS_TRUE;
+}
+
+/** Read one length-prefixed field into a fresh buffer the caller owns, NULL
+    for an empty field. HTS_FALSE on a refused record, *out left NULL. **/
+static hts_boolean cache_rstr_addr(FILE *fp, long int datSize, char **out) {
+  size_t want;
+  char *addr;
+
+  *out = NULL;
+  if (!cache_rlen(fp, datSize, &want))
+    return HTS_FALSE;
+  if (want == 0)
+    return HTS_TRUE;
+  if ((addr = malloct(want + 1)) == NULL)
+    return HTS_FALSE;
+  if (!hts_fread_exact(addr, want, fp)) {
+    freet(addr);
+    return HTS_FALSE;
+  }
+  addr[want] = '\0';
+  *out = addr;
+  return HTS_TRUE;
+}
+
+/* Allocate n+1 bytes for an n-byte cache body, rejecting a hostile/corrupt
+   length that would demand an absurd allocation or wrap n+1. NULL on refuse. */
+static char *cache_alloc_body(size_t n) {
+  if (n >= (size_t) INT32_MAX)
+    return NULL;
+  return (char *) malloct(n + 1);
+}
+
+/** Read a length-prefixed decimal field. HTS_FALSE also on a non-numeric one,
+    which is corruption the caller must not carry into the record. **/
+static hts_boolean cache_rint(FILE *fp, long int datSize, int *i) {
   char s[256];
 
-  cache_rstr(fp, s, sizeof(s));
-  sscanf(s, "%d", i);
+  *i = 0;
+  if (!cache_rstr(fp, s, sizeof(s), datSize))
+    return HTS_FALSE;
+  return sscanf(s, "%d", i) == 1 ? HTS_TRUE : HTS_FALSE;
 }
 
-static void cache_rLLint(FILE * fp, unsigned long *i) {
+/** Same, for a size field: a negative value is refused rather than wrapped,
+    since cast to unsigned it would shrink a later body allocation. **/
+static hts_boolean cache_rLLint(FILE *fp, long int datSize, unsigned long *i) {
   int l;
   char s[256];
 
-  cache_rstr(fp, s, sizeof(s));
-  sscanf(s, "%d", &l);
+  *i = 0;
+  if (!cache_rstr(fp, s, sizeof(s), datSize))
+    return HTS_FALSE;
+  if (sscanf(s, "%d", &l) != 1 || l < 0)
+    return HTS_FALSE;
   *i = (unsigned long) l;
+  return HTS_TRUE;
 }
 
 static int PT_LoadCache__Old(PT_Index index_, const char *filename) {
@@ -1470,81 +1628,65 @@ static int PT_LoadCache__Old(PT_Index index_, const char *filename) {
 
     cache->filenameDat[0] = '\0';
     cache->filenameNdx[0] = '\0';
-    cache->path[0] = '\0';
+    /* before the first early return: the readers lock it and the destructor
+       frees it, whether or not we get as far as opening a file */
+    MutexInit(&cache->fileLock);
 
-    {
-      PT_Index__Old index = cache;
-      const char *abpath;
-      int slashes;
-
-      /* -------------------- COPY OF THE __New() CODE -------------------- */
-      /* Compute base path for this index - the filename MUST be absolute! */
-      for(slashes = 2, abpath = filename + (int) strlen(filename) - 1;
-          abpath > filename && ((*abpath != '/' && *abpath != '\\')
-                                || --slashes > 0);
-          abpath--) ;
-      index->path[0] = '\0';
-      if (slashes == 0 && *abpath != 0) {
-        int i;
-
-        strncat(index->path, filename, (int) (abpath - filename) + 1);
-        for(i = 0; index->path[i] != 0; i++) {
-          if (index->path[i] == '\\') {
-            index->path[i] = '/';
-          }
-        }
-      }
-      /* -------------------- END OF COPY OF THE __New() CODE -------------------- */
-    }
+    index_base_path(cache->path, sizeof(cache->path), filename);
 
     /* Index/data filenames */
     if (pos != NULL) {
-      int nLen = (int) (pos - filename);
+      const size_t nLen = (size_t) (pos - filename);
 
-      strncat(cache->filenameDat, filename, nLen);
-      strncat(cache->filenameNdx, filename, nLen);
-      strcat(cache->filenameDat, ".dat");
-      strcat(cache->filenameNdx, ".ndx");
+      /* a base clipped to fit would name a different pair of files */
+      if (nLen > sizeof(cache->filenameDat) - sizeof(".dat")) {
+        return 0;
+      }
+      strlncatbuff(cache->filenameDat, filename, sizeof(cache->filenameDat),
+                   nLen);
+      strlncatbuff(cache->filenameNdx, filename, sizeof(cache->filenameNdx),
+                   nLen);
+      strcatbuff(cache->filenameDat, ".dat");
+      strcatbuff(cache->filenameNdx, ".ndx");
     }
     ndxSize = filesize(cache->filenameNdx);
+    cache->datSize = filesize(cache->filenameDat);
     cache->timestamp = file_timestamp(cache->filenameDat);
     cache->dat = fopen(cache->filenameDat, "rb");
     cache->ndx = fopen(cache->filenameNdx, "rb");
     if (cache->dat != NULL && cache->ndx != NULL && ndxSize > 0) {
-      char *use = malloc(ndxSize + 1);
+      char *use = malloct((size_t) ndxSize + 1);
 
-      if (fread(use, 1, ndxSize, cache->ndx) == ndxSize) {
+      /* the index is the whole file read at once: a short read refuses it */
+      if (use == NULL || !hts_fread_exact(use, (size_t) ndxSize, cache->ndx)) {
+        freet(use);
+      } else {
         char firstline[256];
         char *a = use;
 
         use[ndxSize] = '\0';
-        a += cache_brstr(a, firstline);
+        a += cache_brstr(a, firstline, sizeof(firstline));
         if (strncmp(firstline, "CACHE-", 6) == 0) {     // Nouvelle version du cache
           if (strncmp(firstline, "CACHE-1.", 8) == 0) { // Version 1.1x
             cache->version = (int) (firstline[8] - '0');        // cache 1.x
             if (cache->version <= 5) {
-              a += cache_brstr(a, firstline);
-              strcpy(cache->lastmodified, firstline);
+              a += cache_brstr(a, firstline, sizeof(firstline));
+              strcpybuff(cache->lastmodified, firstline);
             } else {
-              // fprintf(opt->errlog,"Cache: version 1.%d not supported, ignoring current cache"LF,cache->version);
               fclose(cache->dat);
               cache->dat = NULL;
-              free(use);
-              use = NULL;
+              freet(use);
             }
-          } else {              // non supporté
-            // fspc(opt->errlog,"error"); fprintf(opt->errlog,"Cache: %s not supported, ignoring current cache"LF,firstline);
+          } else { // non supporté
             fclose(cache->dat);
             cache->dat = NULL;
-            free(use);
-            use = NULL;
+            freet(use);
           }
           /* */
         } else {                // Vieille version du cache
           /* */
-          // hts_log_print(opt, LOG_WARNING, "Cache: importing old cache format");
           cache->version = 0;   // cache 1.0
-          strcpy(cache->lastmodified, firstline);
+          strcpybuff(cache->lastmodified, firstline);
         }
 
         /* Create hash table for the cache (MUCH FASTER!) */
@@ -1559,11 +1701,22 @@ static int PT_LoadCache__Old(PT_Index index_, const char *filename) {
             if (a) {
               a++;
               /* read "host/file" */
-              a += binput(a, line, HTS_URLMAXSIZE);
-              a += binput(a, line + strlen(line), HTS_URLMAXSIZE);
+              a += binput(a, line, HTS_URLMAXSIZE, NULL);
+              {
+                /* binput writes its NUL at s[max], so the second field must be
+                   bounded by what is left of line[], not by the same constant
+                 */
+                const size_t used = strlen(line);
+
+                a += binput(a, line + used, (int) (sizeof(line) - used - 1),
+                            NULL);
+              }
               /* read position */
-              a += binput(a, linepos, 200);
-              sscanf(linepos, "%d", &pos);
+              a += binput(a, linepos, 200, NULL);
+              /* an unparseable field must not carry the previous entry's
+                 offset over, nor read the stack on the first one */
+              if (sscanf(linepos, "%d", &pos) != 1)
+                pos = 0;
 
               /* Add entry */
               coucal_add(cache->hash, line, pos);
@@ -1572,19 +1725,21 @@ static int PT_LoadCache__Old(PT_Index index_, const char *filename) {
               if (!firstSeen) {
                 if (strstr(line, "/robots.txt") == NULL) {
                   PT_Index__Old index = cache;
+                  const char *scheme =
+                      link_has_authority(line) ? "" : "http://";
 
-                  firstSeen = 1;
-                  if (!link_has_authority(line))
-                    strcat(index->startUrl, "http://");
-                  strcat(index->startUrl, line);
+                  /* dropped rather than truncated; try the next entry */
+                  if (sprintfbuff(index->startUrl, "%s%s", scheme, line))
+                    firstSeen = 1;
+                  else
+                    index->startUrl[0] = '\0';
                 }
               }
 
             }
           }
           /* Not needed anymore! */
-          free(use);
-          use = NULL;
+          freet(use);
           return 1;
         }
       }
@@ -1654,27 +1809,36 @@ static PT_Element PT_ReadCache__Old_u(PT_Index index_, const char *url,
   previous_save[0] = previous_save_[0] = '\0';
   memset(r, 0, sizeof(_PT_Element));
   r->location = location_default;
-  strcpy(r->location, "");
+  r->location[0] = '\0';
   if (strncmp(url, "http://", 7) == 0)
     url += 7;
   hash_pos_return = coucal_read(cache->hash, url, &hash_pos);
 
   if (hash_pos_return) {
-    int pos = (int) hash_pos;   /* simply */
+    const int pos = (int) hash_pos; /* simply */
+    /* the sign flags "body on disk", so the offset is the magnitude; INT_MIN
+       has no positive counterpart and is therefore not one */
+    const long int offset = pos == INT_MIN ? -1 : (pos > 0 ? pos : -pos);
 
-    if (fseek(cache->dat, (pos > 0) ? pos : (-pos), SEEK_SET) == 0) {
+    if (offset >= 0 && fseek(cache->dat, offset, SEEK_SET) == 0) {
       /* Importer cache1.0 */
       if (cache->version == 0) {
         OLD_htsblk old_r;
 
-        if (fread((char *) &old_r, 1, sizeof(old_r), cache->dat) == sizeof(old_r)) {    // lire tout (y compris statuscode etc)
+        if (hts_fread_exact(
+                &old_r, sizeof(old_r),
+                cache->dat)) { // lire tout (y compris statuscode etc)
           int i;
           String urlDecoded;
 
           r->statuscode = old_r.statuscode;
-          r->size = old_r.size; // taille fichier
-          strcpy(r->msg, old_r.msg);
-          strcpy(r->contenttype, old_r.contenttype);
+          r->size = old_r.size > 0 ? (size_t) old_r.size : 0; // taille fichier
+          /* these fixed fields come straight from fread and carry no guaranteed
+             NUL; terminate them before the bounded copy */
+          old_r.msg[sizeof(old_r.msg) - 1] = '\0';
+          old_r.contenttype[sizeof(old_r.contenttype) - 1] = '\0';
+          strcpybuff(r->msg, old_r.msg);
+          strcpybuff(r->contenttype, old_r.contenttype);
 
           /* Guess the destination filename.. this sucks, because this method is not reliable.
              Yes, the old 1.0 cache format was *that* bogus. /rx */
@@ -1706,44 +1870,46 @@ static PT_Element PT_ReadCache__Old_u(PT_Index index_, const char *url,
         /* */
         /* Cache 1.1 */
       } else {
+        const long int datSize = cache->datSize;
         char check[256];
-        unsigned long size_read;
-        unsigned long int size_;
+        unsigned long size_read = 0;
+        unsigned long int size_ = 0;
 
         check[0] = '\0';
-        //
-        cache_rint(cache->dat, &r->statuscode);
-        cache_rLLint(cache->dat, &size_);
-        r->size = (size_t) size_;
-        cache_rstr(cache->dat, r->msg, sizeof(r->msg));
-        cache_rstr(cache->dat, r->contenttype, sizeof(r->contenttype));
-        if (cache->version >= 3)
-          cache_rstr(cache->dat, r->charset, sizeof(r->charset));
-        cache_rstr(cache->dat, r->lastmodified, sizeof(r->lastmodified));
-        cache_rstr(cache->dat, r->etag, sizeof(r->etag));
-        cache_rstr(cache->dat, r->location, sizeof(location_default));
-        if (cache->version >= 2)
-          cache_rstr(cache->dat, r->cdispo, sizeof(r->cdispo));
-        if (cache->version >= 4) {
-          cache_rstr(cache->dat, previous_save_, sizeof(previous_save_));       // adr
-          cache_rstr(cache->dat, previous_save_, sizeof(previous_save_));       // fil
-          previous_save[0] = '\0';
-          cache_rstr(cache->dat, previous_save_, sizeof(previous_save_));       // save
-        }
-        if (cache->version >= 5) {
-          r->headers = cache_rstr_addr(cache->dat);
-        }
-        //
-        cache_rstr(cache->dat, check, sizeof(check));
-        if (strcmp(check, "HTS") == 0) {        /* intégrité OK */
+        /* the fields are consecutive, so the first one that does not read
+           leaves every later one at the wrong offset: refuse the record
+           rather than serve fields decoded from the wrong bytes */
+        if (cache_rint(cache->dat, datSize, &r->statuscode) &&
+            cache_rLLint(cache->dat, datSize, &size_) &&
+            cache_rstr(cache->dat, r->msg, sizeof(r->msg), datSize) &&
+            cache_rstr(cache->dat, r->contenttype, sizeof(r->contenttype),
+                       datSize) &&
+            (cache->version < 3 ||
+             cache_rstr(cache->dat, r->charset, sizeof(r->charset), datSize)) &&
+            cache_rstr(cache->dat, r->lastmodified, sizeof(r->lastmodified),
+                       datSize) &&
+            cache_rstr(cache->dat, r->etag, sizeof(r->etag), datSize) &&
+            cache_rstr(cache->dat, r->location, sizeof(location_default),
+                       datSize) &&
+            (cache->version < 2 ||
+             cache_rstr(cache->dat, r->cdispo, sizeof(r->cdispo), datSize)) &&
+            (cache->version < 4 ||
+             (cache_rstr(cache->dat, previous_save_, sizeof(previous_save_),
+                         datSize) && // adr
+              cache_rstr(cache->dat, previous_save_, sizeof(previous_save_),
+                         datSize) && // fil
+              cache_rstr(cache->dat, previous_save_, sizeof(previous_save_),
+                         datSize))) && // save
+            (cache->version < 5 ||
+             cache_rstr_addr(cache->dat, datSize, &r->headers)) &&
+            cache_rstr(cache->dat, check, sizeof(check), datSize) &&
+            strcmp(check, "HTS") == 0 && /* intégrité OK */
+            cache_rLLint(cache->dat, datSize, &size_read)) {
           ok = 1;
         }
-        cache_rLLint(cache->dat, &size_read);   /* lire size pour être sûr de la taille déclarée (réécrire) */
-        if (size_read > 0) {    /* si inscrite ici */
-          r->size = size_read;
-        } else {                /* pas de données directement dans le cache, fichier présent? */
-          r->size = 0;
-        }
+        /* size_read is the authoritative one when written here; without it the
+           body lives in a separate file */
+        r->size = ok ? (size_t) size_read : 0;
       }
 
       /* Check destination filename */
@@ -1756,19 +1922,15 @@ static PT_Element PT_ReadCache__Old_u(PT_Index index_, const char *url,
           int pathLen = (int) strlen(index->path);
 
           if (pathLen > 0 && strncmp(previous_save_, index->path, pathLen) == 0) {      // old (<3.40) buggy format
-            strcpy(previous_save, previous_save_);
+            strcpybuff(previous_save, previous_save_);
           }
           // relative ? (hack)
           else if (index->safeCache || (previous_save_[0] != '/'        // /home/foo/bar.gif
                                         && (!isalpha(previous_save_[0]) || previous_save_[1] != ':'))   // c:/home/foo/bar.gif
             ) {
             index->safeCache = 1;
-            if (!PT_BuildCachePath(previous_save, sizeof(previous_save),
-                                   index->path, previous_save_)) {
-              snprintf(r->msg, sizeof(r->msg),
-                       "Cached path is too long for %s", url);
-              r->statuscode = STATUSCODE_INVALID;
-            }
+            snprintf(previous_save, sizeof(previous_save), "%s%s", index->path,
+                     previous_save_);
           }
           // bogus format (includes buggy absolute path)
           else {
@@ -1776,8 +1938,7 @@ static PT_Element PT_ReadCache__Old_u(PT_Index index_, const char *url,
             if (index->fixedPath == 0) {
               const char *start = jump_protocol_and_auth(url);
               const char *end = start ? strchr(start, '/') : NULL;
-              int len = (start != NULL && end != NULL)
-                ? (int) (end - start) : 0;
+              int len = (int) (end - start);
 
               if (start != NULL && end != NULL && len > 0 && len < 128) {
                 char piece[128 + 2];
@@ -1794,25 +1955,17 @@ static PT_Element PT_ReadCache__Old_u(PT_Index index_, const char *url,
               int saveLen = (int) strlen(previous_save_);
 
               if (index->fixedPath < saveLen) {
-                if (!PT_BuildCachePath(previous_save, sizeof(previous_save),
-                                       index->path,
-                                       previous_save_ + index->fixedPath)) {
-                  snprintf(r->msg, sizeof(r->msg),
-                           "Cached path is too long for %s", url);
-                  r->statuscode = STATUSCODE_INVALID;
-                }
+                snprintf(previous_save, sizeof(previous_save), "%s%s",
+                         index->path, previous_save_ + index->fixedPath);
               } else {
-                snprintf(r->msg, sizeof(r->msg), "Bogus fixePath prefix for %s (prefixLen=%d)",
-                        previous_save_, (int) index->fixedPath);
+                PT_Element_failf(r,
+                                 "Bogus fixePath prefix for %s (prefixLen=%d)",
+                                 previous_save_, (int) index->fixedPath);
                 r->statuscode = STATUSCODE_INVALID;
               }
             } else {
-              if (!PT_BuildCachePath(previous_save, sizeof(previous_save),
-                                     index->path, previous_save_)) {
-                snprintf(r->msg, sizeof(r->msg),
-                         "Cached path is too long for %s", url);
-                r->statuscode = STATUSCODE_INVALID;
-              }
+              snprintf(previous_save, sizeof(previous_save), "%s%s",
+                       index->path, previous_save_);
             }
           }
         }
@@ -1829,56 +1982,70 @@ static PT_Element PT_ReadCache__Old_u(PT_Index index_, const char *url,
               FILE *fp = fopen(previous_save, "rb");
 
               if (fp != NULL) {
-                r->adr = (char *) malloc(r->size + 1);
-                if (r->adr != NULL) {
-                  if (r->size > 0 && fread(r->adr, 1, r->size, fp) != r->size) {
-                    r->statuscode = STATUSCODE_INVALID;
-                    strcpy(r->msg, "Read error in cache disk data");
-                  }
-                  r->adr[r->size] = '\0';
-                } else {
+                /* same two bounds as a .dat-held body: the format's ceiling,
+                   then the file the bytes have to come out of */
+                if (r->size >= (size_t) INT_MAX ||
+                    !cache_fits(fp, filesize(previous_save), r->size)) {
                   r->statuscode = STATUSCODE_INVALID;
-                  strcpy(r->msg, "Read error (memory exhausted) from cache");
+                  strcpybuff(r->msg, "Cache Read Error : Bad Size");
+                } else if ((r->adr = cache_alloc_body(r->size)) == NULL) {
+                  r->statuscode = STATUSCODE_INVALID;
+                  strcpybuff(r->msg,
+                             "Read error (memory exhausted) from cache");
+                } else if (r->size > 0 &&
+                           !hts_fread_exact(r->adr, r->size, fp)) {
+                  PT_Element_DropBody(r);
+                  r->statuscode = STATUSCODE_INVALID;
+                  strcpybuff(r->msg, "Read error in cache disk data");
+                } else {
+                  r->adr[r->size] = '\0';
                 }
                 fclose(fp);
               } else {
                 r->statuscode = STATUSCODE_INVALID;
-                strcpy(r->msg, "Previous cache file not found (2)");
+                strcpybuff(r->msg, "Previous cache file not found (2)");
               }
             }
           } else {
             // lire fichier (d'un coup)
             if (flags & FETCH_BODY) {
-              r->adr = (char *) malloc(r->size + 1);
-              if (r->adr != NULL) {
-                if (fread(r->adr, 1, r->size, cache->dat) != r->size) { // erreur
-                  free(r->adr);
-                  r->adr = NULL;
-                  r->statuscode = STATUSCODE_INVALID;
-                  strcpy(r->msg, "Cache Read Error : Read Data");
-                } else
-                  r->adr[r->size] = '\0';
-              } else {          // erreur
+              /* The size field is a 32-bit signed decimal, so INT_MAX is the
+                 format's own ceiling, the one the zip reader above takes too.
+                 Past that the body must still fit in the bytes left of the
+                 .dat, which catches corruption before the allocation rather
+                 than on the failing read. */
+              if (r->size >= (size_t) INT_MAX ||
+                  !cache_fits(cache->dat, cache->datSize, r->size)) {
                 r->statuscode = STATUSCODE_INVALID;
-                strcpy(r->msg, "Cache Memory Error");
+                strcpybuff(r->msg, "Cache Read Error : Bad Size");
+              } else if ((r->adr = cache_alloc_body(r->size)) == NULL) {
+                r->statuscode = STATUSCODE_INVALID;
+                strcpybuff(r->msg, "Cache Memory Error");
+              } else if (!hts_fread_exact(r->adr, r->size, cache->dat)) {
+                PT_Element_DropBody(r);
+                r->statuscode = STATUSCODE_INVALID;
+                strcpybuff(r->msg, "Cache Read Error : Read Data");
+              } else {
+                r->adr[r->size] = '\0';
               }
             }
           }
         } else {
           r->statuscode = STATUSCODE_INVALID;
-          strcpy(r->msg, "Cache Read Error : Bad Data");
+          strcpybuff(r->msg, "Cache Read Error : Bad Data");
         }
       } else {                  // erreur
         r->statuscode = STATUSCODE_INVALID;
-        strcpy(r->msg, "Cache Read Error : Read Header");
+        strcpybuff(r->msg, "Cache Read Error : Read Header");
+        fprintf(stderr, "Truncated or corrupt cache record for %s" LF, url);
       }
     } else {
       r->statuscode = STATUSCODE_INVALID;
-      strcpy(r->msg, "Cache Read Error : Seek Failed");
+      strcpybuff(r->msg, "Cache Read Error : Seek Failed");
     }
   } else {
     r->statuscode = STATUSCODE_INVALID;
-    strcpy(r->msg, "File Cache Entry Not Found");
+    strcpybuff(r->msg, "File Cache Entry Not Found");
   }
   if (r->location[0] != '\0') {
     r->location = strdup(r->location);
@@ -1971,6 +2138,20 @@ static int skipArcNl(FILE * file) {
   return -1;
 }
 
+/* Stop on the newline opening the first record: archives whose version block
+   length swallowed the closing blank line leave only that one. */
+static int skipArcVersionNl(FILE *file) {
+  long int pos = ftell(file);
+
+  if (pos < 0 || fgetc(file) != 0x0a) {
+    return -1;
+  }
+  if (fgetc(file) == 0x0a) { /* the blank line, when outside the length */
+    pos++;
+  }
+  return fseek(file, pos, SEEK_SET);
+}
+
 static int skipArcData(FILE * file, const char *line) {
   int jump = getArcLength(line);
 
@@ -1995,16 +2176,11 @@ static int getDigit4(const char *const pos) {
     getDigit(pos[2]) * 10 + getDigit(pos[3]);
 }
 
-static time_t getGMT(struct tm *tm) {   /* hey, time_t is local! */
-  time_t t = mktime(tm);
+static time_t getGMT(struct tm *tm) {
+  time_t t = timegm(tm);
 
   if (t != (time_t) - 1 && t != (time_t) 0) {
-    /* BSD does not have static "timezone" declared */
-#if (defined(BSD) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__FreeBSD_kernel__))
-    time_t now = time(NULL);
-    time_t timezone = -localtime(&now)->tm_gmtoff;
-#endif
-    return (time_t) (t - timezone);
+    return t;
   }
   return (time_t) - 1;
 }
@@ -2051,6 +2227,164 @@ static int PT_CompatibleScheme(const char *url) {
           || str_begins(url, "file:"));
 }
 
+static hts_boolean arcPastRecordEnd(FILE *file, long int end) {
+  return (end >= 0 && ftell(file) > end) ? HTS_TRUE : HTS_FALSE;
+}
+
+/* Characters linput() returns for one line at most, given the size the walk
+   passes it: one below the buffer it is handed, which is itself one below the
+   field. Matching it exactly is what keeps the scan and the walk from reading
+   the same long line differently. */
+#define ARC_LINE_MAX ((int) sizeof(((PT_Index__Arc) NULL)->line) - 2)
+
+/* Bytes this reader's own linput(), the one in proxytrack.h rather than the one
+   in htslib.c, never returns wherever they sit on the line. NUL is among them,
+   so a record line carrying one is indexed and served all the same. */
+static hts_boolean arcDroppedByte(char c) {
+  return (c == 0 || c == 9 || c == 12 || c == 13) ? HTS_TRUE : HTS_FALSE;
+}
+
+/* Length of the digit run filling the field at pos, or -1 for anything else. */
+static int arcDigitField(const char *pos) {
+  int i;
+
+  for (i = 0; pos[i] >= '0' && pos[i] <= '9'; i++)
+    ;
+  return (pos[i] == '\0' || pos[i] == ARC_SP) ? i : -1;
+}
+
+/* A scheme, an address, a date, a MIME type and a length, in five fields
+   (arc 1.0) or ten (arc 1.1). Trailing spaces do not count, because one of them
+   is the whole difference on an otherwise ordinary line. */
+static hts_boolean arcHasRecordShape(const char *line) {
+  const char *pos;
+  int fields = 1;
+  int last;
+  int i;
+
+  if (!isalpha((unsigned char) line[0]))
+    return HTS_FALSE;
+  for (i = 0; line[i] != ':'; i++) {
+    if (!isalnum((unsigned char) line[i]) && line[i] != '+' && line[i] != '-' &&
+        line[i] != '.')
+      return HTS_FALSE;
+  }
+  if (line[i + 1] == '\0' || line[i + 1] == ARC_SP)
+    return HTS_FALSE;
+  for (last = i; line[i] != '\0'; i++) {
+    if (line[i] != ARC_SP)
+      last = i;
+  }
+  for (i = 0; i < last; i++) {
+    if (line[i] == ARC_SP)
+      fields++;
+  }
+  if (fields != 5 && fields != 10)
+    return HTS_FALSE;
+  pos = getArcField(line, fields - 1);
+  return (pos != NULL && arcDigitField(pos) > 0) ? HTS_TRUE : HTS_FALSE;
+}
+
+/* PT_LoadCache__Arc indexes a record on getArcLength() and a scheme it can
+   serve, so the scan below has to accept at least that much: a record this
+   reader will hand out under its own URL must never be invisible to it. The
+   shape arm adds the records it will not serve, such as the one "dns:" per host
+   Heritrix writes, which bound their neighbour all the same. */
+static hts_boolean arcIsRecordLine(const char *line) {
+  if (PT_CompatibleScheme(line) && getArcLength(line) >= 0)
+    return HTS_TRUE;
+  return arcHasRecordShape(line);
+}
+
+/* Could this raw span open a record line? Every one names a scheme, so the
+   first field has to reach a ':' through scheme characters alone, and that
+   turns away almost every line of an archived page before it is copied. */
+static hts_boolean arcMayOpenRecord(const char *raw, size_t len) {
+  size_t i;
+
+  for (i = 0; i < len && arcDroppedByte(raw[i]); i++)
+    ;
+  if (i == len || !isalpha((unsigned char) raw[i]))
+    return HTS_FALSE;
+  for (; i < len; i++) {
+    if (raw[i] == ':')
+      return HTS_TRUE;
+    if (arcDroppedByte(raw[i]))
+      continue;
+    if (!isalnum((unsigned char) raw[i]) && raw[i] != '+' && raw[i] != '-' &&
+        raw[i] != '.')
+      return HTS_FALSE;
+  }
+  return HTS_FALSE;
+}
+
+/* Append what linput() would have kept of a raw span, to the same cap. */
+static size_t arcAppendLine(char *line, size_t len, const char *raw,
+                            size_t rawlen) {
+  size_t i;
+
+  for (i = 0; i < rawlen && len < (size_t) ARC_LINE_MAX; i++) {
+    if (!arcDroppedByte(raw[i]))
+      line[len++] = raw[i];
+  }
+  line[len] = '\0';
+  return len;
+}
+
+/* Reads the record's declared data from where the file already sits, and
+   answers whether a record starts inside it. A line counts by where it STARTS,
+   because a declared end landing inside the next record's own line still serves
+   the front of that line. Reading forward rather than seeking back is what
+   keeps an archive of small records from being read many times over: the walk
+   has to cross these bytes anyway. */
+static hts_boolean arcDataHoldsARecord(PT_Index__Arc index, long int from,
+                                       long int to) {
+  char buffer[32768];
+  char line[ARC_LINE_MAX + 1];
+  long int base = from; /* offset buffer[0] was read from */
+  size_t lineLen = 0;
+
+  while (base < to) {
+    const long int left = to - base;
+    size_t want =
+        (left < (long int) sizeof(buffer)) ? (size_t) left : sizeof(buffer);
+    const size_t got = fread(buffer, 1, want, index->file);
+    size_t i = 0;
+
+    while (i < got) {
+      char *const nl = (char *) memchr(&buffer[i], 0x0a, got - i);
+      const size_t chunk = (nl != NULL) ? (size_t) (nl - &buffer[i]) : got - i;
+
+      if (lineLen == 0 && nl != NULL) {
+        /* the whole line is in the buffer, so weigh it before copying it out */
+        if (arcMayOpenRecord(&buffer[i], chunk)) {
+          (void) arcAppendLine(line, 0, &buffer[i], chunk);
+          if (arcIsRecordLine(line))
+            return HTS_TRUE;
+        }
+      } else {
+        lineLen = arcAppendLine(line, lineLen, &buffer[i], chunk);
+        if (nl != NULL && arcMayOpenRecord(line, lineLen) &&
+            arcIsRecordLine(line))
+          return HTS_TRUE;
+      }
+      i += chunk;
+      if (nl == NULL)
+        break;
+      i++;
+      lineLen = 0;
+    }
+    base += (long int) got;
+    if (got < want) /* short read: end of file */
+      break;
+  }
+  /* the last line of the data, which the separator rather than a newline ends
+   */
+  if (lineLen != 0 && arcMayOpenRecord(line, lineLen))
+    return arcIsRecordLine(line);
+  return HTS_FALSE;
+}
+
 int PT_LoadCache__Arc(PT_Index index_, const char *filename) {
   if (index_ != NULL && filename != NULL) {
     PT_Index__Arc index = &index_->slots.formatArc;
@@ -2063,6 +2397,13 @@ int PT_LoadCache__Arc(PT_Index index_, const char *filename) {
     if (index->file != NULL) {
       coucal hashtable = index->hash;
 
+      /* past LONG_MAX a 32-bit ftell cannot answer; keep serving the records
+         it can still reach, with the bound no longer constraining */
+      if (fseek(index->file, 0, SEEK_END) != 0 ||
+          (index->fileSize = ftell(index->file)) < 0) {
+        index->fileSize = LONG_MAX;
+      }
+      rewind(index->file);
       if (readArcURLRecord(index) == 0) {
         int entries = 0;
 
@@ -2075,9 +2416,9 @@ int PT_LoadCache__Arc(PT_Index index_, const char *filename) {
         }
         /* Timestamp */
         index->timestamp = getArcTimestamp(index->line);
-        /* Skip first entry */
-        if (skipArcData(index->file, index->line) != 0
-            || skipArcNl(index->file) != 0) {
+        /* Skip the version block, leaving the record loop its own separator */
+        if (skipArcData(index->file, index->line) != 0 ||
+            skipArcVersionNl(index->file) != 0) {
           fprintf(stderr, "Unexpected bad data offset size first entry" LF);
           fclose(index->file);
           index->file = NULL;
@@ -2098,10 +2439,35 @@ int PT_LoadCache__Arc(PT_Index index_, const char *filename) {
                 filenameIndex += 7;
               }
               if (*filenameIndex != 0) {
-                if (skipArcData(index->file, index->line) != 0) {
+                const long int dataStart = ftell(index->file);
+                long int dataEnd;
+
+                /* the declared length is untrusted, so it stands alone here */
+                if (dataStart < 0 || length > LONG_MAX - dataStart) {
                   fprintf(stderr,
                           "Corrupted cache data entry #%d (truncated file?), aborting read"
                           LF, (int) entries);
+                  break;
+                }
+                dataEnd = dataStart + length;
+                if (arcDataHoldsARecord(index, dataStart, dataEnd)) {
+                  fprintf(stderr,
+                          "Cache data entry #%d reaches into the next record,"
+                          " skipped" LF,
+                          (int) entries);
+                  /* the record is dropped, not the archive: the walk picks up
+                     at the declared end and judges what it finds there the way
+                     it judges every other record */
+                  if (fseek(index->file, dataEnd, SEEK_SET) != 0)
+                    break;
+                  continue;
+                }
+                if (fseek(index->file, dataEnd, SEEK_SET) != 0) {
+                  fprintf(stderr,
+                          "Corrupted cache data entry #%d (truncated file?), "
+                          "aborting read" LF,
+                          (int) entries);
+                  break;
                 }
                 /*fprintf(stdout, "adding %s [%d]\n", filenameIndex, (int)fpos); */
                 if (PT_CompatibleScheme(index->filenameIndexBuff)) {
@@ -2138,12 +2504,14 @@ int PT_LoadCache__Arc(PT_Index index_, const char *filename) {
   return 0;
 }
 
-#define HTTP_READFIELD_STRING(line, value, refline, refvalue) do { \
-  if (line[0] != '\0' && strfield2(line, refline)) { \
-    strcpy(refvalue, value); \
-    line[0] = '\0'; \
-	} \
-} while(0)
+/* Same contract as ZIP_READFIELD_STRING, for the ARC reader's header lines. */
+#define HTTP_READFIELD_STRING(line, value, refline, refvalue, refvalue_size)   \
+  do {                                                                         \
+    if (line[0] != '\0' && strfield2(line, refline)) {                         \
+      (void) strclipbuff(refvalue, refvalue_size, value);                      \
+      line[0] = '\0';                                                          \
+    }                                                                          \
+  } while (0)
 #define HTTP_READFIELD_INT(line, value, refline, refvalue) do { \
   if (line[0] != '\0' && strfield2(line, refline)) { \
     int intval = 0; \
@@ -2179,7 +2547,7 @@ static PT_Element PT_ReadCache__Arc_u(PT_Index index_, const char *url,
   location_default[0] = '\0';
   memset(r, 0, sizeof(_PT_Element));
   r->location = location_default;
-  strcpy(r->location, "");
+  r->location[0] = '\0';
   if (strncmp(url, "http://", 7) == 0)
     url += 7;
   hash_pos_return = coucal_read(index->hash, url, &hash_pos);
@@ -2189,11 +2557,14 @@ static PT_Element PT_ReadCache__Arc_u(PT_Index index_, const char *url,
       if (skipArcNl(index->file) == 0 && readArcURLRecord(index) == 0) {
         long int fposMeta = ftell(index->file);
         int dataLength = getArcLength(index->line);
+        /* a line reaching past this belongs to the record stored after it */
+        const long int fposEnd = dataLength >= 0 ? fposMeta + dataLength : -1;
         const char *pos;
 
         /* Read HTTP headers */
         /* HTTP/1.1 404 Not Found */
-        if (linput(index->file, index->line, sizeof(index->line) - 1)) {
+        if (linput(index->file, index->line, sizeof(index->line) - 1) &&
+            !arcPastRecordEnd(index->file, fposEnd)) {
           if ((pos = getArcField(index->line, 1)) != NULL) {
             if (sscanf(pos, "%d", &r->statuscode) != 1) {
               r->statuscode = STATUSCODE_INVALID;
@@ -2201,32 +2572,45 @@ static PT_Element PT_ReadCache__Arc_u(PT_Index index_, const char *url,
           }
           if ((pos = getArcField(index->line, 2)) != NULL) {
             r->msg[0] = '\0';
-            strncat(r->msg, pos, sizeof(pos) - 1);
+            strncatbuff(r->msg, pos, sizeof(r->msg) - 1);
           }
           while(linput(index->file, index->line, sizeof(index->line) - 1)
                 && index->line[0] != '\0') {
             char *const line = index->line;
             char *value = strchr(line, ':');
 
+            if (arcPastRecordEnd(index->file, fposEnd))
+              break;
             if (value != NULL) {
               *value = '\0';
               for(value++; *value == ' ' || *value == '\t'; value++) ;
               HTTP_READFIELD_INT(line, value, "Content-Length", r->size);       // size
-              HTTP_READFIELD_STRING(line, value, "Content-Type", r->contenttype);       // contenttype
-              HTTP_READFIELD_STRING(line, value, "Last-Modified", r->lastmodified);     // last-modified
-              HTTP_READFIELD_STRING(line, value, "Etag", r->etag);      // Etag
-              HTTP_READFIELD_STRING(line, value, "Location", r->location);      // 'location' pour moved
-              HTTP_READFIELD_STRING(line, value, "Content-Disposition", r->cdispo);     // Content-disposition
+              HTTP_READFIELD_STRING(line, value, "Content-Type", r->contenttype,
+                                    sizeof(r->contenttype));
+              HTTP_READFIELD_STRING(line, value, "Last-Modified",
+                                    r->lastmodified, sizeof(r->lastmodified));
+              HTTP_READFIELD_STRING(line, value, "Etag", r->etag,
+                                    sizeof(r->etag));
+              HTTP_READFIELD_STRING(line, value, "Location", r->location,
+                                    sizeof(location_default));
+              HTTP_READFIELD_STRING(line, value, "Content-Disposition",
+                                    r->cdispo, sizeof(r->cdispo));
               if (line[0] != '\0') {
-                int len = r->headers ? ((int) strlen(r->headers)) : 0;
-                int nlen =
-                  (int) (strlen(line) + 2 + strlen(value) + sizeof("\r\n") + 1);
-                r->headers = realloc(r->headers, len + nlen);
-                r->headers[len] = '\0';
-                strcat(r->headers, line);
-                strcat(r->headers, ": ");
-                strcat(r->headers, value);
-                strcat(r->headers, "\r\n");
+                const int len = r->headers ? ((int) strlen(r->headers)) : 0;
+                /* one byte more than the four appends below write */
+                const int nlen = (int) (strlen(line) + 2 + strlen(value) +
+                                        sizeof("\r\n") + 1);
+                char *const grown = realloct(r->headers, len + nlen);
+
+                /* keep the headers read so far rather than losing them */
+                if (grown != NULL) {
+                  r->headers = grown;
+                  r->headers[len] = '\0';
+                  strcat(r->headers, line);
+                  strcat(r->headers, ": ");
+                  strcat(r->headers, value);
+                  strcat(r->headers, "\r\n");
+                }
               }
             }
           }
@@ -2254,9 +2638,12 @@ static PT_Element PT_ReadCache__Arc_u(PT_Index index_, const char *url,
 
               if (fetchSize <= 0) {
                 fetchSize = dataLength - metaSize;
-              } else if (fetchSize > dataLength - metaSize) {
+              }
+              /* the declared body may exceed the archive we allocate it from */
+              if (fetchSize < 0 || fetchSize > dataLength - metaSize ||
+                  fetchSize > index->fileSize - fposCurrent) {
                 r->statuscode = STATUSCODE_INVALID;
-                strcpy(r->msg, "Cache Read Error : Truncated Data");
+                strcpybuff(r->msg, "Cache Read Error : Truncated Data");
               }
               r->size = 0;
               if (r->statuscode != STATUSCODE_INVALID) {
@@ -2269,12 +2656,13 @@ static PT_Element PT_ReadCache__Arc_u(PT_Index index_, const char *url,
                     int last_errno = errno;
 
                     r->statuscode = STATUSCODE_INVALID;
-                    sprintf(r->msg, "Read error in cache disk data: %s",
-                            strerror(last_errno));
+                    PT_Element_failf(r, "Read error in cache disk data: %s",
+                                     strerror(last_errno));
                   }
                 } else {
                   r->statuscode = STATUSCODE_INVALID;
-                  strcpy(r->msg, "Read error (memory exhausted) from cache");
+                  strcpybuff(r->msg,
+                             "Read error (memory exhausted) from cache");
                 }
               }
             }
@@ -2282,21 +2670,21 @@ static PT_Element PT_ReadCache__Arc_u(PT_Index index_, const char *url,
 
         } else {
           r->statuscode = STATUSCODE_INVALID;
-          strcpy(r->msg, "Cache Read Error : Read Header Error");
+          strcpybuff(r->msg, "Cache Read Error : Read Header Error");
         }
 
       } else {
         r->statuscode = STATUSCODE_INVALID;
-        strcpy(r->msg, "Cache Read Error : Read Header Error");
+        strcpybuff(r->msg, "Cache Read Error : Read Header Error");
       }
     } else {
       r->statuscode = STATUSCODE_INVALID;
-      strcpy(r->msg, "Cache Read Error : Seek Error");
+      strcpybuff(r->msg, "Cache Read Error : Seek Error");
     }
 
   } else {
     r->statuscode = STATUSCODE_INVALID;
-    strcpy(r->msg, "File Cache Entry Not Found");
+    strcpybuff(r->msg, "File Cache Entry Not Found");
   }
   if (r->location[0] != '\0') {
     r->location = strdup(r->location);
@@ -2341,63 +2729,89 @@ typedef struct PT_SaveCache__Arc_t {
   char md5[32 + 2];
 } PT_SaveCache__Arc_t;
 
+/* Append src to an .arc header block of capacity size, clipping what does not
+   fit: the values come from a cache entry, so shortening beats dropping it.
+   HTS_FALSE when it had to clip. */
+static hts_boolean arc_headers_cat(char *headers, size_t size,
+                                   const char *src) {
+  const size_t used = strlen(headers);
+  const size_t left = used < size - 1 ? size - used - 1 : 0;
+
+  if (left != 0) {
+    strlncatbuff(headers, src, size, left);
+  }
+  return strlen(src) <= left ? HTS_TRUE : HTS_FALSE;
+}
+
 static int PT_SaveCache__Arc_Fun(void *arg, const char *url, PT_Element element) {
   PT_SaveCache__Arc_t *st = (PT_SaveCache__Arc_t *) arg;
   FILE *const fp = st->fp;
+  const size_t body_size = PT_Element_BodySize(element);
   struct tm *tm = convert_time_rfc822(&st->buff, element->lastmodified);
+  struct tm unknown_date;
+  /* the two strcatbuff calls closing the block rely on these 4 bytes */
+  const size_t room = sizeof(st->headers) - 4;
+  hts_boolean fit;
   int size_headers;
-  int written;
-  size_t used;
 
-  if (tm == NULL) {
-    return 1;
+  if (body_size != element->size) {
+    fprintf(stderr, "Entry %s stored without its %lu-byte body" LF, url,
+            (unsigned long) element->size);
   }
-  written = snprintf(st->headers, sizeof(st->headers),
-                     "HTTP/1.0 %d %s" "\r\n"
+
+  /* a cached entry with no parseable Last-Modified must not take the writer
+     down; the epoch is the conventional "date unknown" */
+  if (tm == NULL) {
+    memset(&unknown_date, 0, sizeof(unknown_date));
+    unknown_date.tm_year = 70;
+    unknown_date.tm_mday = 1;
+    tm = &unknown_date;
+  }
+
+  fit = slprintfbuff(st->headers, room,
+                     "HTTP/1.0 %d %s"
+                     "\r\n"
                      "X-Server: ProxyTrack " PROXYTRACK_VERSION "\r\n"
-                     "Content-type: %s%s%s%s" "\r\n"
-                     "Last-modified: %s" "\r\n"
-                     "Content-length: %d" "\r\n",
-                     element->statuscode, element->msg, element->contenttype,
+                     "Content-type: %s%s%s%s"
+                     "\r\n"
+                     "Last-modified: %s"
+                     "\r\n"
+                     "Content-length: %d"
+                     "\r\n",
+                     element->statuscode, element->msg,
+                     /**/ hts_effective_mime(element->contenttype),
                      (element->charset[0] ? "; charset=\"" : ""),
                      (element->charset[0] ? element->charset : ""),
-                     (element->charset[0] ? "\"" : ""), element->lastmodified,
-                     (int) element->size);
-  if (written < 0 || (size_t) written >= sizeof(st->headers)) {
-    return 1;
-  }
-  used = (size_t) written;
+                     (element->charset[0] ? "\"" : ""),
+                     /**/ element->lastmodified, (int) body_size);
   if (element->location != NULL && element->location[0] != '\0') {
-    written = snprintf(st->headers + used, sizeof(st->headers) - used,
-                       "Location: %s" "\r\n", element->location);
-    if (written < 0 || (size_t) written >= sizeof(st->headers) - used) {
-      return 1;
+    if (!arc_headers_cat(st->headers, room, "Location: ") ||
+        !arc_headers_cat(st->headers, room, element->location) ||
+        !arc_headers_cat(st->headers, room, "\r\n")) {
+      fit = HTS_FALSE;
     }
-    used += (size_t) written;
   }
-  if (element->headers != NULL) {
-    const size_t incoming = strlen(element->headers);
-    if (incoming >= sizeof(st->headers) - used) {
-      return 1;
-    }
-    memcpy(st->headers + used, element->headers, incoming);
-    used += incoming;
-    st->headers[used] = '\0';
+  if (element->headers != NULL &&
+      !arc_headers_cat(st->headers, room, element->headers)) {
+    fit = HTS_FALSE;
   }
-  if (sizeof(st->headers) - used <= 2) {
-    return 1;
+  /* a clip landing mid-line must still end it, or the body reads as a header */
+  if (hts_lastchar(st->headers) != '\n') {
+    strcatbuff(st->headers, "\r\n");
   }
-  memcpy(st->headers + used, "\r\n", 3);
-  used += 2;
-  size_headers = (int) used;
+  strcatbuff(st->headers, "\r\n");
+  size_headers = (int) strlen(st->headers);
+  if (!fit) {
+    fprintf(stderr, "Headers of %s clipped to %d bytes" LF, url, size_headers);
+  }
 
   /* doc == <nl><URL-record><nl><network_doc> */
 
   /* Format: URL IP date mime result checksum location offset filename length */
-  if (element->adr != NULL) {
-    domd5mem(element->adr, element->size, st->md5, 1);
+  if (body_size != 0) {
+    domd5mem(element->adr, body_size, st->md5, 1);
   } else {
-    strcpy(st->md5, "-");
+    strcpybuff(st->md5, "-");
   }
   fprintf(fp,
           /* nl */
@@ -2409,15 +2823,13 @@ static int PT_SaveCache__Arc_Fun(void *arg, const char *url, PT_Element element)
           /* args */
           (link_has_authority(url) ? "" : "http://"), url, "0.0.0.0",
           tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour,
-          tm->tm_min, tm->tm_sec, element->contenttype, element->statuscode,
-          st->md5, (element->location ? element->location : "-"),
-          (long int) ftell(fp), st->filename,
-          (long int) (size_headers + element->size));
+          tm->tm_min, tm->tm_sec, hts_effective_mime(element->contenttype),
+          element->statuscode, st->md5,
+          (element->location ? element->location : "-"), (long int) ftell(fp),
+          st->filename, (long int) (size_headers + body_size));
   /* network_doc */
-  if (fwrite(st->headers, 1, size_headers, fp) != size_headers
-      || (element->size > 0
-          && fwrite(element->adr, 1, element->size, fp) != element->size)
-    ) {
+  if (!hts_fwrite_exact(st->headers, size_headers, fp) ||
+      (body_size != 0 && !hts_fwrite_exact(element->adr, body_size, fp))) {
     return 1;                   /* Error */
   }
 
@@ -2438,16 +2850,20 @@ static int PT_SaveCache__Arc(PT_Indexes indexes, const char *filename) {
        2<sp><reserved><sp><origin-code><nl>
        URL<sp>IP-address<sp>Archive-date<sp>Content-type<sp>Result-code<sp>Checksum<sp>Location<sp> Offset<sp>Filename<sp>Archive-length<nl>
        <nl> */
-    const char *prefix =
-      "2 0 HTTrack Website Copier" "\n"
-      "URL IP-address Archive-Date Content-Type Result-code Checksum Location Offset Filename Archive-length"
-      "\n" "\n";
+    const char *prefix = "2 0 HTTrack Website Copier"
+                         "\n"
+                         "URL IP-address Archive-Date Content-Type Result-code "
+                         "Checksum Location Offset Filename Archive-length"
+                         "\n";
     sprintf(st.filename, "httrack_%d.arc", (int) t);
     fprintf(fp,
             "filedesc://%s 0.0.0.0 %04d%02d%02d%02d%02d%02d text/plain 200 - - 0 %s %d"
             "\n" "%s", st.filename, tm.tm_year + 1900, tm.tm_mon + 1,
             tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, st.filename,
             (int) strlen(prefix), prefix);
+    /* the blank line closing the version block is a separator, outside the
+       declared length */
+    fputc('\n', fp);
     st.fp = fp;
     st.indexes = indexes;
     st.t = t;

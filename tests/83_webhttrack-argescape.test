@@ -1,0 +1,77 @@
+#!/bin/bash
+#
+# The wizard renders its httrack command line as one string, which the engine
+# splits back into argv: a double quote in a field must reach the split escaped,
+# or the rest of the value is parsed as fresh options (-V runs a shell command).
+
+set -euo pipefail
+
+# shellcheck source=tests/webhttracklib.sh
+. "${0%"${0##*/}"}./webhttracklib.sh"
+
+htsserver_require
+
+cleanup_push htsserver_cleanup
+
+htsserver_start
+test -n "${HTS_PID}" || fail "htsserver did not report its pid"
+
+sid=$(htsserver_sid)
+test "${#sid}" -eq 32 || fail "did not scrape a 32-hex sid from the page (got '${sid}')"
+
+# Fill the wizard fields with what would break each position, then read back the
+# generated command line; the project name stays plain as a control.
+htsserver_client --field "sid=${sid}" \
+    --field 'user=Moz" -V "touch /tmp/pwn' --field 'footer=a\b"c' \
+    --field 'path=/tmp/p' --field 'projname=plain proj' \
+    --field 'urls=http://x/a"b' --field 'url2=+*.png"</textarea>' \
+    --field 'sitemap=1' --field 'sitemapurl=http://x/s.xml"b' >/dev/null
+cmdline=$(htsserver_get /server/step4.html |
+    sed -n '/<textarea name="command"/,/<\/textarea>/p')
+
+# Control: without the fields in the page every assertion below is vacuous.
+grep -q -- '--user-agent' <<<"${cmdline}" ||
+    fail "no --user-agent in the generated command line (probe blind)"
+
+# A plain value is passed through untouched: the escaping must not mangle the
+# ordinary case.
+grep -qF -- '--path "/tmp/p/plain proj"' <<<"${cmdline}" ||
+    fail "a plain quoted value was not passed through: ${cmdline}"
+
+# The quote is escaped, so the split keeps it inside the value...
+grep -qF -- '--user-agent "Moz\" -V \"touch /tmp/pwn"' <<<"${cmdline}" ||
+    fail "the quote in the user-agent was not escaped: ${cmdline}"
+
+# ...and the raw form, which would end the argument and hand -V to the option
+# parser, is gone.
+grep -qF -- '--user-agent "Moz" -V "touch' <<<"${cmdline}" &&
+    fail "the user-agent still closes its argument early: ${cmdline}"
+
+# A backslash is escaped too, or the split would eat it along with the quote
+# that follows.
+grep -qF -- '--footer "a\\b\"c"' <<<"${cmdline}" ||
+    fail "the backslash in the footer was not escaped: ${cmdline}"
+
+# The url and filter fields sit outside quotes, where a backslash cannot escape
+# anything: one quote there flips the parity of every quote after it, so the
+# escaping above would protect nothing. They must not emit a raw quote at all.
+grep -qF -- 'http://x/a%22b' <<<"${cmdline}" ||
+    fail "the quote in the url field was not neutralised: ${cmdline}"
+grep -qF -- '+*.png%22' <<<"${cmdline}" ||
+    fail "the quote in the filter field was not neutralised: ${cmdline}"
+grep -qF -- 'http://x/a"b' <<<"${cmdline}" &&
+    fail "the url field still emits a raw quote: ${cmdline}"
+
+# The whole textarea is HTML too: a field holding its closing tag must come back
+# as entities, or the value lands in the page as markup.
+grep -qF -- '+*.png%22&lt;/textarea&gt;' <<<"${cmdline}" ||
+    fail "the filter field was not HTML-escaped: ${cmdline}"
+grep -qF -- '+*.png%22</textarea>' <<<"${cmdline}" &&
+    fail "the filter field still closes the textarea: ${cmdline}"
+
+# The sitemap url is quoted like the user-agent, so it takes the same escape.
+# Its box is ticked: a cleared one gates the value out.
+grep -qF -- '--sitemap-url "http://x/s.xml\"b"' <<<"${cmdline}" ||
+    fail "the quote in the sitemap url was not escaped: ${cmdline}"
+
+echo "PASS"

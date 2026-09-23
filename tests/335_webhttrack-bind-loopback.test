@@ -1,0 +1,129 @@
+#!/bin/bash
+#
+# The panel htsserver serves is unauthenticated, so nothing off this host may
+# reach its default socket. 77 checks that against a loopback alias only.
+
+set -euo pipefail
+
+# shellcheck source=tests/webhttracklib.sh
+. "${0%"${0##*/}"}./webhttracklib.sh"
+
+htsserver_require
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/webhttrack_bind.XXXXXX") || fail "no tmpdir"
+cleanup_push htsserver_cleanup_dir "${work}"
+
+# "ok", or the errno name: a filtered address times out where an unbound one is
+# refused, and only the refusal proves nothing is listening.
+probe() { # $1 = host, $2 = port
+    htsserver_python - "$1" "$2" <<'PY'
+import socket, sys
+sys.stdout.reconfigure(newline="\n")  # the word below is compared byte for byte
+try:
+    socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5).close()
+    print("ok")
+except OSError as e:
+    print(type(e).__name__)
+PY
+}
+
+# The primary outbound IPv4, which a UDP connect() picks without sending a byte,
+# or the classification of $1 when given one, so the guard below is checkable.
+# A function, not a heredoc inside $(): bash 3.2 runs that one as commands.
+primary_ipv4() { # [address]
+    htsserver_python - ${1+"$1"} <<'PY'
+import ipaddress, socket, sys
+sys.stdout.reconfigure(newline="\n")  # an empty answer must stay empty for test -z
+if len(sys.argv) > 1:
+    raw = sys.argv[1]
+else:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("192.0.2.1", 9))  # TEST-NET-1, never routed
+        raw = s.getsockname()[0]
+    except OSError:
+        raw = ""
+    finally:
+        s.close()
+try:
+    ip = ipaddress.ip_address(raw)
+except ValueError:
+    ip = None
+# 0.0.0.0 is what Fedora's mock answers: its buildroot is a loopback-only
+# namespace, but it carries a default route, so the connect above succeeds.
+print("" if ip is None or ip.is_loopback or ip.is_unspecified else ip)
+PY
+}
+
+# Taking the wildcard for an address was #1463; taking nothing would drop the
+# widening half in silence.
+for unusable in 0.0.0.0 127.0.0.1 127.9.9.9 ''; do
+    test -z "$(primary_ipv4 "${unusable}")" || fail "primary_ipv4 accepts ${unusable}"
+done
+test "$(primary_ipv4 198.51.100.7)" = 198.51.100.7 ||
+    fail "primary_ipv4 rejects a routable address"
+
+addr=$(primary_ipv4)
+# The off-loopback half is the one a wildcard bind would fail. Without an
+# address to try it from, nothing below can see that, so the run skips.
+unobserved=""
+
+# Without this control a refusal below could just mean the box filters ${addr}.
+if test -n "${addr}" && ! htsserver_python - "${addr}" <<'PY'; then
+import socket, sys
+try:
+    srv = socket.socket()
+    srv.bind((sys.argv[1], 0))
+    srv.listen(1)
+    socket.create_connection(srv.getsockname(), timeout=5).close()
+    srv.close()
+except OSError as e:
+    sys.exit(str(e))
+PY
+    echo "cannot bind and reach ${addr} here" >&2
+    addr=
+fi
+
+if test -n "${addr}"; then
+    port=$(htsserver_freeport)
+    htsserver_start --port "${port}" --home "${work}/wide" -- --bind "${addr}"
+    case ${HTS_URL} in
+    *"//${addr}:"*) ;;
+    *) fail "--bind ${addr} advertised ${HTS_URL}" ;;
+    esac
+    got=$(probe "${addr}" "${port}")
+    test "${got}" = ok || fail "--bind ${addr} did not answer on ${addr} (${got})"
+    echo "ok: --bind ${addr} widens the socket"
+    htsserver_stop
+else
+    unobserved="no non-loopback IPv4 here"
+fi
+
+port=$(htsserver_freeport)
+htsserver_start --port "${port}" --home "${work}/default"
+# webhttrack launches the browser on this URL, so a loopback bind has to
+# advertise a loopback address.
+case ${HTS_URL} in
+*//127.0.0.1:*) ;;
+*) fail "the default run advertised ${HTS_URL}, unreachable on a loopback bind" ;;
+esac
+got=$(probe 127.0.0.1 "${port}")
+test "${got}" = ok || fail "the default run refused 127.0.0.1 (${got})"
+echo "ok: the default socket answers on 127.0.0.1"
+if test -n "${addr}"; then
+    got=$(probe "${addr}" "${port}")
+    test "${got}" = ConnectionRefusedError ||
+        fail "the default run answers on ${addr} (${got})"
+    # A dead server refuses too, so the refusal counts only while it is up.
+    got=$(probe 127.0.0.1 "${port}")
+    test "${got}" = ok || fail "the default run died before the refusal (${got})"
+    echo "ok: and refuses ${addr}"
+fi
+htsserver_stop
+
+# A leaked server wedges the parallel harness behind a green log.
+htsserver_assert_reaped
+
+htsserver_cleanup_dir "${work}"
+test -z "${unobserved}" || skip "${unobserved}: the off-loopback half never ran"
+echo "PASS"

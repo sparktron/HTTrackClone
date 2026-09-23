@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -30,13 +32,41 @@ Please visit our Website: http://www.httrack.com
 #include <string.h>
 #include <time.h>
 #include <ctype.h>
+#ifdef _WIN32
+#include <io.h>    /* _setmode, _fileno */
+#include <fcntl.h> /* _O_BINARY */
+#endif
 
 #define HTSSAFE_ABORT_FUNCTION(A,B,C)
 #include "htsbase.h"
 #include "htsnet.h"
 #include "htslib.h"
+#include "coucal.h"
 #include "store.h"
 #include "proxytrack.h"
+
+/* HTS_LOG, the engine's own debug switch. */
+static hts_boolean proxytrack_verbose = HTS_FALSE;
+
+/* Without a handler coucal writes to stderr itself, prefixing the table
+   address; the per-enumeration statistics summary then lands on the operator's
+   console once per WebDAV request (#918). */
+static HTS_PRINTF_FUN(3, 0) void proxytrack_coucal_loghandler(
+    coucal_opaque arg, coucal_loglevel level, const char *format,
+    va_list args) {
+  const char *severity;
+
+  (void) arg;
+  if (level <= coucal_log_critical) {
+    severity = CRITICAL;
+  } else if (level <= coucal_log_warning) {
+    severity = WARNING;
+  } else {
+    /* not the DEBUG macro: it is NULL outside a debug build, voiding HTS_LOG */
+    severity = proxytrack_verbose ? "debug" : NULL;
+  }
+  proxytrack_vprint_log(severity, format, args);
+}
 
 #ifndef _WIN32
 #include <signal.h>
@@ -45,7 +75,9 @@ static void sig_brpipe(int code) {
 }
 #endif
 
-static int scanHostPort(const char *str, char *host, int *port) {
+// split a "host:port" listen argument; FALSE sends the caller to the usage
+// screen. The port was unchecked, so a huge one wrapped into range (#614).
+static hts_boolean scanHostPort(const char *str, char *host, int *port) {
   char *pos = strrchr(str, ':');
 
   if (pos != NULL) {
@@ -54,13 +86,24 @@ static int scanHostPort(const char *str, char *host, int *port) {
     if (n < 256) {
       host[0] = '\0';
       strncat(host, str, n);
-      if (sscanf(pos + 1, "%d", port) == 1) {
-        return 1;
-      }
+      return hts_parse_url_port(pos + 1, port);
     }
   }
-  return 0;
+  return HTS_FALSE;
 }
+
+#ifdef _WIN32
+/* Windows opens stdout in text mode, so every \n leaves as \r\n. A shell
+   reading that pipe sees the CR: MSYS folds it away, a Linux one under WSL2
+   does not, and the test suite then compares against a byte it never wrote.
+   Set by tests/ci-windows-suite.sh, so nothing changes for anyone else. */
+static void hts_binary_stdio(void) {
+  if (getenv("HTS_BINARY_STDIO") != NULL) {
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+  }
+}
+#endif
 
 int main(int argc, char *argv[]) {
   int i;
@@ -70,6 +113,7 @@ int main(int argc, char *argv[]) {
   PT_Indexes index;
 
 #ifdef _WIN32
+  hts_binary_stdio();
   {
     WORD wVersionRequested;     // requested version WinSock API
     WSADATA wsadata;            // Windows Sockets API data
@@ -88,10 +132,22 @@ int main(int argc, char *argv[]) {
   }
 #endif
 
+  /* Before the first table is built. */
+  {
+    const char *const dbg_env = getenv("HTS_LOG");
+    int level = 0;
+
+    if (dbg_env != NULL && sscanf(dbg_env, "%d", &level) == 1 && level > 0) {
+      proxytrack_verbose = HTS_TRUE;
+    }
+  }
+  coucal_set_global_assert_handler(proxytrack_coucal_loghandler, NULL);
+
   /* Args */
   printf("ProxyTrack %s, build proxies upon HTTrack Website Copier Archives\n",
          PROXYTRACK_VERSION);
-  printf("Copyright (C) 1998-2017 Xavier Roche and other contributors\n");
+  printf("Copyright (C) 1998-%s Xavier Roche and other contributors\n",
+         &__DATE__[7]);
   printf("\n");
   printf("This program is free software: you can redistribute it and/or modify\n");
   printf("it under the terms of the GNU General Public License as published by\n");

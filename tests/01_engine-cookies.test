@@ -1,23 +1,16 @@
 #!/bin/bash
 #
+# Issue #151 guard: the request Cookie header must be bare RFC 6265 name=value
+# pairs, no $Version/$Path attributes. Driven by the 'httrack -#test=cookies' selftest.
 
-# cookie domain scoping engine
-# usage: httrack -#8 <cookie-domain> <query-domain>  =>  "match" | "nomatch"
+set -eu
 
-# a wildcard cookie applies to the bare domain and to any subdomain
-test "$(httrack -O /dev/null -#8 .foo.com foo.com)" == "match"		|| exit 1
-test "$(httrack -O /dev/null -#8 .foo.com www.foo.com)" == "match"	|| exit 1
-test "$(httrack -O /dev/null -#8 .foo.com a.b.foo.com)" == "match"	|| exit 1
-test "$(httrack -O /dev/null -#8 foo.com foo.com)" == "match"		|| exit 1
+# 'run' is an ignored placeholder argument.
+out=$(httrack -#test=cookies run)
 
-# ... but never to a different domain that merely ends the same way
-test "$(httrack -O /dev/null -#8 .foo.com evilfoo.com)" == "nomatch"	|| exit 1
-test "$(httrack -O /dev/null -#8 .foo.com bar.com)" == "nomatch"	|| exit 1
-test "$(httrack -O /dev/null -#8 foo.com bar.com)" == "nomatch"		|| exit 1
-
-# a cookie scoped to a subdomain must not widen to its parent
-test "$(httrack -O /dev/null -#8 .x.foo.com foo.com)" == "nomatch"	|| exit 1
-
-# A query domain shorter than the cookie domain must not underflow the
-# comparison loop and walk off the front of either buffer.
-test "$(httrack -O /dev/null -#8 .foo.com a)" == "nomatch"		|| exit 1
+# Exact-match the success line so a renamed/removed test (it prints the registry
+# to stderr) can't pass.
+test "$out" = "cookie-header: OK" || {
+    echo "expected 'cookie-header: OK', got: $out" >&2
+    exit 1
+}

@@ -1,0 +1,371 @@
+#!/bin/bash
+#
+# A worker of ci-windows-suite.sh that dies before writing any status (#1352): the
+# tally must call it lost rather than failed, and the suite must end on a status
+# that says re-run, not investigate. The workflow counts them again off the console
+# the step teed, for the runs the watchdog kills before that verdict (#1588). Driven
+# here because the Windows leg, where it happens, keeps no evidence of it.
+#
+# Five staged suite runs of 121 stubs each are real work, not a wedge. That is 112s
+# here and past the 600s guard on a loaded macOS runner, so the arms pace themselves.
+# TEST_TIMEOUT_AT_LEAST: 1200
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# Before the driver is sourced: with these set, anything it starts posts a commit
+# status on whatever the surrounding shell was last looking at.
+unset WATCHDOG_TOKEN WATCHDOG_REPO WATCHDOG_SHA WATCHDOG_URL
+# shellcheck source=tests/ci-windows-suite.sh
+. "$testdir/ci-windows-suite.sh"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/httrack_lostworker.XXXXXX")
+cleanup_push rm -rf "$tmp"
+
+GITHUB_STEP_SUMMARY=$tmp/summary
+export GITHUB_STEP_SUMMARY
+: >"$GITHUB_STEP_SUMMARY"
+
+# --- what a worker leaves behind, and what that means ------------------------
+
+res=$tmp/results
+mkdir -p "$res"
+echo 0 >"$res/pass.test.rc"
+echo 77 >"$res/skip.test.rc"
+echo 3 >"$res/fail.test.rc"
+# A worker killed mid-write: the file exists and holds nothing, which is not a 0.
+: >"$res/halfwritten.test.rc"
+# gone.test.rc is deliberately absent.
+
+for c in pass:pass skip:skip fail:fail gone:lost halfwritten:lost; do
+    ci_read_outcome "${c%:*}.test" "$res"
+    test "$ci_outcome" = "${c#*:}" ||
+        fail "${c%:*}.test classified as $ci_outcome, want ${c#*:} (rc=[$ci_rc])"
+done
+
+# On synthetic logs, not in the run below, where which of the three a killed worker
+# lands on depends on what its test had managed to print.
+lostdir=$tmp/lost
+mkdir -p "$lostdir"
+(
+    cd "$lostdir"
+    : >opened.test.log
+    echo "the test spoke" >spoke.test.log
+    for c in missing:'no log at all' opened:'0-byte log' spoke:'log written'; do
+        ci_lost_reason "${c%:*}.test"
+        case "$ci_reason" in
+        "${c#*:}"*) ;;
+        *) fail "${c%:*}.test: reason is [$ci_reason], want [${c#*:}...]" ;;
+        esac
+    done
+)
+
+# --- and the same thing end to end, with a worker really killed --------------
+
+bin=$tmp/bin
+mkdir -p "$bin"
+printf '#!/bin/sh\nexit 0\n' >"$bin/httrack"
+# shellcheck disable=SC2016 # $2 is the stub's own expansion
+printf '#!/bin/sh\necho "$2"\n' >"$bin/cygpath"
+chmod +x "$bin/httrack" "$bin/cygpath"
+# Ahead of the driver's own command -v, which asks access(X_OK) and reads false here.
+test -x "$bin/httrack" || skip "${TMPDIR:-/tmp} is noexec, the stub bindir cannot be run"
+
+# The killer stub finds its target by reading argv out of ps, and the emulated
+# leg's rootfs has no procps: a walk that matches nothing there is the missing
+# tool, not a missing worker.
+psargs=$(ps -o args= -p $$ 2>/dev/null || true)
+psppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d " " || true)
+if test -z "$psargs" || test -z "$psppid"; then
+    skip "no ps reporting argv and ppid, so the ancestry walk cannot run"
+fi
+
+share=$tmp/share
+mkdir -p "$share"
+export POOLSHARE=$share
+
+# The 29 the driver pins as msys's expected skips (the default backend here), so
+# a stub run can reach the gates past the skip-set compare instead of stopping on it.
+expected_skips=$(sed -n '/^expected_skips_msys="/,/"$/p' "$testdir/ci-windows-suite.sh" |
+    sed -e 's/^expected_skips_msys="//' -e 's/"$//')
+nskip=$(count_matching_lines . <<<"$expected_skips")
+test "$nskip" -ge 1 || fail "read no expected skips out of the driver"
+# 91 passing stubs clear its floor of 90, and the lost one passes in the control leg.
+ran=$((92 + nskip))
+
+stub() { # stub <path> <exit status> [shell line]
+    # shellcheck disable=SC2016 # the stub's own expansions, not this shell's
+    printf '#!/bin/sh\n%s\nexit %s\n' "${3:-:}" "$2" >"$1"
+}
+
+# Kill the run_one_test subshell where the real one died: after its log was opened,
+# before it could write a status. It is the closest ancestor still carrying the
+# driver's argv, so a lone match is the driver itself and the stub says so instead.
+# shellcheck disable=SC2016 # the stub's own expansions, not this shell's
+killer='
+p=$PPID
+first=
+n=0
+while [ -n "$p" ] && [ "$p" -gt 1 ]; do
+    case "$(ps -o args= -p "$p" 2>/dev/null)" in
+    *ci-windows-suite.sh*)
+        n=$((n + 1))
+        [ -n "$first" ] || first=$p
+        ;;
+    esac
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d " ")
+done
+if [ "$n" -ge 2 ]; then
+    echo "$first" >"$POOLSHARE/killed"
+    kill -9 "$first"
+    exit 0
+fi
+echo "none ($n ancestors run the driver)" >"$POOLSHARE/killed"'
+
+stage() { # stage <dir> <lost stub body>
+    local d=$1 t i
+    rm -rf "$d"
+    mkdir -p "$d/rt"
+    cp "$testdir/ci-windows-suite.sh" "$testdir/testlib.sh" "$testdir/proclib.sh" \
+        "$testdir/test-timeout.sh" "$d/"
+    chmod u+w "$d"/*.sh
+    # Neutered, or it would kill a sibling's engine under "make check -j".
+    printf 'reap_leftover_processes() { return 0; }\n' >>"$d/proclib.sh"
+    # One per glob the driver enumerates, plus enough passes to clear its floor of 90.
+    for t in 00_runnable 900_zlib-pass 901_watchdog-pass 902_crawllib-pass \
+        903_crawl-harness-pass 904_crawl_proxy_https 905_crawl-log-salvage; do
+        stub "$d/$t.test" 0
+    done
+    i=0
+    while test "$i" -lt 84; do
+        stub "$d/9$((100 + i))_engine-pass.test" 0
+        i=$((i + 1))
+    done
+    # shellcheck disable=SC2086 # one stub per name, so the splitting is the point
+    for t in $expected_skips; do stub "$d/$t" 77; done
+    if test -n "${3:-}"; then
+        # The killer on a pinned skip: the vanished worker cannot record its
+        # skip, so the set gate fires before the lost gate is ever consulted.
+        stub "$d/906_engine-lost.test" 0
+        stub "$d/$3" 77 "$2"
+    else
+        stub "$d/906_engine-lost.test" 0 "$2"
+    fi
+}
+
+# Drive the suite staged in $1 into $tmp/out, its status into $rc and what it cost into
+# $arm_took. Each arm paces after its own assertions, or a skip throws away the run it
+# has already paid for.
+rc=0
+arm_took=0
+run_suite() { # run_suite <dir>
+    local began=$SECONDS
+    rc=0
+    (
+        cd "$1"
+        RUNNER_TEMP="$1/rt" GITHUB_STEP_SUMMARY="$tmp/summary" HTTRACK_SUITE_JOBS=6 \
+            bash ./ci-windows-suite.sh "$bin"
+    ) >"$tmp/out" 2>&1 || rc=$?
+    arm_took=$((SECONDS - began))
+}
+
+# The arms the budget is paced against. The console counts ride on the first two, so
+# they sit after the second and survive a run that paces out.
+cases=5
+n=0
+
+# The control first: the same stubs with nothing killed have to come out green, or
+# the run below proves only that a stub suite cannot pass.
+stage "$tmp/ok" ':'
+run_suite "$tmp/ok"
+test "$rc" -eq 0 || fail "a clean stub suite exited $rc: $(<"$tmp/out")"
+grep -q "^ran=$ran pass=92 fail=0 skip=$nskip lost=0$" "$tmp/out" ||
+    fail "clean tally: $(grep '^ran=' "$tmp/out" || true)"
+# A whole healthy run for the counter below: no LOST line, and a tally saying lost=0.
+cp "$tmp/out" "$tmp/console-clean.log"
+n=$((n + 1))
+pace "$((cases - n))" "$arm_took" "the lost tally, the pinned-skip gate and precedence"
+
+stage "$tmp/killed" "$killer"
+run_suite "$tmp/killed"
+case "$(<"$share/killed")" in
+none*) fail "the stub killed no worker, so the run proves nothing: $(<"$share/killed")" ;;
+esac
+# On its own line, not folded into the failures: the counter step reads these back.
+grep -q '^LOST 906_engine-lost.test (worker left no status; ' "$tmp/out" ||
+    fail "the vanished worker was not reported: $(<"$tmp/out")"
+grep -q "^ran=$ran pass=91 fail=0 skip=$nskip lost=1$" "$tmp/out" ||
+    fail "lost tally: $(grep '^ran=' "$tmp/out" || true)"
+grep -q '::error::worker(s) vanished with no status, re-run this leg: 906_engine-lost.test' "$tmp/out" ||
+    fail "the suite did not name the vanished worker: $(<"$tmp/out")"
+grep -q '::error::failing:' "$tmp/out" &&
+    fail "a killed worker was reported as a failing test: $(<"$tmp/out")"
+# 3, so the workflow can tell a leg to repeat from a leg to investigate (#1228).
+test "$rc" -eq 3 || fail "a lost worker exited $rc, want 3: $(<"$tmp/out")"
+# And a run one worker short: one LOST verdict, and a tally saying lost=1.
+cp "$tmp/out" "$tmp/console-lost.log"
+
+# --- and the count a later step makes off the console it left ----------------
+
+# The suite's own verdict is gone when the watchdog kills its step, so the workflow
+# counts again from the console the step teed.
+counted=''
+count_lost() { # count_lost <console log>
+    local crc=0
+    : >"$GITHUB_STEP_SUMMARY"
+    counted=$(ci_report_lost_workers "$1") || crc=$?
+    # The step runs under if:always() in an errexit shell, so any non-zero here reds
+    # a leg whose suite was healthy. The two guard arms at the end exercise it.
+    test "$crc" -eq 0 || fail "counting $1 exited $crc: $counted"
+}
+
+count_lost "$tmp/console-lost.log"
+grep -q '::error title=workers lost with no status::' <<<"$counted" ||
+    fail "a console with a lost worker raised no annotation: $counted"
+grep -q '1 worker(s) died before reporting' <<<"$counted" ||
+    fail "the count is wrong on a real lost-worker console: $counted"
+# Without a sample line the reader goes back to a log the runner may no longer have.
+grep -q 'LOST 906_engine-lost.test' <<<"$counted" ||
+    fail "the annotation quotes no LOST line: $counted"
+grep -q '^1 worker(s) lost with no status$' "$GITHUB_STEP_SUMMARY" ||
+    fail "step summary says $(<"$GITHUB_STEP_SUMMARY")"
+
+# A clean console still says so: a silent step and a broken counter read alike.
+count_lost "$tmp/console-clean.log"
+grep -q 'no lost worker in ' <<<"$counted" || fail "a clean console said: $counted"
+! grep -q '::error' <<<"$counted" || fail "a clean console raised an annotation: $counted"
+grep -q '^0 worker(s) lost with no status$' "$GITHUB_STEP_SUMMARY" ||
+    fail "a clean console wrote no count: $(<"$GITHUB_STEP_SUMMARY")"
+
+# Two verdicts joined by a CR, since the console is stdout and stderr merged, and
+# two decoys the driver itself can print: a failure tail is indented.
+printf 'LOST a.test (worker left no status; no log at all)\rLOST b.test (worker left no status; no log at all)\n    LOST c.test\nthe test printed LOST d.test\n' \
+    >"$tmp/console-cr.log"
+count_lost "$tmp/console-cr.log"
+grep -q '2 worker(s) died before reporting' <<<"$counted" ||
+    fail "the CR-joined console counted wrong: $counted"
+
+# More than two, so a counter that clamps is not green here. The watchdog killed this
+# step, so there is no tally, and the third verdict is joined onto a failure tail that
+# ends mid-line: a test killed on its budget leaves its log that way, and sed keeps it.
+lostline='(worker left no status; no log at all)'
+{
+    echo "LOST 900_a.test $lostline"
+    echo "      a failure tail of the test that ran out of budget"
+    echo "LOST 901_b.test $lostline"
+    printf '      and this tail ends with no newline at all'
+    echo "LOST 902_c.test $lostline"
+    echo "LOST 903_d.test $lostline"
+} >"$tmp/console-join.log"
+count_lost "$tmp/console-join.log"
+grep -q '4 worker(s) died before reporting' <<<"$counted" ||
+    fail "a killed step's console counted wrong: $counted"
+grep -q '^4 worker(s) lost with no status$' "$GITHUB_STEP_SUMMARY" ||
+    fail "the killed step's count did not reach the summary: $(<"$GITHUB_STEP_SUMMARY")"
+
+# The mirror image, on one verdict: a bare CR inside an indented tail puts the word at
+# a line head, and a test can print it in prose. Neither carries the rest of a verdict.
+{
+    echo "LOST 904_e.test $lostline"
+    printf '      progress 99%%\rLOST 905_f.test\n'
+    echo "the test printed LOST 906_g.test"
+} >"$tmp/console-decoy.log"
+count_lost "$tmp/console-decoy.log"
+grep -q '1 worker(s) died before reporting' <<<"$counted" ||
+    fail "the decoys were counted as verdicts: $counted"
+
+# Where the two disagree the tally wins, since the suite counted its own workers. No
+# driver writes this console: the disagreement is what says which side was read.
+{
+    echo "LOST 907_h.test $lostline"
+    echo "LOST 908_i.test $lostline"
+    printf '      one more tail with no final newline'
+    echo "ran=100 pass=90 fail=2 skip=0 lost=8"
+} >"$tmp/console-tally.log"
+count_lost "$tmp/console-tally.log"
+grep -q '8 worker(s) died before reporting' <<<"$counted" ||
+    fail "the count did not come from the tally the suite wrote: $counted"
+grep -q '^8 worker(s) lost with no status$' "$GITHUB_STEP_SUMMARY" ||
+    fail "the tally count did not reach the summary: $(<"$GITHUB_STEP_SUMMARY")"
+
+# The suite step can die before writing a log; the counter step still runs.
+count_lost "$tmp/console-absent.log"
+grep -q 'not counted' <<<"$counted" || fail "a missing log said: $counted"
+
+# Neither a summary the runner refuses nor a log path that is a directory may red a
+# step that runs on every leg. Both would, since GitHub's bash carries errexit.
+crc=0
+counted=$(GITHUB_STEP_SUMMARY="$tmp" ci_report_lost_workers "$tmp/console-clean.log") || crc=$?
+test "$crc" -eq 0 || fail "an unappendable step summary made the counter exit $crc"
+grep -q '::warning::the lost-worker count did not reach the step summary' <<<"$counted" ||
+    fail "an unappendable step summary was not reported: $counted"
+grep -q 'no lost worker in ' <<<"$counted" ||
+    fail "the count is gone when the summary cannot take it: $counted"
+crc=0
+counted=$(ci_report_lost_workers "$tmp") || crc=$?
+test "$crc" -eq 0 || fail "a log path that is a directory made the counter exit $crc"
+grep -q 'not counted' <<<"$counted" || fail "a directory as the log said: $counted"
+ok "the console count matches what the suite lost"
+
+echo "lost-worker classification OK"
+
+n=$((n + 1))
+pace "$((cases - n))" "$arm_took" "the pinned-skip gate and precedence"
+
+# Again with the killer on one of the pinned skips. That run reaches the skip-set
+# gate, which exits before the lost gate unless it is told a vanished worker
+# explains the difference: the reason this stays a leg to repeat.
+# No pipe: bash's printf writes a line at a time, so head -1 leaving early
+# gives it SIGPIPE, and pipefail turns that into this test's own failure.
+# shellcheck disable=SC2086 # the splitting is what picks one name
+set -- $expected_skips
+pinned=$1
+stage "$tmp/killedskip" "$killer" "$pinned"
+run_suite "$tmp/killedskip"
+case "$(<"$share/killed")" in
+none*) fail "the pinned-skip stub killed no worker: $(<"$share/killed")" ;;
+esac
+grep -q "^LOST $pinned (worker left no status; " "$tmp/out" ||
+    fail "the vanished skip was not reported: $(<"$tmp/out")"
+grep -q '::error::skip set changed from expected' "$tmp/out" ||
+    fail "the skip set did not change, so this run reaches the wrong gate: $(<"$tmp/out")"
+test "$rc" -eq 3 ||
+    fail "a worker lost from the pinned skips exited $rc, want 3: $(<"$tmp/out")"
+ok "a skip that vanished is still a leg to repeat"
+n=$((n + 1))
+pace "$((cases - n))" "$arm_took" "precedence, where a failure outranks a loss"
+
+# A loss alongside a real failure: the failure decides, or a red ships as a leg to
+# repeat and nobody investigates it.
+stage "$tmp/mixed" "$killer"
+stub "$tmp/mixed/900_zlib-pass.test" 3
+run_suite "$tmp/mixed"
+case "$(<"$share/killed")" in
+none*) fail "the mixed stub killed no worker: $(<"$share/killed")" ;;
+esac
+grep -q '^LOST 906_engine-lost.test (worker left no status; ' "$tmp/out" ||
+    fail "the vanished worker was not reported beside the failure: $(<"$tmp/out")"
+grep -q '::error::failing: 900_zlib-pass.test' "$tmp/out" ||
+    fail "the failing test was not named: $(<"$tmp/out")"
+test "$rc" -eq 1 ||
+    fail "a failure alongside a loss exited $rc, want 1: $(<"$tmp/out")"
+ok "a real failure outranks a lost worker"
+n=$((n + 1))
+pace "$((cases - n))" "$arm_took" "an outage, which must read as a leg to repeat"
+
+# A failure whose log carries WSL2's interop error is not a red: the exe never
+# launched (#1672). Here rather than in 469, which calls the verdict directly and
+# so leaves the driver's own gate untested.
+stage "$tmp/interop" ':'
+stub "$tmp/interop/900_zlib-pass.test" 3 \
+    'echo "<3>init: (2409) ERROR: UtilAcceptVsock:235: accept4 failed 110" >&2'
+run_suite "$tmp/interop"
+grep -q '::error::re-run this leg: WSL2 lost its interop channel under: 900_zlib-pass.test' \
+    "$tmp/out" || fail "the outage was not named: $(<"$tmp/out")"
+test "$rc" -eq 3 || fail "an interop outage exited $rc, want 3: $(<"$tmp/out")"
+ok "an interop outage ends the leg on a status that says re-run"
+n=$((n + 1))
+# Nothing left to pace. It catches an arm counted out of step, not one never counted.
+assert_steps_ran "$cases" "$n"

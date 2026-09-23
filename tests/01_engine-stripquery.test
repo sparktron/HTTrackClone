@@ -1,0 +1,9 @@
+#!/bin/bash
+#
+
+set -euo pipefail
+
+# --strip-query: pattern-scoped query-key stripping for dedup. All assertions
+# live in the engine self-test (hts_query_strip_keys + fil_normalized_filtered).
+out=$(httrack -O /dev/null -#test=stripquery)
+grep -q "strip-query self-test OK" <<<"$out"

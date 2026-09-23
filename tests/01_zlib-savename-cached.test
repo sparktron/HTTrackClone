@@ -1,0 +1,31 @@
+#!/bin/bash
+#
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+# Update-run naming from a real cache entry (-#test=savename cached=<ctype>|<save>).
+# Named 01_zlib-*: the cache writer needs zlib, which the MSan job can't run.
+
+httrack_bin=$(httrack_path)
+
+scratch=$(mktemp -d)
+cleanup_push rm -rf "$scratch"
+cd "$scratch"
+
+name() {
+    local fil="$1" ctype="$2" want="$3"
+    shift 3
+    out="$("$httrack_bin" -O /dev/null -#test=savename "$fil" "$ctype" "$@" | sed -n 's/^savename: //p')"
+    test "${out##*/}" == "$want" || fail "'$fil' '$ctype' $* -> '$out' (want '$want')"
+}
+
+# No live bytes: the recorded save name (X-Save) reproduces the previous
+# verdict; cached body bytes (PNG magic) are ignored; css has no magic rule.
+name '/photo.jpg' 'image/png' 'photo.jpg' 'cached=image/png|www.example.com/photo.jpg'
+name '/photo.jpg' 'image/png' 'photo.png' 'cached=image/png|www.example.com/photo.png'
+name '/photo.jpg' 'image/jpeg' 'photo.jpg' 'cached=image/jpeg|www.example.com/photo.png'
+name '/style.css' 'image/png' 'style.css' 'cached=image/png|www.example.com/style.css'
+# agreement keeps the URL ext verbatim (.jpeg), never canonicalized to .jpg
+name '/photo.jpeg' 'image/jpeg' 'photo.jpeg' 'cached=image/jpeg|www.example.com/photo.jpeg'

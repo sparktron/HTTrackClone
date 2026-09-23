@@ -40,14 +40,14 @@ typedef struct hts_yotsuba_sync_result {
   unsigned int requests_made;
 } hts_yotsuba_sync_result;
 
-HTSEXT_API void hts_yotsuba_default_policy(hts_metadata_policy *policy);
-HTSEXT_API int hts_yotsuba_adapter_create(
+void hts_yotsuba_default_policy(hts_metadata_policy *policy);
+int hts_yotsuba_adapter_create(
     hts_catalog *catalog, const hts_yotsuba_options *options,
     hts_yotsuba_adapter **out_adapter);
-HTSEXT_API void hts_yotsuba_adapter_destroy(hts_yotsuba_adapter *adapter);
-HTSEXT_API const hts_metadata_adapter *hts_yotsuba_adapter_contract(
+void hts_yotsuba_adapter_destroy(hts_yotsuba_adapter *adapter);
+const hts_metadata_adapter *hts_yotsuba_adapter_contract(
     hts_yotsuba_adapter *adapter);
-HTSEXT_API hts_metadata_category hts_yotsuba_sync(
+hts_metadata_category hts_yotsuba_sync(
     hts_yotsuba_adapter *adapter, const hts_metadata_transport *transport,
     const hts_metadata_clock *clock, hts_metadata_report_fn report,
     void *report_context, hts_yotsuba_sync_result *result);

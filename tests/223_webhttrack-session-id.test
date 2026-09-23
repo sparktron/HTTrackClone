@@ -1,0 +1,72 @@
+#!/bin/bash
+#
+# The session id authenticates every panel command, so it must not be derivable
+# from the clock: two servers started in the same second must still differ.
+
+set -euo pipefail
+
+# shellcheck source=tests/webhttracklib.sh
+. "${0%"${0##*/}"}./webhttracklib.sh"
+
+htsserver_require
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/webhttrack_sid.XXXXXX") || fail "no tmpdir"
+cleanup_push htsserver_cleanup_dir "${work}"
+
+launch() { # $1 = tag, $2 = port; leaves the URL in ${HTS_URL}
+    htsserver_start --port "$2" --home "${work}/$1" --log "${work}/$1.log"
+}
+
+# Both servers have to read the same second off the clock, or the id they used
+# to derive from it would differ for a reason that is not entropy. Launching
+# just after a tick leaves a whole second to get there; the bracket confirms it.
+urla=
+urlb=
+for _ in $(seq 1 10); do
+    rm -f "${work}"/*.log
+    mkdir -p "${work}/a" "${work}/b"
+    # Both ports up front: a python fork apiece inside the window below is most
+    # of it, and picking them together is what keeps the two apart.
+    read -r porta portb <<<"$(htsserver_freeport tcp tcp)"
+    prev=$(date +%s)
+    while test "$(date +%s)" = "${prev}"; do
+        sleep 0.02
+    done
+    t0=$(date +%s)
+    launch a "${porta}"
+    urla=${HTS_URL}
+    launch b "${portb}"
+    urlb=${HTS_URL}
+    t1=$(date +%s)
+    test "${t0}" != "${t1}" || break
+    htsserver_cleanup_dir "${work}"
+    urla=
+done
+test -n "${urla}" || skip "the box never started two servers inside one second"
+
+"${HTS_PYTHON}" - "${urla}" "${urlb}" <<'PY' || fail "session id checks failed"
+import re, sys, urllib.request
+
+ids = []
+for u in sys.argv[1:3]:
+    body = urllib.request.urlopen(u.rstrip("/") + "/server/index.html",
+                                  timeout=20).read()
+    m = re.search(rb'name="sid" value="([^"]*)"', body)
+    if m is None:
+        print("FAIL: no sid in the form rendered by " + u)
+        sys.exit(1)
+    ids.append(m.group(1).decode())
+
+rc = 0
+for sid in ids:
+    # The templates and the server's own SID_VALUE_MAX assume an md5 digest.
+    ok = re.fullmatch(r"[0-9a-f]{32}", sid) is not None
+    print(("ok: " if ok else "FAIL: ") + "%r is an md5 hex digest" % sid)
+    rc |= 0 if ok else 1
+ok = ids[0] != ids[1]
+print(("ok: " if ok else "FAIL: ") + "same-second ids differ (%r)" % ids)
+sys.exit(rc | (0 if ok else 1))
+PY
+
+htsserver_cleanup_dir "${work}"
+echo "PASS"

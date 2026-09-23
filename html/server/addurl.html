@@ -1,10 +1,10 @@
-<html xmlns="http://www.w3.org/1999/xhtml" lang="${LANGUAGE_ISO}">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="${attr:LANGUAGE_ISO}">
 
 <head>
-	<meta http-equiv="Content-Type" content="text/html; charset=${LANGUAGE_CHARSET}" />
-	<meta name="description" content="${LANG_METADESC}" />
-	<meta name="keywords" content="${LANG_METAKEYW}" />
-	<title>'${projname}' - HTTrack Website Copier</title>
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+	<meta name="description" content="${attr:LANG_METADESC}" />
+	<meta name="keywords" content="${attr:LANG_METAKEYW}" />
+	<title>'${html:projname}' - HTTrack Website Copier</title>
 
 
 
@@ -64,31 +64,21 @@ function info(str) {
 
 <table width="76%" border="0" align="center" cellspacing="0" cellpadding="0" class="tableWidth">
 	<tr>
-	<td><img src="images/header_title_4.gif" width="400" height="34" alt="HTTrack Website Copier" title="" border="0" id="title" /></td>
+	<td><img src="images/wordmark.svg" width="400" height="36" alt="HTTrack Website Copier" title="" border="0" id="title" /></td>
 	</tr>
 </table>
 <table width="76%" border="0" align="center" cellspacing="0" cellpadding="3" class="tableWidth">
 	<tr>
 	<td width="90%" id="subTitle">${LANG_OSFWB}</td>
+${/* the documentation is a separate package and may be absent */}
+${do:if-file-exists:html/doc/html/index.html}
 	<td id="subTitle" align="right">
-		<a href="/server/file.html" target="_blank"
-			onClick="window.open('/server/file.html', 'help', 'toolbar=no, location=no, directories=no, status=yes, menubar=no, scrollbars=yes, resizable=yes, width=640, height=480'); return false"
-			onMouseOver="info('${html:LANG_O1}'); return true" onMouseOut="info('&nbsp;'); return true"
+		<a href="/doc/html/index.html" target="_blank"
+			onClick="window.open('/doc/html/index.html', 'httrack-doc', 'toolbar=no, location=no, directories=no, status=yes, menubar=no, scrollbars=yes, resizable=yes, width=980, height=760'); return false"
+			title='${html:LANG_MANUAL}' onMouseOver="info('${js:LANG_MANUAL}'); return true" onMouseOut="info('&nbsp;'); return true"
 			style="color:#FFFFFF"
 		>
-		${LANG_O1}
-		</a>
-	</td>
-${/* show help only if available */}
-${do:if-file-exists:html/index.html}
-	<td id="subTitle">|</td>
-	<td id="subTitle" align="right">
-		<a href="/index.html" target="_blank"
-			onClick="window.open('/server/help.html', 'help', 'toolbar=no, location=no, directories=no, status=yes, menubar=no, scrollbars=yes, resizable=yes, width=640, height=480'); return false"
-			onMouseOver="info('${html:LANG_TIPHELP}'); return true" onMouseOut="info('&nbsp;'); return true"
-			style="color:#FFFFFF"
-		>
-		${LANG_O5}
+		${LANG_MANUAL}
 		</a>
 	</td>
 ${do:end-if}
@@ -108,30 +98,37 @@ ${do:end-if}
 <table border="0" width="100%">
 <tr><td width="90%">
 	<h2 align="center"><em>${LANG_G43}</em></h2>
-</td><td>
-	<a href="/index.html" target="_blank">${LANG_TIPHELP}</a>
-</td></tr></table>
+</td>
+${do:if-file-exists:html/doc/html/guide.html}
+<td>
+	<a href="/doc/html/guide.html#web/step-address" target="_blank"
+		onClick="window.open('/doc/html/guide.html#web/step-address', 'httrack-doc', 'toolbar=no, location=no, directories=no, status=yes, menubar=no, scrollbars=yes, resizable=yes, width=980, height=760'); return false"
+			title='${html:LANG_TIPHELP}' onMouseOver="info('${js:LANG_TIPHELP}'); return true" onMouseOut="info('&nbsp;'); return true"
+	>${LANG_O5}</a>
+</td>
+${do:end-if}
+</tr></table>
 
 <br>
 
 
-<form action="${thisfile}" name="form">
+<form action="${attr:thisfile}" name="form">
 <table width="100%">
 <tr><td>${LANG_T2}</td><td>http://<input name="urladr"
-			onMouseOver="info('${html:LANG_T10}'); return true" onMouseOut="info('&nbsp;'); return true"
+			title='${html:LANG_T10}' onMouseOver="info('${js:LANG_T10}'); return true" onMouseOut="info('&nbsp;'); return true"
 ></td></tr>
 <tr><td colspan=2>
 
 <table width="100%">
 <th>${LANG_T4}</th>
 <tr><td>${LANG_T5}:</td><td><input name="urllogin"
-			onMouseOver="info('${html:LANG_T12}'); return true" onMouseOut="info('&nbsp;'); return true"
+			title='${html:LANG_T12}' onMouseOver="info('${js:LANG_T12}'); return true" onMouseOut="info('&nbsp;'); return true"
 ></td></tr>
 <tr><td>${LANG_T6}:</td><td><input name="urlpass"
-			onMouseOver="info('${html:LANG_T13}'); return true" onMouseOut="info('&nbsp;'); return true"
+			title='${html:LANG_T13}' onMouseOver="info('${js:LANG_T13}'); return true" onMouseOut="info('&nbsp;'); return true"
 ></td></tr>
-<tr><td>${LANG_T7}:</td><td><input type="button" value="${LANG_T8}" onClick="alert('not yet implemented!')"
-			onMouseOver="info('${html:LANG_T14}'); return true" onMouseOut="info('&nbsp;'); return true"
+<tr><td>${LANG_T7}:</td><td><input type="button" value="${attr:LANG_T8}" onClick="alert('not yet implemented!')"
+			title='${html:LANG_T14}' onMouseOver="info('${js:LANG_T14}'); return true" onMouseOut="info('&nbsp;'); return true"
 ></td></tr>
 </table>
 
@@ -139,7 +136,7 @@ ${do:end-if}
 
 <tr><td>
 <input type="button" value="OK" onClick="if (do_add()) { window.close(); }"
-			onMouseOver="info('${html:LANG_TIPOK}'); return true" onMouseOut="info('&nbsp;'); return true"
+			title='${html:LANG_TIPOK}' onMouseOver="info('${js:LANG_TIPOK}'); return true" onMouseOut="info('&nbsp;'); return true"
 >
 </td></tr>
 
@@ -159,7 +156,8 @@ ${do:end-if}
 
 <table width="76%" border="0" align="center" valign="bottom" cellspacing="0" cellpadding="0">
 	<tr>
-	<td id="footer"><small><small>&copy; 2007 Xavier Roche & other contributors - Web Design: Leto Kauler.</small></small></td>
+	<td id="footer"><small><small>&copy; 1998-${date:year} Xavier Roche &amp; other contributors - Web Design: Leto Kauler. - <a href="/server/about.html" target="_blank"
+			onClick="window.open('/server/about.html', 'httrack-about', 'toolbar=no, location=no, directories=no, status=yes, menubar=no, scrollbars=yes, resizable=yes, width=640, height=480'); return false">${LANG_G21}</a></small></small></td>
 	</tr>
 </table>
 

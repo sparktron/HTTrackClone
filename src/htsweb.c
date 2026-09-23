@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -62,8 +62,12 @@ Please visit our Website: http://www.httrack.com
 #include "htsmd5.c"
 #include "md5.c"
 
+#include "htscmdline.h"
 #include "htsserver.h"
+#include "htsurlport.h"
 #include "htsweb.h"
+#include "htscharset.h"
+#include "htsrandom.h"
 
 #if USE_BEGINTHREAD==0
 #error fatal: no threads support
@@ -86,7 +90,7 @@ Please visit our Website: http://www.httrack.com
 
 static htsmutex refreshMutex = HTSMUTEX_INIT;
 
-static int help_server(char *dest_path, int defaultPort);
+static int help_server(char *dest_path, int defaultPort, const char *bindAddr);
 extern int commandRunning;
 extern int commandEnd;
 extern int commandReturn;
@@ -98,93 +102,136 @@ static void htsweb_sig_brpipe(int code) {
   /* ignore */
 }
 
-/* Fill 'buff' with 'size' cryptographically random bytes.
-   Returns 0 on failure -- callers must treat that as fatal rather than
-   falling back to rand(), which is seeded from the clock and leaves the
-   session id guessable by anyone who knows roughly when we started. */
-static int web_random_bytes(unsigned char *buff, size_t size) {
-#if defined(_WIN32)
-  /* advapi32's RtlGenRandom, exposed as SystemFunction036 */
-  HMODULE lib = LoadLibraryA("advapi32.dll");
+/* Threads that never return; no wait may count on them draining. */
+static int nonjoinable_threads = 0;
 
-  if (lib != NULL) {
-    BOOLEAN(WINAPI * rtlGenRandom) (PVOID, ULONG) =
-      (BOOLEAN(WINAPI *) (PVOID, ULONG)) GetProcAddress(lib,
-                                                        "SystemFunction036");
-    if (rtlGenRandom != NULL && rtlGenRandom(buff, (ULONG) size)) {
-      FreeLibrary(lib);
-      return 1;
-    }
-    FreeLibrary(lib);
-  }
-  return 0;
-#else
-  FILE *fp = fopen("/dev/urandom", "rb");
+/* Session lifetime: each window pings under its own id and drops it when it
+   closes, so an abandoned server stops instead of outliving the session and
+   holding its payload open (a mounted disk image, on macOS). Windows are
+   counted, not timed: closing one of several must not end the session. */
+#define PING_PERIOD 5
+/* Silence tolerated from one window. Generous: a hidden tab has its timers
+   throttled to as little as one wake-up a minute. */
+static int pingTimeout = 120;
+/* Once the last window leaves, only a page navigation can bring one back, and
+   that takes a fraction of a second over the loopback. */
+#define LEAVE_GRACE max(2, min(5, pingTimeout / 4))
+/* Windows tracked at once. A full table refuses newcomers rather than evicting:
+   dropping a live window is what would let a flood of ids end the session. */
+#define MAX_WINDOWS 16
 
-  if (fp != NULL) {
-    const size_t nread = fread(buff, 1, size, fp);
-
-    fclose(fp);
-    if (nread == size) {
-      return 1;
-    }
-  }
-#if HTS_USEOPENSSL
-  /* fall back to OpenSSL, which has its own seeding paths */
-  if (RAND_bytes(buff, (int) size) == 1) {
-    return 1;
-  }
-#endif
-  return 0;
-#endif
-}
-
-/* Number of background threads */
-static int background_threads = 0;
-
-/* Server/client ping handling */
 static htsmutex pingMutex = HTSMUTEX_INIT;
-static unsigned int pingId = 0;
-static unsigned int getPingId(void) {
-  unsigned int id;
-  hts_mutexlock(&pingMutex);
-  id = pingId;
-  hts_mutexrelease(&pingMutex);
-  return id;
+/* Seconds the watchdog has been awake, not wall-clock: time(NULL) jumps across
+   a laptop suspend, and a suspended machine must not age a session. */
+static int ticks = 0;
+
+static struct {
+  char id[SMALLSERVER_WINDOW_ID_MAX + 1];
+  int last_seen;
+} windows[MAX_WINDOWS];
+
+static int windowCount = 0;
+static int emptySince = 0;                /* tick the last window left at */
+static hts_boolean anyWindow = HTS_FALSE; /* a window has claimed an id */
+static int lastSeen = 0; /* tick of the last request of any kind */
+static hts_boolean anyRequest = HTS_FALSE; /* something has connected */
+
+/* Drop windows[i], moving the last entry into its slot: a caller removing while
+   it iterates must walk backwards. Caller holds pingMutex. */
+static void window_forget(int i) {
+  windows[i] = windows[--windowCount];
+  if (windowCount == 0) {
+    emptySince = ticks;
+  }
 }
-static void ping(void) {
+
+static void pingHandler(void *arg, smallserver_client_event ev,
+                        const char *window) {
+  int i = 0;
+
+  (void) arg;
   hts_mutexlock(&pingMutex);
-  pingId++;
+  lastSeen = ticks;
+  anyRequest = HTS_TRUE;
+  /* A bare request names no window: any local peer can open a connection, but
+     none may cancel a real window's departure. */
+  if (window != NULL) {
+    while (i < windowCount && strcmp(windows[i].id, window) != 0) {
+      i++;
+    }
+    if (ev == SMALLSERVER_CLIENT_LEAVING) {
+      if (i < windowCount) {
+        window_forget(i);
+      }
+    } else if (i < windowCount) {
+      windows[i].last_seen = ticks;
+    } else if (windowCount < MAX_WINDOWS) {
+      windows[windowCount].id[0] = '\0';
+      strlncatbuff(windows[windowCount].id, window,
+                   sizeof(windows[windowCount].id),
+                   sizeof(windows[windowCount].id) - 1);
+      windows[windowCount++].last_seen = ticks;
+      anyWindow = HTS_TRUE;
+    }
+  }
   hts_mutexrelease(&pingMutex);
+}
+
+/* True unless the launcher we were started from is known to be gone. */
+static hts_boolean parent_is_alive(uintptr_t ppid) {
+#ifdef _WIN32
+  (void) ppid;
+  return HTS_TRUE; /* no cheap probe; the heartbeat carries this */
+#else
+  /* kill(0) would signal our own process group, never a parent. */
+  return ppid == 0 || kill((pid_t) ppid, 0) == 0 ? HTS_TRUE : HTS_FALSE;
+#endif
 }
 
 static void client_ping(void *pP) {
-#ifndef _WIN32
-  /* Timeout to 120s ; normally client pings every 30 second */
-  static int timeout = 120;
-  /* Wait for parent to die (legacy browser mode). */
-  const pid_t ppid = (pid_t) (uintptr_t) pP;
-  while (!kill(ppid, 0)) {
-    sleep(1);
-  }
-  /* Parent (webhttrack script) is dead: is client pinging ? */
-  for(;;) {
-    unsigned int id = getPingId();
-    sleep(timeout);
-    if (getPingId() == id) {
-      break;
+  /* uintptr_t, not pid_t: MSVC has no such type, and this signature is not
+     inside a POSIX guard. */
+  const uintptr_t ppid = (uintptr_t) pP;
+  const char *why = NULL;
+
+  while (why == NULL) {
+    int i;
+
+    Sleep(1000);
+    /* A mirror in flight outranks every rule below: it may have hours of
+       crawling behind it, and the user can always come back to its page. */
+    if (commandRunning) {
+      continue;
+    }
+    hts_mutexlock(&pingMutex);
+    ticks++;
+    /* A window that stops pinging without a goodbye crashed with its browser.
+     */
+    for (i = windowCount; i-- > 0;) {
+      if (ticks - windows[i].last_seen >= pingTimeout) {
+        window_forget(i);
+      }
+    }
+    if (anyWindow && windowCount == 0 && ticks - emptySince >= LEAVE_GRACE) {
+      why = "the interface was closed";
+    } else if (!anyWindow &&
+               ticks - lastSeen >= pingTimeout
+               /* No window ever pinged: a browser too old for it, or none
+                  opened. Fall back to the launcher dying with that browser,
+                  rather than to silence, which a reader also produces. */
+               && (!anyRequest || !parent_is_alive(ppid))) {
+      why = "the interface went silent";
+    }
+    hts_mutexrelease(&pingMutex);
+    /* Re-read after the decision: a mirror may have started while it was made,
+       and exiting now would lose it. */
+    if (commandRunning) {
+      why = NULL;
     }
   }
-  /* Die! */
-  fprintf(stderr,
-          "Parent process %d died, and client did not ping for %ds: exiting!\n",
-          (int) ppid, timeout);
-  exit(EXIT_FAILURE);
-#endif
-}
 
-static void pingHandler(void*arg) {
-  ping();
+  fprintf(stderr, "Exiting: %s\n", why);
+  exit(EXIT_SUCCESS);
 }
 
 int main(int argc, char *argv[]) {
@@ -192,10 +239,13 @@ int main(int argc, char *argv[]) {
   int ret = 0;
   int defaultPort = 0;
   int parentPid = 0;
+  /* NULL leaves smallserver_init on its loopback default; --bind widens it */
+  const char *bindAddr = NULL;
 
   printf("Initializing the server..\n");
 
 #ifdef _WIN32
+  hts_argv_utf8(&argc, &argv);
   {
     WORD wVersionRequested;     // requested version WinSock API
     WSADATA wsadata;            // Windows Sockets API data
@@ -217,7 +267,10 @@ int main(int argc, char *argv[]) {
   if (argc < 2 || (argc % 2) != 0) {
     fprintf(stderr, "** Warning: use the webhttrack frontend if available\n");
     fprintf(stderr,
-            "usage: %s [--port <port>] [--ppid parent-pid] <path-to-html-root-dir> [key value [key value]..]\n",
+            "usage: %s [--port <port>] [--bind <address>: default 127.0.0.1] "
+            "[--ppid parent-pid] "
+            "[--ping-timeout <seconds>] "
+            "<path-to-html-root-dir> [key value [key value]..]\n",
             argv[0]);
     fprintf(stderr, "example: %s /usr/share/httrack/\n", argv[0]);
     return 1;
@@ -246,21 +299,19 @@ int main(int argc, char *argv[]) {
 #ifdef HTS_HTTRACKDIR
   smallserver_setkey("HTTRACKDIR", HTS_HTTRACKDIR);
 #endif
-#ifdef HTS_INET6
+#if HTS_INET6
   smallserver_setkey("INET6", "1");
 #endif
-#ifdef HTS_USEOPENSSL
+#if HTS_USEOPENSSL
   smallserver_setkey("USEOPENSSL", "1");
 #endif
-#ifdef HTS_DLOPEN
+#if HTS_DLOPEN
   smallserver_setkey("DLOPEN", "1");
 #endif
-#ifdef HTS_USESWF
+#if HTS_USESWF
   smallserver_setkey("USESWF", "1");
 #endif
-#ifdef HTS_USEZLIB
   smallserver_setkey("USEZLIB", "1");
-#endif
 #ifdef _WIN32
   smallserver_setkey("WIN32", "1");
 #endif
@@ -275,23 +326,28 @@ int main(int argc, char *argv[]) {
   }
   smallserver_setkey("HTTRACK_WEB", HTTRACK_WEB);
 
-  /* Check version compatibility */
-  if (hts_sizeof_opt() != sizeof(httrackp)) {
+  /* hts_create_opt() allocates the library's size, so a bigger caller would
+     run past it, but a smaller one only touches the prefix it knows. */
+  if (sizeof(httrackp) > hts_sizeof_opt()) {
     fprintf(stderr,
-      "** CRITICAL: incompatible current httrack library version %s, expected version %s",
-      hts_version(), HTTRACK_VERSIONID);
-    smallserver_setkey("HTTRACK_INCOMPATIBLE_VERSIONID", hts_version());
+            "** CRITICAL: this webhttrack %s needs an option structure of %lu "
+            "bytes, but library version %s has %lu\n",
+            HTTRACK_VERSIONID, (unsigned long) sizeof(httrackp), hts_version(),
+            (unsigned long) hts_sizeof_opt());
+    abortLog("incompatible httrack library version, please update both "
+             "webhttrack and its library");
   }
 
-  /* protected session-id */
+  /* Session id: the only thing authenticating a command, so it is seeded from
+     the system CSPRNG. A clock-derived one is guessable from the "Mirrored
+     from" stamp every mirrored page carries (#877). */
   {
     unsigned char seed[32];
     char digest[32 + 2];
 
-    if (!web_random_bytes(seed, sizeof(seed))) {
+    if (!hts_random_bytes(seed, sizeof(seed))) {
       fprintf(stderr,
-              "** CRITICAL: no source of cryptographic randomness available;"
-              " refusing to start with a guessable session id\n");
+              "** CRITICAL: no system entropy source to build a session id\n");
       return -1;
     }
     domd5mem((const char *) seed, sizeof(seed), digest, 1);
@@ -300,31 +356,41 @@ int main(int argc, char *argv[]) {
   }
 
   /* set commandline keys */
-  for(i = 2; i < argc;) {
-    /* note: keys are name/value pairs, but standalone flags advance by one */
-    if (strcmp(argv[i], "--bind-any") == 0) {
-      smallserver_bind_any = 1;
-      fprintf(stderr,
-              "warning: --bind-any: listening on every network interface.\n"
-              "warning: anyone able to reach this port can start a mirror"
-              " writing to any path this user can write to.\n");
-      i++;
-    } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
-      if (sscanf(argv[i + 1], "%d", &defaultPort) != 1 || defaultPort < 0
-          || defaultPort >= 65535) {
+  for(i = 2; i < argc; i += 2) {
+    if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
+      // the range check ran after sscanf("%d") had wrapped a huge value into a
+      // plausible port, and listened there (#614). 0 (was the auto-pick) and
+      // 65535 (was refused, off by one) now both mean what they say.
+      if (!hts_parse_url_port(argv[i + 1], &defaultPort)) {
         fprintf(stderr, "couldn't set the port number to %s\n", argv[i + 1]);
         return -1;
       }
-      i += 2;
+    } else if (strcmp(argv[i], "--bind") == 0 && i + 1 < argc) {
+      /* empty would fall back to every interface, silently undoing the default
+       */
+      if (!strnotempty(argv[i + 1])) {
+        fprintf(stderr, "--bind needs an address\n");
+        return -1;
+      }
+      bindAddr = argv[i + 1];
     } else if (strcmp(argv[i], "--ppid") == 0 && i + 1 < argc) {
       if (sscanf(argv[i + 1], "%u", &parentPid) != 1) {
         fprintf(stderr, "couldn't set the parent PID to %s\n", argv[i + 1]);
         return -1;
       }
-      i += 2;
+    } else if (strcmp(argv[i], "--ping-timeout") == 0 && i + 1 < argc) {
+      /* Bounded, not just parsed: %d wrapping a huge value into a plausible one
+         is what #614 cost on --port, two cases above. */
+      char *end = NULL;
+      const long v = strtol(argv[i + 1], &end, 10);
+
+      if (end == argv[i + 1] || *end != '\0' || v < 1 || v > 86400) {
+        fprintf(stderr, "couldn't set the ping timeout to %s\n", argv[i + 1]);
+        return -1;
+      }
+      pingTimeout = (int) v;
     } else if (i + 1 < argc) {
       smallserver_setkey(argv[i], argv[i + 1]);
-      i += 2;
     } else {
       fprintf(stderr, "Error in commandline!\n");
       return -1;
@@ -338,15 +404,17 @@ int main(int argc, char *argv[]) {
 
   /* pinger */
   if (parentPid > 0) {
-    hts_newthread(client_ping, (void *) (uintptr_t) parentPid);
-    background_threads++; /* Do not wait for this thread! */
+    if (hts_newthread(client_ping, (void *) (uintptr_t) parentPid) == 0) {
+      nonjoinable_threads++; /* client_ping() only ever leaves through exit() */
+    }
     smallserver_setpinghandler(pingHandler, NULL);
   }
 
   /* launch */
-  ret = help_server(argv[1], defaultPort);
+  ret = help_server(argv[1], defaultPort, bindAddr);
 
-  htsthread_wait_n(background_threads - 1);
+  /* Drain everything a mirror may still have in flight, the pinger aside. */
+  htsthread_wait_n(nonjoinable_threads);
   hts_uninit();
 
 #ifdef _WIN32
@@ -359,10 +427,8 @@ int main(int argc, char *argv[]) {
 static int webhttrack_runmain(httrackp * opt, int argc, char **argv);
 static void back_launch_cmd(void *pP) {
   char *cmd = (char *) pP;
-  char **argv = (char **) malloct(1024 * sizeof(char *));
+  char **argv;
   int argc = 0;
-  int i = 0;
-  int g = 0;
 
   //
   httrackp *opt;
@@ -373,33 +439,24 @@ static void back_launch_cmd(void *pP) {
   commandReturnCmdl = strdup(cmd);
 
   /* split */
-  argv[0] = strdup("webhttrack");
-  argv[1] = cmd;
-  argc++;
-  i = 0;
-  while(cmd[i]) {
-    if (cmd[i] == '\t' || cmd[i] == '\r' || cmd[i] == '\n') {
-      cmd[i] = ' ';
-    }
-    i++;
+  argv = hts_split_cmdline(cmd, &argc);
+  if (argv == NULL) {
+    if (commandReturnMsg)
+      free(commandReturnMsg);
+    commandReturnMsg = strdup("could not parse the command line");
+    commandReturn = -1;
+    commandRunning = 0;
+    commandEnd = 1;
+    free(cmd);
+    return;
   }
-  i = 0;
-  while(cmd[i]) {
-    if (cmd[i] == '\"')
-      g = !g;
-    if (cmd[i] == ' ') {
-      if (!g) {
-        cmd[i] = '\0';
-        argv[argc++] = cmd + i + 1;
-      }
-    }
-    i++;
-  }
+  /* drop the program name the posted command line carries */
+  argv[0] = strdupt("webhttrack");
 
   /* init */
   hts_init();
   global_opt = opt = hts_create_opt();
-  assert(opt->size_httrackp == sizeof(httrackp));
+  assert(opt->size_httrackp >= sizeof(httrackp));
 
   /* run */
   commandReturn = webhttrack_runmain(opt, argc, argv);
@@ -423,6 +480,7 @@ static void back_launch_cmd(void *pP) {
 
   /* free */
   free(cmd);
+  freet(argv[0]);
   freet(argv);
   return;
 }
@@ -430,8 +488,13 @@ static void back_launch_cmd(void *pP) {
 void webhttrack_main(char *cmd) {
   commandRunning = 1;
   DEBUG(fprintf(stderr, "commandRunning=1\n"));
-  hts_newthread(back_launch_cmd, (void *) strdup(cmd));
-  background_threads++; /* Do not wait for this thread! */
+  if (hts_newthread(back_launch_cmd, (void *) strdup(cmd)) != 0) {
+    /* Nothing else clears the flag, and while it is set the watchdog holds the
+       server open for a mirror that never started. */
+    commandRunning = 0;
+    commandEnd = 1;
+    commandReturn = -1;
+  }
 }
 
 void webhttrack_lock(void) {
@@ -472,17 +535,17 @@ static int webhttrack_runmain(httrackp * opt, int argc, char **argv) {
   /* Rock'in! */
   ret = hts_main2(argc, argv, opt);
 
-  /* Wait for pending threads to finish */
-  htsthread_wait_n(background_threads);
+  /* Wait for pending threads to finish; the pinger and this thread stay. */
+  htsthread_wait_n(nonjoinable_threads + 1);
 
   return ret;
 }
 
-static int help_server(char *dest_path, int defaultPort) {
+static int help_server(char *dest_path, int defaultPort, const char *bindAddr) {
   int returncode = 0;
   char adr_prox[HTS_URLMAXSIZE * 2];
   int port_prox;
-  T_SOC soc = smallserver_init_std(&port_prox, adr_prox, defaultPort);
+  T_SOC soc = smallserver_init_std(&port_prox, adr_prox, defaultPort, bindAddr);
 
   if (soc != INVALID_SOCKET) {
     char url[HTS_URLMAXSIZE * 2];
@@ -507,7 +570,7 @@ static int help_server(char *dest_path, int defaultPort) {
       int last_errno = errno;
 
       fprintf(stderr, "Unable to create the server: %s\n",
-              hts_strerror(last_errno));
+              strerror(last_errno));
 #ifdef _WIN32
       closesocket(soc);
 #else
@@ -531,7 +594,6 @@ static int help_server(char *dest_path, int defaultPort) {
 
 /* CALLBACK FUNCTIONS */
 
-/* Initialize the Winsock */
 void __cdecl htsshow_init(t_hts_callbackarg * carg) {
 }
 void __cdecl htsshow_uninit(t_hts_callbackarg * carg) {
@@ -695,8 +757,7 @@ int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_back * b
           for(_i = 0 + k; (_i < max(back_max * k, 1)) && (index < NStatsBuffer); _i++) {        // no lien
             int i = (back_index + _i) % back_max;       // commencer par le "premier" (l'actuel)
 
-            if (back[i].status >= 0) {  // signifie "lien actif"
-              // int ok=0;  // OPTI
+            if (back[i].status >= 0) { // signifie "lien actif"
               ok = 0;
               switch (j) {
               case 0:          // prioritaire
@@ -716,17 +777,17 @@ int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_back * b
                   strcpybuff(StatsBuffer[index].state, "search");
                   ok = 1;
                 } else if (back[i].status == STATUS_FTP_TRANSFER) {     // ohh le beau ftp
-                  char proto[] = "ftp";
+                  char proto[8] = "ftp";
 
                   if (back[i].url_adr[0]) {
                     char *ep = strchr(back[i].url_adr, ':');
                     char *eps = strchr(back[i].url_adr, '/');
                     int count;
 
-                    if (ep != NULL && ep < eps
-                        && (count = (int) (ep - back[i].url_adr)) < 4) {
+                    if (ep != NULL && eps != NULL && ep < eps &&
+                        (count = (int) (ep - back[i].url_adr)) < 4) {
                       proto[0] = '\0';
-                      strncat(proto, back[i].url_adr, count);
+                      strncatbuff(proto, back[i].url_adr, count);
                     }
                   }
                   snprintf(StatsBuffer[index].state, sizeof(StatsBuffer[index].state),
@@ -767,9 +828,12 @@ int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_back * b
                   strcatbuff(s, back[i].url_adr);
                 else
                   strcatbuff(s, "localhost");
+                /* url_adr and url_fil are each as wide as s, and this is
+                   the progress display: clip rather than abort */
                 if (back[i].url_fil[0] != '/')
-                  strcatbuff(s, "/");
-                strcatbuff(s, back[i].url_fil);
+                  strlncatbuff(s, "/", sizeof(s), sizeof(s) - 1 - strlen(s));
+                strlncatbuff(s, back[i].url_fil, sizeof(s),
+                             sizeof(s) - 1 - strlen(s));
 
                 StatsBuffer[index].file[0] = '\0';
                 {

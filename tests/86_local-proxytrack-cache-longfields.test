@@ -1,0 +1,141 @@
+#!/bin/bash
+# A cached header longer than proxytrack's field must be clipped to that field,
+# not overflow into the next one (contenttype[64] abuts the location pointer).
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+# shellcheck source=tests/arclib.sh
+. "${0%"${0##*/}"}./arclib.sh"
+
+dir=$(mktemp -d)
+cleanup_push rm -rf "$dir"
+
+# --- ARC reader (HTTP_READFIELD_STRING), no python needed -------------------
+# Each header overshoots its own destination, so a per-field clip is the only
+# way to get every expected length right at once.
+{
+    printf 'HTTP/1.1 200 OK\r\n'
+    printf 'Content-Type: text/html%s\r\n' "$(repeat_chars 400 A)"
+    printf 'Etag: %s\r\n' "$(repeat_chars 400 E)"
+    printf 'Content-Disposition: %s\r\n' "$(repeat_chars 400 D)"
+    printf 'Last-Modified: Wed, 01 Jan 2025 00:00:00 GMT\r\n'
+    printf 'Content-Length: 5\r\n\r\n'
+} >"$dir/hdr"
+printf 'hello' >"$dir/body"
+{
+    arc_filedesc
+    arc_record http://example.com/p.html text/html 200 "$dir/hdr" "$dir/body"
+} >"$dir/in.arc"
+
+proxytrack --convert "$dir/out.arc" "$dir/in.arc" >/dev/null 2>&1 || fail "proxytrack crashed reading an ARC with over-long headers"
+test -s "$dir/out.arc" || fail "ARC entry dropped instead of clipped"
+# Only contenttype survives into the ARC output; the over-long Etag and
+# Content-Disposition above are still load-bearing, since bounding just one
+# field leaves the others smashing the element (the run above would crash).
+got=$(runlen "$dir/out.arc" A)
+test "${got:-0}" = 54 || fail "ARC content-type clipped to ${got:-0}, expected 54"
+
+# --- ZIP reader (ZIP_READFIELD_STRING) --------------------------------------
+python=$(find_python) || {
+    echo "python3 missing; ARC half only" >&2
+    exit 0
+}
+
+"$python" - "$(nativepath "$dir/in.zip")" <<'EOF'
+import sys, zipfile
+
+body = b"hello world"
+meta = (
+    "X-In-Cache: 1\r\n"
+    "X-StatusCode: 200\r\n"
+    "X-StatusMessage: ok%s\r\n"
+    "X-Size: %d\r\n"
+    "Content-Type: text/html%s\r\n"
+    "X-Charset: %s\r\n"
+    "Etag: %s\r\n"
+    "Content-Disposition: %s\r\n"
+    # a parseable date is required: the ARC writer dereferences it unchecked
+    "Last-Modified: Wed, 01 Jan 2025 00:00:00 GMT\r\n"
+    "X-Save: out/page.html\r\n"
+    % ("M" * 400, len(body), "A" * 400, "C" * 400, "E" * 400, "D" * 400)
+).encode()
+
+zi = zipfile.ZipInfo("example.com/page.html")
+zi.compress_type = zipfile.ZIP_STORED
+zi.extra = meta
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr(zi, body)
+EOF
+
+proxytrack --convert "$dir/out2.arc" "$dir/in.zip" >/dev/null 2>&1 || fail "proxytrack crashed reading a zip cache with over-long headers"
+test -s "$dir/out2.arc" || fail "zip entry dropped instead of clipped"
+# three destinations, two capacities: msg[1024] keeps all 400 M's where a
+# one-size-fits-all clip would cut it to 63 like the others
+while read -r ch want; do
+    got=$(runlen "$dir/out2.arc" "$ch")
+    test "${got:-0}" = "$want" || fail "zip field '$ch' clipped to ${got:-0}, expected $want"
+done <<'EOF'
+A 54
+C 63
+M 400
+EOF
+
+# --- ZIP reader, per-line bound ---------------------------------------------
+# A line the reader's buffer cannot hold used to be parsed as its prefix: a
+# Location became a valid-looking wrong target, an X-Save named a file that is
+# not the one recorded. The buffer now holds every line HTTrack can write, and
+# a longer one is dropped whole (#1294).
+"$python" - "$(nativepath "$dir")" <<'EOF'
+import os, sys, zipfile
+
+body = b"hello world"
+
+
+def craft(path, name, meta):
+    zi = zipfile.ZipInfo("example.com/%s.html" % name)
+    zi.compress_type = zipfile.ZIP_STORED
+    zi.extra = meta.encode()
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(zi, body)
+
+
+common = (
+    "X-StatusCode: 200\r\n"
+    "X-StatusMessage: ok\r\n"
+    "X-Size: %d\r\n"
+    "Content-Type: text/html\r\n"
+    "Last-Modified: Wed, 01 Jan 2025 00:00:00 GMT\r\n" % len(body)
+)
+for name, n in (("mid", 1400), ("big", 3000)):
+    craft(
+        os.path.join(sys.argv[1], "line-%s.zip" % name),
+        name,
+        "X-In-Cache: 1\r\n" + common + "Location: http://example.com/%s\r\n" % ("Q" * n),
+    )
+# body on disk, so the entry stands or falls on the name X-Save carries
+craft(
+    os.path.join(sys.argv[1], "line-save.zip"),
+    "save",
+    "X-In-Cache: 0\r\n" + common + "X-Save: %s.html\r\n" % ("Z" * 3000),
+)
+EOF
+
+for name in mid big save; do
+    proxytrack --convert "$dir/line-$name.arc" "$dir/line-$name.zip" >/dev/null 2>&1 ||
+        fail "proxytrack died reading the $name line-bound zip"
+done
+
+# 1400 is past the old 1024-byte line bound and inside what the writer can emit
+got=$(runlen "$dir/line-mid.arc" Q)
+test "${got:-0}" = 1400 || fail "a 1400-byte Location came back at ${got:-0} bytes"
+got=$(runlen "$dir/line-big.arc" Q)
+test "${got:-0}" = 0 || fail "an unholdable Location left a ${got}-byte prefix behind"
+
+# an X-Save nobody could have written is no name at all, and refusing the entry
+# beats opening whatever file its prefix happens to hit
+got=$(runlen "$dir/line-save.arc" Z)
+test "${got:-0}" = 0 || fail "an unholdable X-Save left a ${got}-byte prefix behind"
+grep -qa 'Cached file name is invalid' "$dir/line-save.arc" ||
+    fail "an entry with no usable X-Save was not refused"

@@ -1,0 +1,134 @@
+#!/bin/bash
+#
+# htsglobal.h declares the version; version.rc, configure.ac and the metainfo
+# repeat it. Miss one and a release ships a mismatched binary or a stale store entry.
+
+set -euo pipefail
+
+top="${top_srcdir:-..}"
+src="$top/src"
+h="$src/htsglobal.h"
+rc="$src/version.rc"
+ac="$top/configure.ac"
+metainfo="$top/html/server/div/com.httrack.WebHTTrack.metainfo.xml"
+vcpkg="$src/vcpkg.json"
+for f in "$h" "$rc" "$ac" "$metainfo" "$vcpkg"; do
+    [ -f "$f" ] || {
+        echo "cannot find $f"
+        exit 1
+    }
+done
+
+# 3.49-12 (display) and 3.49.12 (dotted).
+version=$(sed -n 's/^#define HTTRACK_VERSION[[:space:]][[:space:]]*"\([^"]*\)".*/\1/p' "$h")
+versionid=$(sed -n 's/^#define HTTRACK_VERSIONID[[:space:]][[:space:]]*"\([^"]*\)".*/\1/p' "$h")
+if [ -z "$version" ] || [ -z "$versionid" ]; then
+    echo "could not read the version from $h"
+    exit 1
+fi
+
+# The same version, as version.rc states it.
+fileversion=$(sed -n 's/^[[:space:]]*FILEVERSION[[:space:]][[:space:]]*\(.*\)$/\1/p' "$rc" | tr -d ' ')
+productversion=$(sed -n 's/^[[:space:]]*PRODUCTVERSION[[:space:]][[:space:]]*\(.*\)$/\1/p' "$rc" | tr -d ' ')
+rc_fileversion=$(sed -n 's/.*VALUE "FileVersion",[[:space:]]*"\([^"]*\)".*/\1/p' "$rc")
+rc_productversion=$(sed -n 's/.*VALUE "ProductVersion",[[:space:]]*"\([^"]*\)".*/\1/p' "$rc")
+rc_productname=$(sed -n 's/.*VALUE "ProductName",[[:space:]]*"\([^"]*\)".*/\1/p' "$rc")
+
+# And again in configure.ac, the AppStream metainfo and the vcpkg manifest.
+ac_version=$(sed -n 's/^AC_INIT(\[[^]]*\],[[:space:]]*\[\([^]]*\)\].*/\1/p' "$ac")
+# vcpkg pins major.minor only, so a patch release keeps the windows-build cache warm.
+vcpkg_version=$(sed -n 's/.*"version-string"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$vcpkg")
+# Comments dropped, one tag per line: a parked <release> or a version= on the
+# <releases> wrapper would otherwise pose as the newest entry.
+releases=$(sed 's/<!--.*-->//g' "$metainfo" | tr '<' '\n' |
+    sed -n 's/^release[[:space:]][^>]*version="\([^"]*\)".*/\1/p')
+if [ -z "$ac_version" ]; then
+    echo "could not read the version from $ac"
+    exit 1
+fi
+if [ -z "$vcpkg_version" ]; then
+    echo "could not read the version-string from $vcpkg"
+    exit 1
+fi
+if [ -z "$releases" ]; then
+    echo "could not read any release version from $metainfo"
+    exit 1
+fi
+
+# 3.49.12 -> 3,49,12,0
+expected_numeric="$(echo "$versionid" | tr '.' ','),0"
+
+fail=0
+check() { # what expected actual
+    if [ "$2" != "$3" ]; then
+        echo "$1 is \"$3\", but htsglobal.h says it should be \"$2\""
+        fail=1
+    fi
+}
+check "version.rc FILEVERSION" "$expected_numeric" "$fileversion"
+check "version.rc PRODUCTVERSION" "$expected_numeric" "$productversion"
+check "version.rc FileVersion" "$versionid" "$rc_fileversion"
+check "version.rc ProductVersion" "$version" "$rc_productversion"
+
+# Signing pins the product name too.
+check "version.rc ProductName" "HTTrack Website Copier" "$rc_productname"
+
+# ls-files both drives the loop and guards the pin: distcheck unpacks the tarball
+# inside the checkout, where git answers for untracked paths and every pin reads
+# unspecified.
+if command -v git >/dev/null 2>&1 &&
+    git -C "$top" ls-files --error-unmatch src/version.rc >/dev/null 2>&1; then
+    tracked=yes
+    rc_files=$(git -C "$top" ls-files '*.rc')
+else
+    tracked=no
+    rc_files=$(cd "$top" && printf '%s\n' src/*.rc)
+    echo "note: the .rc files are not tracked here, so their eol pin cannot be read"
+fi
+while read -r f; do
+    crs=$(awk '{ n += gsub(/\r/, "") } END { print n + 0 }' "$top/$f")
+    [ "$crs" = 0 ] || {
+        echo "$f carries $crs CR byte(s)"
+        # An LF blob under a CRLF file means the checkout predates the eol=lf
+        # pin, which git does not apply to files it already wrote.
+        if [ "$tracked" = yes ] && [ "$(git -C "$top" cat-file blob "HEAD:$f" |
+            awk '{ n += gsub(/\r/, "") } END { print n + 0 }')" = 0 ]; then
+            echo "  its blob is LF: run 'git add --renormalize .' in $top"
+        fi
+        fail=1
+    }
+    [ "$tracked" = yes ] || continue
+    # text too: -text eol=lf still reads back lf, and stores whatever it is given.
+    attrs=$(git -C "$top" check-attr text eol -- "$f")
+    pin="$(sed -n 's/.*: text: //p' <<<"$attrs")/$(sed -n 's/.*: eol: //p' <<<"$attrs")"
+    [ "$pin" = set/lf ] || {
+        echo "$f is pinned text/eol=$pin, not set/lf"
+        fail=1
+    }
+done <<<"$rc_files"
+
+check "the configure.ac AC_INIT version" "$versionid" "$ac_version"
+check "the vcpkg.json version-string" "${versionid%.*}" "$vcpkg_version"
+check "the newest metainfo release" "$versionid" "$(echo "$releases" | head -n 1)"
+
+# The check above trusts head -1, so require the list to actually descend.
+echo "$releases" | awk -F'[.]' '
+    !/^[0-9]+\.[0-9]+\.[0-9]+$/ { print "unparsable metainfo release version: " $0; exit 1 }
+    { n = $1 * 1000000000 + $2 * 1000000 + $3 }
+    NR > 1 && n >= prev { print "metainfo releases are not newest-first: " $0; exit 1 }
+    { prev = n }
+' || fail=1
+
+[ "$fail" -eq 0 ] || exit 1
+
+# And the shipped binary must agree with the header it was built from.
+out=$(httrack --version)
+case "$out" in
+*"$version"*) ;;
+*)
+    echo "httrack --version says \"$out\", which does not mention $version"
+    exit 1
+    ;;
+esac
+
+echo "version.rc, configure.ac, the metainfo and vcpkg.json agree with htsglobal.h: $version ($expected_numeric)"

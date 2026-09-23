@@ -1,7 +1,9 @@
 /* ------------------------------------------------------------ */
 /*
 HTTrack Website Copier, Offline Browser for Windows and Unix
-Copyright (C) 1998-2017 Xavier Roche and other contributors
+Copyright (C) 1998 Xavier Roche and other contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,11 +18,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-Important notes:
-
-- We hereby ask people using this source NOT to use it in purpose of grabbing
-emails addresses, or collecting any other private information on persons.
-This would disgrace our work, and spoil the many hours we spent on it.
+Ethical use: we kindly ask that you NOT use this software to harvest email
+addresses or to collect any other private information about people. Doing so
+would dishonor our work and waste the many hours we have spent on it.
 
 Please visit our Website: http://www.httrack.com
 */
@@ -34,11 +34,10 @@ Please visit our Website: http://www.httrack.com
 #define HTS_CHARSET_DEFH
 
 /** Standard includes. **/
+#include "htsglobal.h"
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
-#include <windows.h>
-#endif
+#include "htswin32.h"
 
 /** UCS4 type. **/
 typedef unsigned int hts_UCS4;
@@ -48,10 +47,10 @@ typedef unsigned int hts_UCS4;
 
 /**
  * Convert the string "s" from charset "charset" to UTF-8.
- * Return NULL upon error.
+ * Return NULL upon error, an allocation failure included.
  **/
-extern char *hts_convertStringToUTF8(const char *s, size_t size,
-                                     const char *charset);
+HTSEXT_API char *hts_convertStringToUTF8(const char *s, size_t size,
+                                         const char *charset);
 
 /**
  * Convert the string "s" from UTF-8 to charset "charset".
@@ -59,6 +58,15 @@ extern char *hts_convertStringToUTF8(const char *s, size_t size,
  **/
 extern char *hts_convertStringFromUTF8(const char *s, size_t size,
                                        const char *charset);
+
+/**
+ * Same, but refusing to lose a code point the charset can not represent:
+ * NULL is returned then, where hts_convertStringFromUTF8() may hand back a
+ * substituted string (Windows substitutes, iconv fails).
+ * Return NULL upon error.
+ **/
+extern char *hts_convertStringFromUTF8Strict(const char *s, size_t size,
+                                             const char *charset);
 
 /**
  * Convert an UTF-8 string to an IDNA (RFC 3492) string.
@@ -76,7 +84,8 @@ extern char *hts_convertStringIDNAToUTF8(const char *s, size_t size);
 extern int hts_isStringIDNA(const char *s, size_t size);
 
 /**
- * Extract the charset from the HTML buffer "html"
+ * Extract the <meta> charset from the HTML buffer "html" (HTML5 charset= or
+ * legacy http-equiv form). Returns a malloc'ed string, or NULL if none.
  **/
 extern char *hts_getCharsetFromMeta(const char *html, size_t size);
 
@@ -86,7 +95,8 @@ extern char *hts_getCharsetFromMeta(const char *html, size_t size);
 extern int hts_isStringAscii(const char *s, size_t size);
 
 /**
- * Is the given string an UTF-8 string ?
+ * Is the given string valid UTF-8 ? Strict RFC 3629: overlong forms,
+ * surrogates, codepoints above U+10FFFF and 5/6-byte sequences are rejected.
  **/
 extern int hts_isStringUTF8(const char *s, size_t size);
 
@@ -128,11 +138,6 @@ extern hts_UCS4* hts_convertUTF8StringToUCS4(const char *s, size_t size,
 extern char *hts_convertUCS4StringToUTF8(const hts_UCS4 *s, size_t nChars);
 
 /**
- * Return the length (in characters) of an UCS4 string terminated by 0.
- **/
-extern size_t hts_stringLengthUCS4(const hts_UCS4 *s);
-
-/**
  * Write the Unicode character 'uc' in 'dest' of maximum size 'size'.
  * Return the number of bytes written, or 0 upon error.
  * Note: does not \0-terminate the destination buffer.
@@ -169,10 +174,32 @@ extern LPWSTR hts_convertUTF8StringToUCS2(const char *s, int size, int *pwsize);
 extern char *hts_convertUCS2StringToUTF8(LPWSTR woutput, int wsize);
 
 /**
+ * UTF-8 path to UCS-2 for the wide file/FindFirst APIs, \\?\-prefixed above
+ * MAX_PATH (#133). Internal, not exported; caller frees.
+ * This function is WIN32 specific.
+ **/
+extern LPWSTR hts_pathToUCS2(const char *path);
+
+/**
  * Convert current system codepage to UTF-8.
  * This function is WIN32 specific.
  **/
-extern char *hts_convertStringSystemToUTF8(const char *s, size_t size);
+HTSEXT_API char *hts_convertStringSystemToUTF8(const char *s, size_t size);
+
+/**
+ * Convert UTF-8 to the current system codepage. Caller frees; NULL upon error.
+ * This function is WIN32 specific.
+ **/
+HTSEXT_API char *hts_convertStringUTF8ToSystem(const char *s, size_t size);
+
+/**
+ * Replace the CRT's ANSI argv by a UTF-8 one decoded from the real UTF-16
+ * command line: every char* is UTF-8 on Windows (FOPEN, STAT, ... convert at
+ * the syscall boundary). Keeps the CRT's argv on failure; the new array is
+ * writable, NULL-terminated, and lives for the process.
+ * This function is WIN32 specific.
+ **/
+HTSEXT_API void hts_argv_utf8(int *pargc, char ***pargv);
 #endif
 
 #endif

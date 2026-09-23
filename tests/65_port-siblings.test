@@ -1,0 +1,152 @@
+#!/bin/bash
+#
+
+# Port parsing outside the crawled-URL path (#614): the htsserver --port listen
+# port, proxytrack's host:port listen arguments, and an ftp:// URL port. All
+# three took the port from sscanf("%d"), which range-checks nothing and wraps
+# past INT_MAX, so a value naming no real port silently became a plausible one.
+
+set -euo pipefail
+
+# run_with_timeout: timeout(1) is absent on macOS, and the listen servers block.
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/httrack_portsib.XXXXXX") || exit 1
+cleanup_push rm -rf "$tmp"
+
+# A port the old code accepted only by wrapping: 4295009395 = 2^32 + 42099 and
+# 4294967376 = 2^32 + 80 both fold to a plausible listen port. They are the
+# load-bearing cases, since a value that merely exceeds 65535 while still
+# fitting an int (65616) was already caught by the htsserver range check.
+overflowing="4295009395"
+
+# Values sscanf("%d") took as a port that no operator meant: a trailing
+# character, a sign, leading whitespace, a decimal point. Each silently listened
+# on the prefix it managed to scan.
+malformed=("80x" "+80" " 80" "8.0" "")
+
+# --- htsserver --port ------------------------------------------------------
+# Its argv[1] is the html root; the option pairs follow. It blocks serving once
+# a port is accepted, so bound it; we assert on the output, not the exit status.
+
+websrv() {
+    run_with_timeout 3 htsserver "$tmp" --port "$1" >"$tmp/web.log" 2>&1 || true
+}
+
+web_refused() {
+    websrv "$1"
+    grep -q "couldn't set the port number" "$tmp/web.log" ||
+        fail "#614: htsserver --port '$1' not refused"
+    # it must not have reached the listen socket on some other port
+    ! grep -q "^URL=" "$tmp/web.log" ||
+        fail "#614: htsserver --port '$1' listened anyway"
+}
+
+web_accepted() {
+    local port=$1
+    : >"$tmp/web.log"
+    # A bound server blocks, so stop it once it announces, not on a fixed
+    # deadline: the announce trails a local-hostname resolve that stalls on macOS,
+    # where a 3s kill landed mid-resolve, before the URL= line ever printed.
+    local had_m='' is_msys=''
+    # Before "set -m", because shell_is_msys forks and a fork inside the
+    # job-control window makes bash announce the job it just reaped.
+    ! shell_is_msys || is_msys=1
+    case "$-" in *m*) had_m=1 ;; esac
+    test -n "$is_msys" || set -m
+    htsserver "$tmp" --port "$port" >"$tmp/web.log" 2>&1 &
+    local pid=$!
+    test -n "$had_m" || test -n "$is_msys" || set +m
+    local waited=0
+    until grep -qE "^URL=http://.*:$port/|couldn't set the port number|Unable to initialize a temporary server" "$tmp/web.log"; do
+        test "$waited" -lt 20 || break
+        sleep 1
+        waited=$((waited + 1))
+    done
+    kill_tree "$pid"
+    wait "$pid" 2>/dev/null || true
+    ! grep -q "couldn't set the port number" "$tmp/web.log" ||
+        fail "#614: htsserver --port '$port' wrongly refused"
+    grep -qE "^URL=http://.*:$port/|Unable to initialize a temporary server" "$tmp/web.log" ||
+        fail "#614: htsserver --port '$port' never reached the listener"
+}
+
+# this used to listen on 42099
+web_refused "$overflowing"
+for p in "${malformed[@]}" 0 65536 99999 -1; do
+    web_refused "$p"
+done
+
+# 65535 is a valid port the old "< 65535" bound refused
+web_accepted 65535
+
+# --- htsserver returns from main() instead of blocking at exit -------------
+# The exit wait must exclude exactly the threads that never return (#753).
+# $tmp has no lang.def, so the server fails right after announcing and main()
+# reaches the wait on its own; rc, not EXITED, carries the verdict.
+
+web_exits() {
+    local rc=0
+
+    : >"$tmp/exit.log"
+    run_with_timeout 30 htsserver "$tmp" "$@" >"$tmp/exit.log" 2>&1 || rc=$?
+    grep -q "^EXITED" "$tmp/exit.log" ||
+        fail "#753: htsserver ${*:-(no options)} never finished serving"
+    # exactly 1, not merely "not 124": a crash or an assertf abort also escapes
+    # the wait, and would otherwise read as a pass
+    test "$rc" -eq 1 ||
+        fail "#753: htsserver ${*:-(no options)} exited $rc, want 1"
+}
+
+# no pinger: the excluded count went negative
+web_exits
+# a pinger, which never returns and so must stay excluded
+web_exits --ppid $$
+
+# --- proxytrack <proxy-addr:port> <ICP-addr:port> --------------------------
+# A bad argument falls through to the usage screen; it had no range check at
+# all, so 65616 quietly listened on port 80. A valid one binds and blocks.
+
+proxy_refused() {
+    run_with_timeout 3 proxytrack "127.0.0.1:$1" 127.0.0.1:3130 >"$tmp/pt.log" 2>&1 || true
+    grep -q "^usage:" "$tmp/pt.log" ||
+        fail "#614: proxytrack port '$1' not refused"
+}
+
+proxy_accepted() {
+    run_with_timeout 3 proxytrack "127.0.0.1:$1" 127.0.0.1:3130 >"$tmp/pt.log" 2>&1 || true
+    ! grep -q "^usage:" "$tmp/pt.log" ||
+        fail "#614: proxytrack port '$1' wrongly refused"
+}
+
+for p in "${malformed[@]}" 65616 4294967376 "$overflowing" 0 -1; do
+    proxy_refused "$p"
+done
+proxy_accepted 45678
+
+# --- ftp:// URL port -------------------------------------------------------
+# A URL port, so it follows the crawled-URL policy: refuse the link rather than
+# fold it into range. An ftp:// link in scanned HTML is not followed, so the
+# seed has to come from the command line.
+
+ftp_port() {
+    local out="$tmp/ftp"
+
+    rm -rf "$out"
+    run_with_timeout 30 httrack "ftp://127.0.0.1:$1/x" -O "$out" --quiet -n \
+        >/dev/null 2>&1 || true
+    count_matching_lines "Invalid port: $1" "$out/hts-log.txt" 2>/dev/null
+}
+
+# 65616 truncated to 80 and really did connect there
+for p in 65616 99999; do
+    test "$(ftp_port "$p")" -gt 0 ||
+        fail "#614: ftp:// port $p not refused"
+done
+
+# a valid port still reaches the connect attempt
+test "$(ftp_port 65535)" -eq 0 ||
+    fail "#614: ftp:// port 65535 wrongly refused"
+
+exit 0

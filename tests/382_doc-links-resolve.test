@@ -1,0 +1,159 @@
+#!/bin/bash
+#
+# The doc pages ship in a directory whose depth is the packager's --htmldir
+# choice, so a relative link that resolves in one layout dangles in another and
+# nothing but a staged install can tell them apart.
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+: "${abs_top_builddir:?not run under make check}"
+srcroot=${abs_top_srcdir:?not run under make check}
+htmlsrc=${srcroot}/html
+htmldir=${CONFIGURED_HTMLDIR:?not run under make check}
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/doclinks.XXXXXX") || fail "no tmpdir"
+cleanup_push rm -rf "${work}"
+
+stage=${work}/stage
+if ! stage_install_target install "${stage}" "${work}/install.log" .; then
+    skip "cannot stage an install, so no layout to resolve against"
+fi
+
+docdir=${CONFIGURED_DOCDIR:?not run under make check}
+# The served UI installs under $(datadir), not under $(docdir), so a walk of the
+# documentation alone would never read it.
+uidir=${CONFIGURED_DATADIR:?not run under make check}/httrack/html
+# httrack-doc.html and the pages link into each other's directory, so both are
+# walked whatever --htmldir made of the two. sort -u collapses the nested case.
+tree=${htmldir}
+test "${docdir%/}" = "${htmldir%/}" || tree="${docdir} and ${htmldir}"
+test "${uidir%/}" = "${htmldir%/}" || tree="${tree} and ${uidir}"
+test -d "${stage}${htmldir}" || skip "nothing staged in ${htmldir}"
+# Unconditional, whatever --htmldir and --docdir say, so an absent one is the
+# regression this arm exists for rather than a layout to skip past.
+test -d "${stage}${uidir}/server" || fail "no served UI staged in ${uidir}"
+
+# Lexical and relative to the stage root: a link names a path in the shipped
+# tree, and a ".." that walks off the top has left the package.
+resolve() { # resolve DIR LINK, both relative to ${stage}
+    local rest=$1/$2 out='' part
+    while [ -n "${rest}" ]; do
+        part=${rest%%/*}
+        if [ "${part}" = "${rest}" ]; then rest=; else rest=${rest#*/}; fi
+        case ${part} in
+        '' | .) ;;
+        ..)
+            case ${out} in
+            */*) out=${out%/*} ;;
+            ?*) out= ;;
+            *) return 1 ;;
+            esac
+            ;;
+        *) out=${out:+${out}/}${part} ;;
+        esac
+    done
+    printf '%s\n' "${out}"
+}
+
+# Links that the shipped layout resolves but another --htmldir strands are
+# recorded, so a packager's choice reports a known gap rather than a failure.
+gaps=()
+# index.html reaches history.txt, license.txt and greetings.txt with "../",
+# which is the $(docdir) they install into while htmldir sits directly below it.
+if test "${docdir%/}" != "${htmldir%/*}"; then
+    gaps=(
+        "index.html ../license.txt"
+        "index.html ../greetings.txt"
+        "index.html ../history.txt"
+    )
+fi
+# httrack-doc.html reaches the pages under the name they carry in the source tree.
+if test "${htmldir%/}" != "${docdir%/}/html"; then
+    gaps+=("httrack-doc.html html/index.html")
+fi
+
+gap_seen=()
+for ((i = 0; i < ${#gaps[@]}; i++)); do gap_seen[i]=; done
+
+# Index of the recorded gap for PAGE LINK, or 1 if there is none.
+gap_index() {
+    local i
+    for ((i = 0; i < ${#gaps[@]}; i++)); do
+        test "${gaps[i]}" != "$1 $2" || {
+            printf '%s\n' "${i}"
+            return 0
+        }
+    done
+    return 1
+}
+
+pages=0
+links=0
+bad=0
+while IFS= read -r page; do
+    # Name the page by the source file it was installed from, so a staged tree
+    # nobody recognises fails here instead of being skipped into a vacuous pass.
+    relh=${page#"${stage}${htmldir%/}/"}
+    reld=${page#"${stage}${docdir%/}/"}
+    relu=${page#"${stage}${uidir%/}/"}
+    if test -e "${htmlsrc}/${relh}"; then
+        rel=${relh}
+    elif test -e "${srcroot}/${reld}"; then
+        rel=${reld}
+    elif test -e "${htmlsrc}/${relu}"; then
+        rel=${relu}
+    else
+        fail "staged page ${page#"${stage}"} came from no source file"
+    fi
+    pages=$((pages + 1))
+    dir=${page%/*}
+    dir=${dir#"${stage}/"}
+    while IFS= read -r attr; do
+        link=${attr#*[\"\']}
+        link=${link%?}
+        link=${link%%#*}
+        link=${link%%\?*}
+        case ${link} in
+        # An anchor, a server URL, a scheme: none of them name a shipped file.
+        '' | /* | *:*) continue ;;
+        esac
+        links=$((links + 1))
+        if ! target=$(resolve "${dir}" "${link}") || [ ! -e "${stage}/${target}" ]; then
+            if g=$(gap_index "${rel}" "${link}"); then
+                gap_seen[g]=dangles
+            else
+                echo "  ${page#"${stage}"}: ${link}" >&2
+                bad=$((bad + 1))
+            fi
+        elif g=$(gap_index "${rel}" "${link}"); then
+            gap_seen[g]=resolves
+        fi
+    done < <(LC_ALL=C grep -Eio "(href|src)[[:space:]]*=[[:space:]]*[\"'][^\"']*[\"']" "${page}" || true)
+done < <({
+    find "${stage}${htmldir}" -name '*.html'
+    find "${stage}${docdir}" -name '*.html'
+    find "${stage}${uidir}" -name '*.html'
+} 2>/dev/null | LC_ALL=C sort -u)
+
+test "${pages}" -gt 0 || fail "no pages staged under ${tree}"
+# A filter that dropped everything would pass on a tree of dead links.
+test "${links}" -gt 0 || fail "no relative links found across ${pages} pages"
+test "${bad}" -eq 0 || fail "${bad} of ${links} relative links dangle in ${tree}"
+
+# A gap that stopped being one has to be deleted, not left recording a link the
+# layout now resolves.
+stale=0
+for ((i = 0; i < ${#gaps[@]}; i++)); do
+    case ${gap_seen[i]} in
+    dangles) continue ;;
+    resolves) echo "  ${gaps[i]}: resolves here" >&2 ;;
+    *) echo "  ${gaps[i]}: not a link on that page any more" >&2 ;;
+    esac
+    stale=$((stale + 1))
+done
+test "${stale}" -eq 0 || fail "${stale} of ${#gaps[@]} recorded gaps are out of date"
+
+echo "${links} relative links across ${pages} pages resolve in ${tree}, ${#gaps[@]} recorded gaps still dangle"

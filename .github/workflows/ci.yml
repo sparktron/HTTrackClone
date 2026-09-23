@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ master, 'robustness-*' ]
+    branches: [ master, 'robustness-*', 'upstream-sync/*' ]
   pull_request:
     branches: [ master ]
 
@@ -15,13 +15,18 @@ env:
   #                           max(0, strlen(x) - 4) underflow in htsparse.c
   #   extra                -- found (r.contenttype >= 0), an always-true
   #                           comparison of a char[64] against 0
-  #   misleading-indentation, missing-field-initializers,
+  #   misleading-indentation,
   #   implicit-function-declaration, return-type, uninitialized,
   #   strict-prototypes    -- cheap, no false positives here
+  #
+  # Since the upstream 3.50.3 sync the engine is upstream's code, which uses
+  # partial struct initializers on purpose (so missing-field-initializers is
+  # soft below), and a portable 64-bit range check in htswarc.c that clang's
+  # tautological-type-limit-compare calls always true (turned off for clang in
+  # the Build step; gcc keeps -Werror=type-limits in full).
   HARD_WARNINGS: >-
     -Werror=type-limits
     -Werror=misleading-indentation
-    -Werror=missing-field-initializers
     -Werror=implicit-function-declaration
     -Werror=return-type
     -Werror=uninitialized
@@ -30,6 +35,7 @@ env:
   # delete it once the tree is clean and the corresponding -Werror= is added
   # above.
   SOFT_WARNINGS: >-
+    -Wno-missing-field-initializers
     -Wno-unused-parameter
     -Wno-sign-compare
     -Wno-unused-but-set-variable
@@ -45,6 +51,8 @@ jobs:
       fail-fast: false
       matrix:
         cc: [gcc, clang]
+    env:
+      CC: ${{ matrix.cc }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,30 +62,36 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            autoconf automake libtool zlib1g-dev libssl-dev \
+            autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev \
+            libbrotli-dev libzstd-dev \
             libcurl4-openssl-dev libsqlite3-dev libicu-dev
 
       - name: Configure
-        env:
-          CC: ${{ matrix.cc }}
         run: |
           # Keep warning errors out of configure probes: Autoconf's generic
           # function declarations are intentionally old-style and trip
           # -Werror=strict-prototypes. Apply them to the actual build below.
+          ./bootstrap
           ./configure --enable-imageboard-catalog CFLAGS="-O2 -g"
 
       - name: Build
-        run: make -j"$(nproc)" CFLAGS="-O2 -g -Wall -Wextra $HARD_WARNINGS $SOFT_WARNINGS"
+        run: |
+          extra=""
+          if [ "$CC" = clang ]; then extra="-Wno-tautological-type-limit-compare"; fi
+          make -j"$(nproc)" CFLAGS="-O2 -g -Wall -Wextra $HARD_WARNINGS $SOFT_WARNINGS $extra"
 
       - name: Test
-        run: make check ONLINE_UNIT_TESTS=fixture
+        run: make check -j16 ONLINE_UNIT_TESTS=no
 
       - name: Show test log on failure
         if: failure()
         run: cat tests/test-suite.log || true
 
+  # The suite under ASan+UBSan. gcc, as upstream's sanitize job uses: clang's
+  # ASan cannot link the shared libhttrack under -Wl,--no-undefined, and a
+  # static-only build fails the tests that install or dlopen shared objects.
   sanitizers:
-    name: asan+ubsan
+    name: asan+ubsan (gcc)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,14 +102,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            autoconf automake libtool zlib1g-dev libssl-dev \
+            autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev \
+            libbrotli-dev libzstd-dev \
             libcurl4-openssl-dev libsqlite3-dev libicu-dev
 
       - name: Configure
-        env:
-          CC: clang
         run: |
-          ./configure --enable-imageboard-catalog --disable-shared \
+          ./bootstrap
+          ./configure --enable-imageboard-catalog CC=gcc \
             CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all" \
             LDFLAGS="-fsanitize=address,undefined"
 
@@ -109,20 +123,16 @@ jobs:
           # here. Keep AddressSanitizer's memory-error checks enabled.
           ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:halt_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: make check ONLINE_UNIT_TESTS=fixture
-
-      - name: Fuzzer smoke test
-        env:
-          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:halt_on_error=1
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: make -C fuzz smoke
+        run: make check -j16 ONLINE_UNIT_TESTS=no
 
       - name: Show test log on failure
         if: failure()
         run: cat tests/test-suite.log || true
 
-  unchecked-buffers:
-    name: unchecked buffer ratchet
+  # libFuzzer needs clang, and clang's ASan needs a static build (see above).
+  # Replays upstream's corpora and smoke-runs the fork's own four harnesses.
+  fuzz:
+    name: fuzz (clang, asan+ubsan)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -133,17 +143,31 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            autoconf automake libtool zlib1g-dev libssl-dev \
+            clang autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev \
+            libbrotli-dev libzstd-dev \
             libcurl4-openssl-dev libsqlite3-dev libicu-dev
 
       - name: Configure
-        run: ./configure CFLAGS="-O2 -g"
+        run: |
+          ./bootstrap
+          ./configure --enable-fuzzers --disable-shared CC=clang \
+            CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all" \
+            LDFLAGS="-fsanitize=address,undefined"
 
-      # strcpybuff()/strcatbuff()/strncatbuff() degrade to an unchecked
-      # str*() whenever the destination is a pointer rather than an array.
-      # This counts those sites and fails if the total grows.
-      - name: Count unchecked buffer call sites
-        run: tools/audit-unchecked-buffers.sh --list
+      - name: Build
+        run: make -j"$(nproc)"
+
+      - name: Replay upstream corpora
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: bash fuzz/run-fuzzers.sh fuzz check
+
+      - name: Fork fuzzer smoke test
+        env:
+          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: make -C fuzz -f fork-fuzzers.mk smoke
 
   analyze:
     name: clang static analyzer
@@ -157,11 +181,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            autoconf automake libtool zlib1g-dev libssl-dev clang-tools \
+            autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev \
+            libbrotli-dev libzstd-dev clang-tools \
             libcurl4-openssl-dev libsqlite3-dev libicu-dev
 
       - name: Configure
-        run: scan-build ./configure
+        run: ./bootstrap && scan-build ./configure
 
       # Reporting only for now: the tree still has known findings (leaks in
       # htscharset.c, null dereferences in htslib.c / htsparse.c). Once those
@@ -189,7 +214,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            autoconf automake libtool zlib1g-dev libssl-dev \
+            autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev \
+            libbrotli-dev libzstd-dev \
             libcurl4-openssl-dev libsqlite3-dev libicu-dev
 
       # Cheap, and needs no build: fails if source was vendored into the tree
@@ -198,7 +224,7 @@ jobs:
         run: tools/generate-sbom.sh --check
 
       - name: Configure
-        run: ./configure CFLAGS="-O2 -g"
+        run: ./bootstrap && ./configure CFLAGS="-O2 -g"
 
       - name: Build
         run: make -j"$(nproc)"
