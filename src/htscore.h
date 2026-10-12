@@ -178,6 +178,8 @@ struct struct_back {
   coucal ready;           /**< index of slots whose transfer completed */
   LLint ready_size_bytes; /**< total bytes buffered in completed slots */
   hts_connect_fallback *connect_fallback; /**< per-slot, count+1 entries */
+  hts_boolean bot_challenge_noted; /**< the bot-protection note is already in
+                                        this mirror's log (#1732) */
 };
 
 /** Open handle to the mirror cache (the read-from-old / write-to-new state
@@ -257,7 +259,7 @@ struct filecreate_params {
 };
 
 /* Convenience accessors over the link heap; assume `opt` (and where used,
-   `ptr`/`parent_relative`) are in scope. heap(N) is the Nth link;
+   `ptr`/`parent_relative`/`module_base`) are in scope. heap(N) is the Nth link;
    heap_top_index() is the last recorded link's index. */
 #define heap(N)            (opt->liens[N])
 
@@ -277,11 +279,15 @@ struct filecreate_params {
 
 #define parentsavename()   (heap(heap(ptr)->precedent)->sav)
 
-#define relativeurladr()   ((!parent_relative)?urladr():parenturladr())
+/* A module specifier takes the script's own base even in a .js document. */
+#define relative_to_parent() (parent_relative && !module_base)
 
-#define relativeurlfil()   ((!parent_relative)?urlfil():parenturlfil())
+#define relativeurladr() ((!relative_to_parent()) ? urladr() : parenturladr())
 
-#define relativesavename() ((!parent_relative)?savename():parentsavename())
+#define relativeurlfil() ((!relative_to_parent()) ? urlfil() : parenturlfil())
+
+#define relativesavename()                                                     \
+  ((!relative_to_parent()) ? savename() : parentsavename())
 
 /* Library-internal helpers (engine-only, HTS_INTERNAL_BYTECODE). */
 #ifdef HTS_INTERNAL_BYTECODE

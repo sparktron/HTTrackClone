@@ -93,22 +93,24 @@ else
     # Named, not assumed: a parent that had already exited would make the arm below
     # pass for the wrong reason.
     kill -0 "$live" 2>/dev/null || fail "the live half of the fixture died before it was graded"
-    REAP_GRACE=1 reap_bounded "$live" && fail "reap_bounded called a running process reaped"
+    rc=0
+    REAP_GRACE=1 reap_bounded "$live" || rc=$?
+    test "$rc" -eq 1 || fail "a running process the host answered for graded $rc, not 1"
     ok "reap_bounded reads a killed-but-uncollected process as stopped, a live one as running"
 fi
 : >"$tmp/release"
 
 # --- pid_state: what each route answers, and what neither may invent ---------
 #
-# A directory stands in for an entry that is readable but yields nothing, which
-# is what Hurd gives for a task it cannot summarise. That must never count as
-# death: Hurd answers the same way for a live task that is merely suspended.
+# A directory stands in for an entry that is not the file pid_state expects,
+# and for the nothing Hurd yields for a task it cannot summarise. Neither may
+# count as death, because Hurd answers the same way for a suspended live task.
 # The pids are ones no host allocates, so a seam that failed open would grade a
 # live kernel thread instead of the fixture.
-running=9999992 exited=9999993 unterminated=9999994
+running=9999992 exited=9999993 unterminated=9999994 chardev=9999995
 absent=9999996 splitcomm=9999997 unreadable_live=$$
 mkdir -p "$tmp/proc/$running" "$tmp/proc/$exited" "$tmp/proc/$unterminated" \
-    "$tmp/proc/$splitcomm" "$tmp/proc/$unreadable_live/stat"
+    "$tmp/proc/$splitcomm" "$tmp/proc/$chardev" "$tmp/proc/$unreadable_live/stat"
 printf '%s (sh (weird) name) S 1 1 1 0 -1 0\n' "$running" >"$tmp/proc/$running/stat"
 printf '%s (sh (weird) name) Z 1 1 1 0 -1 0\n' "$exited" >"$tmp/proc/$exited/stat"
 printf '%s (sh) Z 1 1 1 0 -1 0' "$unterminated" >"$tmp/proc/$unterminated/stat"
@@ -128,6 +130,12 @@ pid_is_zombie "$splitcomm" && fail "a process name holding a newline forged stat
 # nothing says nothing, and this shell is running.
 pid_is_zombie "$unreadable_live" && fail "an entry that yields nothing was read as an exit"
 pid_state_readable "$running" || fail "a stat line the host gave was called unreadable"
+# A device answers a read with bytes on every host, which is what the Hurd does
+# for the directory above and no other host does. Neither answer is a state.
+ln -s /dev/urandom "$tmp/proc/$chardev/stat" 2>/dev/null || true
+test -r "$tmp/proc/$chardev/stat" ||
+    echo "note: no /dev/urandom here, so the non-file read went ungraded" >&2
+pid_state_readable "$chardev" && fail "bytes read from a device were called a state"
 # A failed open must stay off the caller's stderr: every macOS poll takes this
 # route, and local_crawl points that stderr at the log its tests grep.
 noise=$(pid_is_zombie "$absent" 2>&1 >/dev/null) || true
@@ -169,9 +177,18 @@ PATH=$path_was
 PATH=$tmp/psnone
 pid_is_zombie "$unreadable_live" && nops_exit=yes || nops_exit=no
 pid_state_readable "$unreadable_live" && nops_read=yes || nops_read=no
+# And the reap that rests on them. This shell is running, so a host that answers
+# says 1, and one that answers for nothing must report no survivor. The call is
+# timed, because silence must not cost a grace (#1718).
+nops_reap=0
+nops_began=$SECONDS
+REAP_GRACE=3 reap_bounded "$unreadable_live" || nops_reap=$?
+nops_spent=$((SECONDS - nops_began))
 PATH=$path_was
 test "$nops_exit" = no || fail "a live process was read as exited where no ps exists"
 test "$nops_read" = no || fail "a live process with no answer anywhere was called readable"
+test "$nops_reap" -eq 0 || fail "a host that answers for no pid reported a survivor ($nops_reap)"
+test "$nops_spent" -lt 2 || fail "a reap nothing could answer spent ${nops_spent}s of its grace"
 pid_state_readable "$absent" && fail "a pid neither route answers for was called readable"
 unset TESTLIB_PROC
 ok "pid_state takes the host's answer, and never reads no answer as an exit"

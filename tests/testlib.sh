@@ -1234,6 +1234,9 @@ budget_left() {
 # reap a native Windows descendant -- the very case these watchdogs exist for --
 # and a bare `wait` then blocks the watchdog itself forever, so the timeout it was
 # about to report is never printed and the whole suite wedges silently.
+#
+# Non-zero means a host that answers for this pid called it running. Where no
+# route answers, nothing saw a survivor and none is reported.
 REAP_GRACE=${REAP_GRACE:-10}
 
 # The state letter for pid $1, in PID_STATE, empty when this host will not say.
@@ -1243,6 +1246,8 @@ REAP_GRACE=${REAP_GRACE:-10}
 # nothing here, and macOS takes the ps route, whose POSIX keyword ps_snapshot
 # already relies on. Never infer the state from a failed read: Hurd returns EIO
 # for a live task that is merely suspended, so absence of an answer is not death.
+# No route answers for a GNU/Hurd zombie, because its proc server says ESRCH for
+# a dead pid nobody has collected. No ps spelling reaches it (#1718).
 pid_state() { # pid_state PID
     local proc=${TESTLIB_PROC:-/proc} st=''
     # The whole file and the line it gave, never read's status: comm is unescaped,
@@ -1250,7 +1255,11 @@ pid_state() { # pid_state PID
     # end of file anyway. The group keeps a failed open off the caller's stderr.
     # || true, because -d '' returns non-zero at end of file on a whole file it
     # read, and a caller writing this as a statement would abort under errexit.
-    { read -r -d '' st <"$proc/$1/stat"; } 2>/dev/null || true
+    # The read takes a regular file only, because the Hurd answers a directory
+    # read with bytes where other hosts fail it, and those bytes forge a state.
+    if test -f "$proc/$1/stat"; then
+        { read -r -d '' st <"$proc/$1/stat"; } 2>/dev/null || true
+    fi
     if test -n "$st"; then
         st=${st##*') '}
         PID_STATE=${st%% *}
@@ -1267,6 +1276,28 @@ pid_state() { # pid_state PID
     esac
     # Trimmed, since a padded column would read as neither state.
     PID_STATE=${st//[[:space:]]/}
+}
+
+# Does `ulimit -c 0` stop a core file landing in the working directory? The
+# Hurd's crash server writes one whatever the limit says, so a test that
+# asserts the absence of a core would red there for the host's reason and not
+# its own. Graded by crashing a shell in a scratch directory under $1.
+core_limit_honored() { # core_limit_honored PARENT_DIR
+    local probe=$1/.ctl-coredump left
+    rm -rf "$probe"
+    mkdir -p "$probe" || return 0
+    # Two shells deep, because the abort notice is printed by the parent of the
+    # killed job, and it would land in the test log from any nearer. The trailing
+    # exit keeps the inner shell from replacing itself with the one that dies.
+    # shellcheck disable=SC2016 # the inner shell is the one that expands these
+    "${BASH:-bash}" -c 'cd "$1" || exit 0
+        ulimit -c 0 2>/dev/null || true
+        "$0" -c "kill -ABRT \$\$"
+        exit 0' \
+        "${BASH:-bash}" "$probe" >/dev/null 2>&1 || true
+    left=$(find "$probe" -maxdepth 1 -name 'core*' -print -quit)
+    rm -rf "$probe"
+    test -z "$left"
 }
 
 # Has pid $1 died and not yet been collected? A killed process answers kill -0
@@ -1291,7 +1322,12 @@ pid_state_readable() { # pid_state_readable PID
 reap_bounded() {
     local pid=$1 start=$SECONDS
     while kill -0 "$pid" 2>/dev/null; do
+        # pid_is_zombie leaves this poll's answer in PID_STATE, so what the host
+        # said costs nothing to read back.
         if pid_is_zombie "$pid"; then break; fi
+        # Silence never becomes an answer, so stop instead of spending the grace.
+        test -n "$PID_STATE" || return 0
+        # Never the wait below, because an answering host still calls this running.
         test "$((SECONDS - start))" -le "$REAP_GRACE" || return 1
         poll_wait 1
     done
