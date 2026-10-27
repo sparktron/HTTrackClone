@@ -495,7 +495,8 @@ EXTRA_DIST = $(TESTS) crawl-test.sh run-all-tests.sh check-network.sh \
 	fixtures/yotsuba/thread-100.json \
 	fixtures/yotsuba/thread-200.json \
 	fixtures/yotsuba/thread-300.json \
-	fixtures/yotsuba/malformed.json
+	fixtures/yotsuba/malformed.json \
+	fixture-server.py fixture-test.sh external-smoke.test
 # note: libtool should handle that
 ### TESTS_ENVIRONMENT += $(SHLIBPATH_VAR)="$(top_builddir)/src/$(LT_CV_OBJDIR)$${$(SHLIBPATH_VAR):+$(PATH_SEPARATOR)}$$$(SHLIBPATH_VAR)"
 TESTS_ENVIRONMENT = PATH=$(top_builddir)/src$(PATH_SEPARATOR)$$PATH \

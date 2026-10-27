@@ -4,7 +4,8 @@ EXTRA_DIST = $(TESTS) crawl-test.sh run-all-tests.sh check-network.sh \
 	yotsuba-adapter.test yotsuba-live-smoke.py catalog-cli-fixture.c \
 	catalog-cli-test.py catalog-cli.test fixtures/catalog/page1.json \
 	fixtures/catalog/page2.json fixtures/catalog/incremental.json \
-	fixtures/catalog/rollback.json fixtures/catalog/malformed.json
+	fixtures/catalog/rollback.json fixtures/catalog/malformed.json \
+	fixture-server.py fixture-test.sh external-smoke.test
 
 TESTS_ENVIRONMENT =
 TESTS_ENVIRONMENT += PATH=$(top_builddir)/src$(PATH_SEPARATOR)$$PATH
