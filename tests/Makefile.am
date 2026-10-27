@@ -30,6 +30,11 @@ endif
 CLEANFILES = check-network_sh.cache yotsuba-adapter-test-bin \
 	catalog-cli-fixture-bin
 
+.PHONY: check-external
+check-external:
+	ONLINE_UNIT_TESTS=yes PATH=$(top_builddir)/src$(PATH_SEPARATOR)$$PATH \
+		$(SHELL) $(srcdir)/external-smoke.test
+
 .PHONY: check-yotsuba-live
 check-yotsuba-live:
 	python3 $(srcdir)/yotsuba-live-smoke.py
