@@ -55,10 +55,12 @@ test_crawl() {
 
 # Untrusted: nothing is mirrored, and the log names the certificate check.
 # -R0: no retries, so one refused handshake logs exactly two errors (the check
-# that failed, then the link given up on).
+# that failed, then the link given up on). An unknown issuer may mean the store
+# is empty, so the log also says where it was looked for (a warning).
 env "${empty_store[@]}" \
     bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 2 --not-found 'simple/basic.html' \
     --log-found 'TLS certificate check failed for .*self.signed' \
+    --log-found 'trusted certificates were looked for in .*/empty-ca\.pem from SSL_CERT_FILE and .*/empty-ca\.d from SSL_CERT_DIR' \
     httrack 'BASEURL/simple/basic.html' -R0
 
 # Same untrusted store, verification turned off: the old behaviour.
@@ -80,6 +82,18 @@ env "${empty_store[@]}" \
     httrack 'BASEURL/simple/basic.html' -R0 '-%V0' '-%V'
 
 python=$(find_python) || skip "python3 not found"
+
+# The trust-store hint comes once per crawl, not once per refused link.
+local_server_start --tls --log "$work/hint.log"
+SSL_CERT_FILE="$work/empty-ca.pem" SSL_CERT_DIR="$work/empty-ca.d" \
+    local_crawl --log "$work/hint.out" -- "https://127.0.0.1:${SRV_PORT}/simple/basic.html" \
+    "https://127.0.0.1:${SRV_PORT}/simple/link.html" -O "$work/hint" -s0 -R0 || true
+log=$(<"$work/hint/hts-log.txt")
+assert_eq 2 "$(count_matching_lines 'TLS certificate check failed' <<<"$log")" \
+    "refused links in the hint crawl"
+assert_eq 1 "$(count_matching_lines 'trusted certificates were looked for' <<<"$log")" \
+    "trust-store hints in one crawl"
+ok "the trust-store hint is logged once per crawl"
 
 # assert_refused OUT MARKER REASON: the crawl in OUT wrote no file carrying
 # MARKER, and its log names a certificate refusal matching the ERE REASON.
@@ -113,6 +127,11 @@ test_crawl --log "$socks/crawl.log" -- \
     "https://socks-origin.invalid:${tls_port}/" \
     --proxy "socks5://127.0.0.1:${socks_port}" -O "$socks/out" -r1 -s0 -R0 || true
 assert_refused "$socks/out" ORIGIN-PAGE-563 '[Hh]ostname mismatch'
+# A trusted chain says nothing about the store: no hint.
+log=$(<"$socks/out/hts-log.txt")
+if grep -q 'trusted certificates were looked for' <<<"$log"; then
+    fail_dump "trust-store hint on a name mismatch" "$socks/out/hts-log.txt"
+fi
 # The tunnel was up: the refusal is the certificate's, not the proxy's.
 grep -q "^ATYP domain socks-origin.invalid\$" "$socks/socks.log" ||
     fail_dump "the proxy never saw the CONNECT" "$socks/socks.log"

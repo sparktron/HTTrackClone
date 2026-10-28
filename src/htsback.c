@@ -3354,6 +3354,42 @@ static int back_abort_limit(httrackp *opt, struct_back *sback,
   return aborted;
 }
 
+#if HTS_USEOPENSSL
+/* Fork-only. An unknown issuer can mean the trust store itself is missing,
+   which OpenSSL cannot report when it loads it: directory lookups are lazy,
+   and SSL_CTX_set_default_verify_paths() succeeds when nothing is there. So
+   say where it was looked for, once per crawl: HTS_STAT is per process, like
+   the engine's own statistics, and stat_timestart tells two crawls apart. */
+static void back_trust_store_hint(httrackp *opt, long verify_result) {
+  static const httrackp *hinted_opt = NULL;
+  static TStamp hinted_start = 0;
+  const char *env_file, *env_dir;
+
+  if (verify_result != X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY &&
+      verify_result != X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT &&
+      verify_result != X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN)
+    return;
+  if (hinted_opt == opt && hinted_start == HTS_STAT.stat_timestart)
+    return;
+  hinted_opt = opt;
+  hinted_start = HTS_STAT.stat_timestart;
+  env_file = getenv(X509_get_default_cert_file_env());
+  env_dir = getenv(X509_get_default_cert_dir_env());
+  hts_log_print(opt, LOG_WARNING,
+                "trusted certificates were looked for in %s%s%s and %s%s%s;"
+                " if the system CA certificates are missing, install them or"
+                " point %s / %s at them",
+                env_file != NULL ? env_file : X509_get_default_cert_file(),
+                env_file != NULL ? " from " : "",
+                env_file != NULL ? X509_get_default_cert_file_env() : "",
+                env_dir != NULL ? env_dir : X509_get_default_cert_dir(),
+                env_dir != NULL ? " from " : "",
+                env_dir != NULL ? X509_get_default_cert_dir_env() : "",
+                X509_get_default_cert_file_env(),
+                X509_get_default_cert_dir_env());
+}
+#endif
+
 // attente (gestion des buffers des sockets)
 void back_wait(struct_back * sback, httrackp * opt, cache_back * cache,
                TStamp stat_timestart) {
@@ -3898,6 +3934,7 @@ void back_wait(struct_back * sback, httrackp * opt, cache_back * cache,
                               " (use -%%V0 to mirror this host without"
                               " checking certificates)",
                               back[i].url_adr, reason);
+                back_trust_store_hint(opt, verify_result);
               } else {
                 /* ERR_error_string() decodes an error-queue code, not the
                    small SSL_get_error() value, which gave a meaningless
