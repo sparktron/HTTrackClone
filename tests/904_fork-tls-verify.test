@@ -123,6 +123,22 @@ if test -s "$socks/origin-headers.log"; then
 fi
 ok "a trusted certificate for another name is refused over SOCKS"
 
+# --- an address OpenSSL cannot match -----------------------------------------
+# The resolver reads 127.1 as 127.0.0.1 (inet_aton), but set1_ip_asc() wants
+# four octets: the refusal comes before the handshake and has to say why.
+local_server_start --tls --log "$work/short.log"
+test_crawl --log "$work/short.out" -- "https://127.1:${SRV_PORT}/simple/basic.html" \
+    -O "$work/short" -R0 || true
+log=$(<"$work/short/hts-log.txt")
+grep -qE 'cannot check the certificate of https://127\.1:[0-9]+: not a valid address .*-%V0' \
+    <<<"$log" || fail_dump "no pre-handshake refusal logged" "$work/short/hts-log.txt"
+grep -qF '"not a valid address for a certificate check"' <<<"$log" ||
+    fail_dump "the link error does not carry the reason" "$work/short/hts-log.txt"
+if grep -rqa --exclude-dir=hts-cache --exclude=hts-log.txt 'Sample test' "$work/short"; then
+    fail_dump "127.1 was mirrored past the refusal" "$work/short/hts-log.txt"
+fi
+ok "an address set1_ip_asc() rejects is refused with its reason"
+
 # --- trusted chain, wrong address ---------------------------------------------
 # The test certificate names 127.0.0.1, and Linux routes all of 127/8 to the
 # loopback: the suite's own server bound to 127.0.0.2 serves a trusted chain

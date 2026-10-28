@@ -50,6 +50,12 @@ Please visit our Website: http://www.httrack.com
 #if HTS_USEOPENSSL
 /* X509_CHECK_FLAG_* for the certificate hostname check (fork-only) */
 #include <openssl/x509v3.h>
+/* Fork-only: certificates are verified, and the name check needs
+   X509_VERIFY_PARAM_set1_host(). Checking the chain alone would let any
+   trusted certificate stand in for any host. */
+#if OPENSSL_VERSION_NUMBER < 0x10002000L
+#error certificate verification needs OpenSSL 1.0.2 or later
+#endif
 #endif
 
 #include "htsftp.h"
@@ -3668,6 +3674,9 @@ void back_wait(struct_back * sback, httrackp * opt, cache_back * cache,
           /* SSL mode */
           if (back[i].r.ssl) {
             int tunnel_ok = 1;
+            /* Fork-only: why the certificate cannot be checked, when that
+               is known before the handshake. */
+            const char *cert_refused = NULL;
 
             // https via an http proxy: CONNECT-tunnel before TLS (#85); socks
             // already carries the origin connection
@@ -3702,6 +3711,7 @@ void back_wait(struct_back * sback, httrackp * opt, cache_back * cache,
                   jump_identification_const(back[i].url_adr);
                 const char *hostname_end = jump_toport_const(hostname_begin);
                 hts_boolean hostname_ok = HTS_TRUE;
+                hts_boolean is_address;
 
                 if (hostname_end == NULL)
                   hostname_end = strchr(hostname_begin, '/');
@@ -3720,10 +3730,16 @@ void back_wait(struct_back * sback, httrackp * opt, cache_back * cache,
                 }
                 if (hostname[0] == '\0')
                   hostname_ok = HTS_FALSE;
+                /* Brackets are already stripped above, so a colon means
+                   IPv6. */
+                is_address = hts_host_is_ipv4(hostname, strlen(hostname)) ||
+                             strchr(hostname, ':') != NULL;
 
                 SSL_clear(back[i].r.ssl_con);
-                // some servers expect the hostname on the clienthello (SNI TLS extension)
-                if (hostname_ok)
+                /* Some servers expect the hostname on the clienthello (SNI
+                   TLS extension). Fork-only: never an address, which RFC 6066
+                   section 3 forbids there. */
+                if (hostname_ok && !is_address)
                   SSL_set_tlsext_host_name(back[i].r.ssl_con, hostname);
 
                 /* Verify the peer certificate and that it was issued for the
@@ -3735,39 +3751,41 @@ void back_wait(struct_back * sback, httrackp * opt, cache_back * cache,
                   SSL_set_verify(back[i].r.ssl_con, SSL_VERIFY_NONE, NULL);
                 } else if (!hostname_ok) {
                   /* no name to check the certificate against: refuse */
-                  back[i].r.statuscode = STATUSCODE_SSL_HANDSHAKE;
+                  cert_refused =
+                      "no host name to check the certificate against";
                 } else {
-                  SSL_set_verify(back[i].r.ssl_con, SSL_VERIFY_PEER, NULL);
-#if (OPENSSL_VERSION_NUMBER >= 0x10002000L)
-                  {
-                    X509_VERIFY_PARAM *const param =
+                  X509_VERIFY_PARAM *const param =
                       SSL_get0_param(back[i].r.ssl_con);
-                    /* An address has to be matched against the certificate's
-                       IP SANs: set1_host() would compare it as a DNS name and
-                       reject a certificate that does name the address.
-                       SSL_set1_host() only does this itself from OpenSSL 3.0
-                       on, so spell it out rather than mirror a crawl of
-                       https://<address>/ with the check silently failing on
-                       1.x. Brackets are already stripped above, so a colon
-                       means IPv6. */
-                    const hts_boolean is_address =
-                      hts_host_is_ipv4(hostname, strlen(hostname))
-                      || strchr(hostname, ':') != NULL;
-                    const int target_ok = is_address
-                      ? X509_VERIFY_PARAM_set1_ip_asc(param, hostname)
-                      : X509_VERIFY_PARAM_set1_host(param, hostname, 0);
+                  /* An address has to be matched against the certificate's
+                     IP SANs: set1_host() would compare it as a DNS name and
+                     reject a certificate that does name the address.
+                     SSL_set1_host() only does this itself from OpenSSL 3.0
+                     on, so spell it out rather than mirror a crawl of
+                     https://<address>/ with the check silently failing on
+                     1.x. */
+                  const int target_ok =
+                      is_address
+                          ? X509_VERIFY_PARAM_set1_ip_asc(param, hostname)
+                          : X509_VERIFY_PARAM_set1_host(param, hostname, 0);
 
-                    X509_VERIFY_PARAM_set_hostflags(param,
-                                                    X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-                    if (target_ok != 1) {
-                      back[i].r.statuscode = STATUSCODE_SSL_HANDSHAKE;
-                    }
-                  }
-#else
-#warning OpenSSL is older than 1.0.2: TLS certificate hostname verification is not available
-                  hts_log_print(opt, LOG_WARNING,
-                                "this build of OpenSSL can not verify certificate hostnames");
-#endif
+                  SSL_set_verify(back[i].r.ssl_con, SSL_VERIFY_PEER, NULL);
+                  X509_VERIFY_PARAM_set_hostflags(
+                      param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+                  /* Fits r.msg[80], which strcpybuff() aborts on. */
+                  if (target_ok != 1 && is_address)
+                    cert_refused =
+                        "not a valid address for a certificate check";
+                  else if (target_ok != 1)
+                    cert_refused =
+                        "not a valid host name for a certificate check";
+                }
+                if (cert_refused != NULL) {
+                  hts_log_print(opt, LOG_ERROR,
+                                "cannot check the certificate of %s: %s"
+                                " (use -%%V0 to mirror this host without"
+                                " checking certificates)",
+                                back[i].url_adr, cert_refused);
+                  back[i].r.statuscode = STATUSCODE_SSL_HANDSHAKE;
                 }
                 if (back[i].r.statuscode == STATUSCODE_SSL_HANDSHAKE) {
                   /* fall through to the handshake error below */
@@ -3784,7 +3802,9 @@ void back_wait(struct_back * sback, httrackp * opt, cache_back * cache,
             }
             /* Error */
             if (tunnel_ok && back[i].r.statuscode == STATUSCODE_SSL_HANDSHAKE) {
-              strcpybuff(back[i].r.msg, "bad SSL/TLS handshake");
+              strcpybuff(back[i].r.msg, cert_refused != NULL
+                                            ? cert_refused
+                                            : "bad SSL/TLS handshake");
               deletehttp(&back[i].r);
               back[i].r.soc = INVALID_SOCKET;
               back[i].r.statuscode = STATUSCODE_NON_FATAL;
