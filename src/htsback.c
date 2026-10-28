@@ -3807,7 +3807,11 @@ void back_wait(struct_back * sback, httrackp * opt, cache_back * cache,
                                             : "bad SSL/TLS handshake");
               deletehttp(&back[i].r);
               back[i].r.soc = INVALID_SOCKET;
-              back[i].r.statuscode = STATUSCODE_NON_FATAL;
+              /* Fork-only: a certificate that cannot be checked will not be
+                 checkable on a retry either, so fail the link for good. */
+              back[i].r.statuscode = cert_refused != NULL
+                                         ? STATUSCODE_INVALID
+                                         : STATUSCODE_NON_FATAL;
               back[i].status = STATUS_READY;
               back_set_finished(opt, sback, i);
             }
@@ -3878,9 +3882,11 @@ void back_wait(struct_back * sback, httrackp * opt, cache_back * cache,
               ) {
               const long verify_result =
                 SSL_get_verify_result(back[i].r.ssl_con);
+              const hts_boolean cert_failed =
+                  !opt->ssl_insecure && verify_result != X509_V_OK;
 
               back[i].r.msg[0] = '\0';
-              if (!opt->ssl_insecure && verify_result != X509_V_OK) {
+              if (cert_failed) {
                 /* The certificate was rejected: say which check failed and
                    how to override it. (Fork-only.) */
                 const char *const reason =
@@ -3911,7 +3917,12 @@ void back_wait(struct_back * sback, httrackp * opt, cache_back * cache,
               }
               deletehttp(&back[i].r);
               back[i].r.soc = INVALID_SOCKET;
-              back[i].r.statuscode = STATUSCODE_NON_FATAL;
+              /* Fork-only: a refused certificate is refused again on every
+                 retry, so do not retry it (htsparse.c retries
+                 STATUSCODE_NON_FATAL, not STATUSCODE_INVALID). The previous
+                 copy is still kept, as for any failed transfer. */
+              back[i].r.statuscode =
+                  cert_failed ? STATUSCODE_INVALID : STATUSCODE_NON_FATAL;
               back[i].status = STATUS_READY;
               back_set_finished(opt, sback, i);
             }

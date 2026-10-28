@@ -125,14 +125,18 @@ ok "a trusted certificate for another name is refused over SOCKS"
 
 # --- an address OpenSSL cannot match -----------------------------------------
 # The resolver reads 127.1 as 127.0.0.1 (inet_aton), but set1_ip_asc() wants
-# four octets: the refusal comes before the handshake and has to say why.
+# four octets: the refusal comes before the handshake and has to say why. It
+# is as deterministic as a refused certificate, so the default retries must
+# not repeat it.
 local_server_start --tls --log "$work/short.log"
 test_crawl --log "$work/short.out" -- "https://127.1:${SRV_PORT}/simple/basic.html" \
-    -O "$work/short" -R0 || true
+    -O "$work/short" -s0 || true
 log=$(<"$work/short/hts-log.txt")
 grep -qE 'cannot check the certificate of https://127\.1:[0-9]+: not a valid address .*-%V0' \
     <<<"$log" || fail_dump "no pre-handshake refusal logged" "$work/short/hts-log.txt"
-grep -qF '"not a valid address for a certificate check"' <<<"$log" ||
+assert_eq 1 "$(count_matching_lines 'cannot check the certificate' <<<"$log")" \
+    "pre-handshake refusals for one link under the default retries"
+grep -qF '"not a valid address for a certificate check" (-1) at link' <<<"$log" ||
     fail_dump "the link error does not carry the reason" "$work/short/hts-log.txt"
 if grep -rqa --exclude-dir=hts-cache --exclude=hts-log.txt 'Sample test' "$work/short"; then
     fail_dump "127.1 was mirrored past the refusal" "$work/short/hts-log.txt"
@@ -159,6 +163,22 @@ if "$python" -c 'import socket; socket.socket().bind(("127.0.0.2", 0))' 2>/dev/n
         -O "$addr/no" -R0 || true
     assert_refused "$addr/no" 'Sample test' 'IP address mismatch'
     ok "a trusted certificate that does not name the IPv4 address is refused"
+
+    # A refusal is deterministic, so the default retries must not repeat it:
+    # one refusal and one give-up for the one link, never "after N retries".
+    test_crawl --log "$addr/retry.log" -- "https://127.0.0.2:${SRV_PORT}/simple/basic.html" \
+        -O "$addr/retry" -s0 || true
+    assert_refused "$addr/retry" 'Sample test' 'IP address mismatch'
+    log=$(<"$addr/retry/hts-log.txt")
+    assert_eq 1 "$(count_matching_lines 'TLS certificate check failed' <<<"$log")" \
+        "certificate refusals for one link under the default retries"
+    assert_eq 2 "$(count_log_errors "$addr/retry/hts-log.txt")" "errors logged"
+    if grep -q 'after [0-9]* retries' <<<"$log"; then
+        fail_dump "a certificate refusal was retried" "$addr/retry/hts-log.txt"
+    fi
+    grep -qF '"IP address mismatch" (-1) at link https://127.0.0.2:' <<<"$log" ||
+        fail_dump "the give-up line lost the reason" "$addr/retry/hts-log.txt"
+    ok "a certificate refusal is not retried"
     addr_cases=$((addr_cases + 1))
 fi
 
