@@ -36,11 +36,8 @@ Please visit our Website: http://www.httrack.com
 
 #include "htsglobal.h"
 
-#if HTS_XGETHOST
-#if USE_BEGINTHREAD
+#include "htsopt.h"
 #include "htsthread.h"
-#endif
-#endif
 
 /* Forward definitions */
 #ifndef HTS_DEF_FWSTRUCT_httrackp
@@ -64,10 +61,17 @@ typedef struct lien_back lien_back;
 typedef struct htsblk htsblk;
 #endif
 
+/* An FTP worker publishes a slot's status, so read it with an acquire load. */
+static HTS_INLINE HTS_UNUSED int back_status(const lien_back *b) {
+  return hts_load_acquire_int(&b->status);
+}
+
 /* Library internal definictions */
 #ifdef HTS_INTERNAL_BYTECODE
 
 // create/destroy
+/* Slots for maxsoc connections, clamped to what back_new() can size. */
+int back_max_slots(int maxsoc);
 struct_back *back_new(httrackp *opt, int back_max);
 void back_free(struct_back ** sback);
 
@@ -83,6 +87,10 @@ int back_index(httrackp * opt, struct_back * sback, const char *adr, const char 
 int back_available(const struct_back * sback);
 LLint back_incache(const struct_back * sback);
 int back_done_incache(const struct_back * sback);
+/* Like back_index(), but never loads a stored result into a slot. Returns
+   sback->count for one. */
+int back_index_peek(httrackp *opt, struct_back *sback, const char *adr,
+                    const char *fil, const char *sav);
 HTS_INLINE int back_exist(struct_back * sback, httrackp * opt, const char *adr,
                           const char *fil, const char *sav);
 int back_nsoc(const struct_back * sback);
@@ -92,10 +100,11 @@ int back_nsoc_overall(const struct_back * sback);
 int back_add(struct_back *sback, httrackp *opt, cache_back *cache,
              const char *adr, const char *fil, const char *save,
              const char *referer_adr, const char *referer_fil, int test,
-             hts_boolean refetch_whole);
-int back_add_if_not_exists(struct_back * sback, httrackp * opt,
-                           cache_back * cache, const char *adr, const char *fil, const char *save,
-                           const char *referer_adr, const char *referer_fil, int test);
+             hts_boolean refetch_whole, const hts_fetch_meta *fetch);
+int back_add_if_not_exists(struct_back *sback, httrackp *opt, cache_back *cache,
+                           const char *adr, const char *fil, const char *save,
+                           const char *referer_adr, const char *referer_fil,
+                           int test, const hts_fetch_meta *fetch);
 int back_stack_available(struct_back * sback);
 int back_search(httrackp * opt, struct_back * sback);
 int back_search_quick(struct_back * sback);
@@ -129,7 +138,12 @@ int back_serialize_ref(httrackp * opt, const lien_back * src);
 int back_unserialize_ref(httrackp * opt, const char *adr, const char *fil,
                          lien_back ** dst);
 void back_set_finished(httrackp *opt, struct_back *sback, const int p);
+/* lien_back.locked: 1 keeps a slot in the table with its body in memory, and
+   BACK_PINNED keeps it in the table but lets it write to disk.
+   back_set_unlocked() releases both. */
+#define BACK_PINNED 2
 void back_set_locked(struct_back * sback, const int p);
+void back_set_pinned(struct_back *sback, const int p);
 void back_set_unlocked(struct_back * sback, const int p);
 int back_delete(httrackp * opt, cache_back * cache, struct_back * sback,
                 const int p);
@@ -176,11 +190,19 @@ hts_boolean back_finalize_backup(httrackp *opt, lien_back *const back,
 /* Remove the reserved directory a temporary sat in, once the last slot sharing
    it is done; a non-empty one just refuses. No-op outside that directory. */
 void back_tmpdir_drop(const char *tmp);
-/* Name the spool file of a frozen backlog slot, inside the reserved directory
-   no save name can spell. HTS_FALSE (dest emptied) if it would not fit.
-   Consumes an opt->state.tmpnameid under -p0. Note: utf-8. */
-hts_boolean back_spoolname(httrackp *opt, const char *save, char *dest,
-                           size_t size);
+/* Name the spool file of a frozen backlog slot, in ~hts-tmp at the mirror
+   root, carrying this process's pid. Consumes an opt->state.tmpnameid.
+   Returns HTS_FALSE (dest emptied) if the name does not fit. Note: utf-8. */
+hts_boolean back_spoolname(httrackp *opt, char *dest, size_t size);
+/* Returns this process's id, as back_spoolname() writes it. */
+unsigned long back_self_pid(void);
+/* Write a slot to its spool file. Returns HTS_FALSE, leaving no file, on
+   failure. */
+hts_boolean back_spool_write(httrackp *opt, const char *filename,
+                             const lien_back *back);
+/* Remove spool files whose process is gone or is this one. Call before this
+   run spools anything. */
+void back_spool_sweep(httrackp *opt);
 /* -#test=backswap: slots eligible for the on-disk ready table. */
 int back_selftest_slot_swap(void);
 void back_info(struct_back * sback, int i, int j, FILE * fp);

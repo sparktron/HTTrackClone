@@ -45,11 +45,13 @@ Please visit our Website: http://www.httrack.com
 // Fonctions
 /* Read one line off a socket; HTS_TRUE if it did not fit "s". */
 hts_boolean socinput(T_SOC soc, char *s, int max);
-/* Listen on bindAddr, or the loopback interface if NULL/empty; adr (>= 258
-   bytes) gets the address to advertise. INVALID_SOCKET on error. */
-T_SOC smallserver_init_std(int *port_prox, char *adr_prox, int defaultPort,
-                           const char *bindAddr);
-T_SOC smallserver_init(int *port, char *adr, const char *bindAddr);
+/* Listen on bindAddr, or the loopback interface if NULL/empty; adr (capacity
+   adr_size) gets the address to advertise, clipped if it does not fit.
+   INVALID_SOCKET on error. */
+T_SOC smallserver_init_std(int *port_prox, char *adr_prox, size_t adr_size,
+                           int defaultPort, const char *bindAddr);
+T_SOC smallserver_init(int *port, char *adr, size_t adr_size,
+                       const char *bindAddr);
 int smallserver(T_SOC soc, char *url, char *method, char *data, char *path);
 
 #define CATCH_RESPONSE \
@@ -84,12 +86,6 @@ extern coucal NewLangList;
 
 extern httrackp *global_opt;
 
-/* Duplicates of htslib.h's, which htsweb.c does not include. */
-#define  is_realspace(c)  ( ((c)==' ')                || ((c)==10) || ((c)==13) || ((c)==9) || ((c)==12) || ((c)==11)                )
-#define  is_taborspace(c) ( ((c)==' ')                                          || ((c)==9)                             )
-#define  is_quote(c)      (               ((c)=='\"')                                                    || ((c)=='\'') )
-#define  is_retorsep(c)   (                              ((c)==10) || ((c)==13) || ((c)==9)                                          )
-
 #undef min
 #undef max
 #define min(a,b) ((a)>(b)?(b):(a))
@@ -118,8 +114,6 @@ int htslang_init(void);
 /* Static definitions */
 
 HTS_UNUSED static const char *gethomedir(void);
-HTS_UNUSED static int linput_cpp(FILE * fp, char *s, int max);
-HTS_UNUSED static int linput_trim(FILE * fp, char *s, int max);
 HTS_UNUSED static int fexist(const char *s);
 HTS_UNUSED static int linput(FILE * fp, char *s, int max);
 
@@ -187,23 +181,6 @@ static const char *gethomedir(void) {
   /* An empty $HOME would put the base path and httrack.ini at the root */
   return strnotempty(home) ? home : ".";
 }
-static int linput_cpp(FILE * fp, char *s, int max) {
-  int rlen = 0;
-
-  s[0] = '\0';
-  do {
-    int ret;
-
-    if (rlen > 0)
-      if (s[rlen - 1] == '\\')
-        s[--rlen] = '\0';       // couper \ final
-    // lire ligne
-    ret = linput_trim(fp, s + rlen, max - rlen);
-    if (ret > 0)
-      rlen += ret;
-  } while((s[max(rlen - 1, 0)] == '\\') && (rlen < max));
-  return rlen;
-}
 
 static int fexist(const char *s) {
   struct stat st;
@@ -241,36 +218,6 @@ static int linput(FILE * fp, char *s, int max) {
   } while((c != -1) && (c != EOF) && (j < (max - 1)));
   s[j] = '\0';
   return j;
-}
-static int linput_trim(FILE * fp, char *s, int max) {
-  int rlen = 0;
-  char *ls = (char *) malloc(max + 1);
-
-  s[0] = '\0';
-  if (ls) {
-    char *a;
-
-    // lire ligne
-    rlen = linput(fp, ls, max);
-    if (rlen) {
-      // sauter espaces et tabs en fin
-      while((rlen > 0) && is_realspace(ls[max(rlen - 1, 0)]))
-        ls[--rlen] = '\0';
-      // sauter espaces en début
-      a = ls;
-      while((rlen > 0) && ((*a == ' ') || (*a == '\t'))) {
-        a++;
-        rlen--;
-      }
-      if (rlen > 0) {
-        memcpy(s, a, rlen);     // can copy \0 chars
-        s[rlen] = '\0';
-      }
-    }
-    //
-    free(ls);
-  }
-  return rlen;
 }
 
 #endif

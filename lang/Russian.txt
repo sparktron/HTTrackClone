@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Протокол прокси. HTTP: обычный прокси. HTTP (туннель CONNECT): отправляет каждый запрос через туннель CONNECT, для прокси, поддерживающих только CONNECT, например HTTPTunnelPort в Tor. SOCKS5: порт по умолчанию 1080.
 Load cookies from file:
 Загрузить cookies из файла:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Предварительно загрузить cookies из файла Netscape cookies.txt перед закачкой.
 Pause between files:
 Пауза между файлами:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 Игнорировать %s и все хосты под ним
 Manual
 Руководство
+Max Retry-After(s)
+Макс. Retry-After (с)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Наибольшее ожидание, которое соблюдается, когда сервер присылает заголовок Retry-After. Значение 0 означает повтор без ожидания.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+Правила, заданные здесь, действуют для текущего зеркалирования. Удаление правила снова пропускает новые ссылки, но ссылка, которую оно уже отклонило, в этом зеркалировании не вернётся.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Этот фильтр нельзя использовать. Фильтр начинается с + или -, затем идёт шаблон, и он должен умещаться в одной короткой строке.
+Theme:
+Тема:
+Classic
+Классическая
+Accept headers
+Заголовки Accept
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+Заголовок Accept, отправляемый для каждого вида ссылки. «Автоматически» отправляет то, что отправляет выбранный браузер.
+Automatic
+Автоматически
+Old HTTrack value
+Старое значение HTTrack
+Default
+По умолчанию
+Pages
+Страницы
+Inline frames
+Встроенные фреймы
+Frames
+Фреймы
+Images
+Изображения
+Style sheets
+Таблицы стилей
+Scripts
+Скрипты
+Fonts
+Шрифты
+Audio
+Аудио
+Video
+Видео
+Objects
+Объекты
+Embedded content
+Встроенное содержимое
+Log in with a browser...
+Войти через браузер...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Войдите на сайт в браузере, и зеркалирование пойдёт с полученными cookies и идентификацией браузера
+No Microsoft Edge WebView2 runtime is installed on this computer
+На этом компьютере не установлена среда выполнения Microsoft Edge WebView2
+Log in with a browser
+Вход через браузер
+Go
+Перейти
+Done
+Готово
+Clear login
+Выйти из аккаунта
+The browser did not open: %s.
+Браузер не открылся: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+Браузер не вернул ни одного cookie. Адрес и идентификатор браузера будут сохранены вместе с проектом по завершении мастера.
+Cookies collected: %d. They are used when you press OK.
+Собрано cookies: %d. Они будут применены, когда вы нажмёте OK.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Собрано cookies: %d. Они будут сохранены вместе с проектом по завершении мастера.
+The login could not be written to %s.
+Не удалось записать данные входа в %s.
+%d of the browser's cookies were left out, because the engine would not read them.
+Пропущено cookies браузера: %d, поскольку HTTrack не смог бы их прочитать.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Войдите на сайт в другой вкладке этого браузера. Откройте инструменты разработчика (F12), затем вкладку «Сеть», перезагрузите страницу, щёлкните правой кнопкой по первому запросу и выберите Copy as cURL (bash). Вставьте текст сюда. Подойдёт и экспорт cookies.txt, для первого адреса в списке.
+Cookies for: %s. Browser identity: %s.
+Cookies для: %s. Идентификатор браузера: %s.
+A login cannot be saved for this address, so nothing was kept.
+Для этого адреса нельзя сохранить вход, поэтому ничего не сохранено.
+Yes
+Да

@@ -9,7 +9,7 @@ Juan Pablo Barrio Lera  (Universidad de León) \r\n
 LANGUAGE_WINDOWSID
 Spanish (Spain, Modern Sort)
 OK
-Ya
+Aceptar
 Cancel
 Cancelar
 Exit
@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Protocolo del proxy. HTTP: proxy estándar. HTTP (túnel CONNECT): envía cada petición a través de un túnel CONNECT, para proxys que solo admiten CONNECT como el HTTPTunnelPort de Tor. SOCKS5: puerto predeterminado 1080.
 Load cookies from file:
 Cargar cookies desde un archivo:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Precargar cookies desde un archivo Netscape cookies.txt antes de comenzar la descarga.
 Pause between files:
 Pausa entre archivos:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 Ignorar %s y todos los hosts por debajo
 Manual
 Manual
+Max Retry-After(s)
+Máx. Retry-After (s)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Espera máxima que se respeta cuando un servidor envía una cabecera Retry-After. Use 0 para reintentar sin esperar.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+Las reglas que defina aquí se aplican a la copia en curso. Quitar una regla vuelve a dejar pasar los nuevos enlaces, pero un enlace que la regla ya rechazó no volverá en esta copia.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Este filtro no se puede usar. Un filtro empieza por + o -, seguido de un patrón, y debe caber en una sola línea corta.
+Theme:
+Tema:
+Classic
+Clásico
+Accept headers
+Cabeceras Accept
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+La cabecera Accept enviada para cada tipo de enlace. Automático envía lo que envía el navegador elegido.
+Automatic
+Automático
+Old HTTrack value
+Valor antiguo de HTTrack
+Default
+Predeterminado
+Pages
+Páginas
+Inline frames
+Marcos en línea
+Frames
+Marcos
+Images
+Imágenes
+Style sheets
+Hojas de estilo
+Scripts
+Scripts
+Fonts
+Fuentes
+Audio
+Audio
+Video
+Vídeo
+Objects
+Objetos
+Embedded content
+Contenido incrustado
+Log in with a browser...
+Iniciar sesión con un navegador...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Inicie sesión en el sitio con un navegador y haga la copia con las cookies y la identidad del navegador que recibió
+No Microsoft Edge WebView2 runtime is installed on this computer
+No hay ningún runtime de Microsoft Edge WebView2 instalado en este ordenador
+Log in with a browser
+Iniciar sesión con un navegador
+Go
+Ir
+Done
+Listo
+Clear login
+Cerrar sesión
+The browser did not open: %s.
+El navegador no se ha abierto: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+El navegador no ha devuelto ninguna cookie. La dirección y la identidad del navegador se guardarán con el proyecto cuando termine el asistente.
+Cookies collected: %d. They are used when you press OK.
+Cookies recogidas: %d. Se usarán cuando pulse OK.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Cookies recogidas: %d. Se guardarán con el proyecto cuando termine el asistente.
+The login could not be written to %s.
+No se ha podido escribir el inicio de sesión en %s.
+%d of the browser's cookies were left out, because the engine would not read them.
+Se han descartado %d cookies del navegador, porque el motor no podía leerlas.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Inicie sesión en el sitio en otra pestaña de este navegador. Abra las herramientas para desarrolladores (F12) y luego la pestaña Red, recargue la página, haga clic derecho en la primera petición y elija Copy as cURL (bash). Pegue el texto aquí. Una exportación cookies.txt también sirve, para la primera dirección de la lista.
+Cookies for: %s. Browser identity: %s.
+Cookies para: %s. Identidad del navegador: %s.
+A login cannot be saved for this address, so nothing was kept.
+No se puede guardar un inicio de sesión para esta dirección, por lo que no se ha guardado nada.
+Yes
+Sí

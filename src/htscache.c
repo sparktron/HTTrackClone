@@ -41,6 +41,7 @@ Please visit our Website: http://www.httrack.com
 #include "htsio.h"
 #include "htsbasenet.h"
 #include "htsmd5.h"
+#include "htslines.h"
 #include <limits.h>
 #include <time.h>
 
@@ -53,16 +54,18 @@ Please visit our Website: http://www.httrack.com
 void cache_mayadd(httrackp * opt, cache_back * cache, htsblk * r,
                   const char *url_adr, const char *url_fil,
                   const char *url_save) {
-  hts_log_print(opt, LOG_DEBUG, "File checked by cache: %s", url_adr);
+  hts_log_print(opt, LOG_DEBUG, "File checked by cache: %s",
+                adr_nologin(opt, url_adr));
   // ---stockage en cache---
   // stocker dans le cache?
   if (opt->cache) {
     if (cache_writable(cache)) {
       // ensure not a temporary filename (should not happend ?!)
       if (IS_DELAYED_EXT(url_save)) {
-        hts_log_print(opt, LOG_WARNING,
-                      "aborted cache validation: %s%s still has temporary name %s",
-                      url_adr, url_fil, url_save);
+        hts_log_print(
+            opt, LOG_WARNING,
+            "aborted cache validation: %s%s still has temporary name %s",
+            adr_nologin(opt, url_adr), url_fil, url_save);
         return;
       }
       // c'est le seul endroit ou l'on ajoute des elements dans le cache (fichier entier ou header)
@@ -105,9 +108,9 @@ void cache_mayadd(httrackp * opt, cache_back * cache, htsblk * r,
                   strcatbuff(tempo, "\n");
                   strcatbuff(tempo, r->location);
                 }
-                hts_log_print(opt, LOG_DEBUG,
-                              "Cached fast-header response: %s%s is %d",
-                              url_adr, url_fil, (int) r->statuscode);
+                hts_log_print(
+                    opt, LOG_DEBUG, "Cached fast-header response: %s%s is %d",
+                    adr_nologin(opt, url_adr), url_fil, (int) r->statuscode);
                 coucal_add(cache->cached_tests,
                             concat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt), url_adr, url_fil),
                             (intptr_t) strdupt(tempo));
@@ -204,11 +207,13 @@ static void cache_zip_write_failed(httrackp *opt, cache_back *cache,
                       hts_get_zerror(zErr, errbuf, sizeof(errbuf)));
       }
     }
-    opt->state.exit_xh = -1; /* fatal: stop the mirror, exit non-zero */
+    /* fatal: stop the mirror, exit non-zero */
+    hts_store_release_int(&opt->state.exit_xh, -1);
   } else {
-    hts_log_print(
-        opt, LOG_WARNING, "cache write failed (%s: %s), entry not cached: %s%s",
-        what, hts_get_zerror(zErr, errbuf, sizeof(errbuf)), url_adr, url_fil);
+    hts_log_print(opt, LOG_WARNING,
+                  "cache write failed (%s: %s), entry not cached: %s%s", what,
+                  hts_get_zerror(zErr, errbuf, sizeof(errbuf)),
+                  adr_nologin(opt, url_adr), url_fil);
   }
 }
 
@@ -273,7 +278,7 @@ void cache_keep_previous(httrackp *opt, cache_back *cache, const char *url_adr,
      URL's file. */
   if (r.statuscode > 0 && strcmp(previous_save, url_save) == 0) {
     hts_log_print(opt, LOG_DEBUG, "keeping the previous cache entry for %s%s",
-                  url_adr, url_fil);
+                  adr_nologin(opt, url_adr), url_fil);
     cache_add_ex(opt, cache, &r, url_adr, url_fil, url_save, opt->all_in_cache,
                  StringBuff(opt->path_html_utf8), HTS_TRUE);
   }
@@ -335,12 +340,12 @@ static void cache_add_ex(httrackp *opt, cache_back *cache, const htsblk *r,
     if (r->is_write && url_save != NULL && strnotempty(url_save)) {
       hts_log_print(opt, LOG_WARNING,
                     "file too large for the cache, storing headers only: %s%s",
-                    url_adr, url_fil);
+                    adr_nologin(opt, url_adr), url_fil);
       dataincache = 0;
     } else {
       hts_log_print(opt, LOG_WARNING,
-                    "entry too large for the cache, not cached: %s%s", url_adr,
-                    url_fil);
+                    "entry too large for the cache, not cached: %s%s",
+                    adr_nologin(opt, url_adr), url_fil);
       return;
     }
   }
@@ -406,7 +411,7 @@ static void cache_add_ex(httrackp *opt, cache_back *cache, const htsblk *r,
   if (headersDropped != 0) {
     hts_log_print(opt, LOG_WARNING,
                   "cached headers too large, %d field(s) dropped: %s%s",
-                  headersDropped, url_adr, url_fil);
+                  headersDropped, adr_nologin(opt, url_adr), url_fil);
   }
 
   /* Filename */
@@ -420,7 +425,7 @@ static void cache_add_ex(httrackp *opt, cache_back *cache, const htsblk *r,
                          url_fil)) {
       hts_log_print(opt, LOG_WARNING,
                     "URL too long to be cached, entry not cached: %s%s",
-                    url_adr, url_fil);
+                    adr_nologin(opt, url_adr), url_fil);
       return;
     }
   }
@@ -719,7 +724,7 @@ static htsblk cache_readex_new(httrackp *opt, cache_back *cache,
           if (!hts_location_is_safe(r.location)) {
             hts_log_print(opt, LOG_WARNING,
                           "cached Location naming a post token, dropped: %s%s",
-                          adr, fil);
+                          adr_nologin(opt, adr), fil);
             r.location[0] = '\0';
           }
 
@@ -730,21 +735,37 @@ static htsblk cache_readex_new(httrackp *opt, cache_back *cache,
             const char *const path_html = StringBuff(opt->path_html_utf8);
             const size_t pathLen = strlen(path_html);
             /* an X-Save that already carries the path is taken as-is */
-            const char *const prefix =
-                (pathLen != 0 &&
-                 strncmp(previous_save_, path_html, pathLen) != 0)
-                    ? path_html
-                    : "";
+            const hts_boolean carries_path =
+                pathLen != 0 &&
+                strncmp(previous_save_, path_html, pathLen) == 0;
+            const char *const prefix = carries_path ? "" : path_html;
             size_t used = 0;
 
+            /* The cache is a file on disk like any other, so a forged X-Save
+               must not steer the fexist at :799, the read at :989 or the rename
+               at :846 out of the mirror. An absolute name is only the pre-3.40
+               shape when it already lies under the root, and there only what
+               follows the root is untrusted; anything else has to be relative,
+               because with no -O the root is "" (htsback.c:77) and an absolute
+               name would then be used verbatim. */
+            if (carries_path
+                    ? !hts_path_is_contained(previous_save_ + pathLen)
+                    : !hts_path_is_relative_contained(previous_save_)) {
+              hts_log_print(opt, LOG_WARNING,
+                            "cached filename leaving the mirror, "
+                            "not using the cache entry: %s%s",
+                            adr_nologin(opt, adr), fil);
+              r.statuscode = STATUSCODE_INVALID;
+              strcpybuff(r.msg, "Cache Read Error : Bad Filename");
+            }
             /* refuse the entry: a clipped name would point at a file we never
                stored */
-            if (!slcatprintfbuff(previous_save, sizeof(previous_save), &used,
-                                 "%s%s", prefix, previous_save_)) {
+            else if (!slcatprintfbuff(previous_save, sizeof(previous_save),
+                                      &used, "%s%s", prefix, previous_save_)) {
               hts_log_print(opt, LOG_WARNING,
                             "cached filename too long once rebuilt under '%s', "
                             "not using the cache entry: %s%s",
-                            path_html, adr, fil);
+                            path_html, adr_nologin(opt, adr), fil);
               r.statuscode = STATUSCODE_INVALID;
               strcpybuff(r.msg, "Cache Read Error : Filename Too Long");
             }
@@ -927,11 +948,11 @@ static htsblk cache_readex_new(httrackp *opt, cache_back *cache,
                     }
                   }
 
+#ifndef _WIN32
+                  (void) fchmod(fileno(r.out), HTS_ACCESS_FILE);
+#endif
                   fclose(r.out);
                   r.out = NULL;
-#ifndef _WIN32
-                  chmod(target_save, HTS_ACCESS_FILE);
-#endif
                 } else {
                   r.statuscode = STATUSCODE_INVALID;
                   strcpybuff(r.msg,
@@ -1184,8 +1205,58 @@ const char *cache_repair(httrackp *opt, const char *name,
   return NULL;
 }
 
+/* May new.zip replace old.zip? Not when it is beyond repair and old.zip holds a
+   generation the rotation would destroy. */
+static hts_boolean cache_new_generation_usable(httrackp *opt) {
+  unsigned long entries = 0;
+  unsigned long bytes = 0;
+  const char *why;
+  unzFile zip = hts_unzOpen_utf8(reconcile_path(opt, "hts-cache/new.zip"));
+
+  if (zip != NULL) {
+    unzClose(zip);
+    return HTS_TRUE;
+  }
+  if (fsize_utf8(reconcile_path(opt, "hts-cache/old.zip")) <= 0)
+    return HTS_TRUE;
+  hts_log_print(opt, LOG_WARNING, "Cache: damaged cache, trying to repair");
+  why = cache_repair(opt, reconcile_path(opt, "hts-cache/new.zip"), &entries,
+                     &bytes);
+  if (why != NULL) {
+    hts_log_print(opt, LOG_WARNING, "Cache: %s", why);
+    return HTS_FALSE;
+  }
+  hts_log_print(opt, LOG_WARNING,
+                "Cache: %d bytes successfully recovered in %d entries",
+                (int) bytes, (int) entries);
+  return HTS_TRUE;
+}
+
+/* Move the damaged generation aside, so old.* stay one consistent set. */
+static void cache_set_aside_damaged(httrackp *opt) {
+  static const char *const names[][2] = {
+      {"hts-cache/new.zip", "hts-cache/damaged.zip"},
+      {"hts-cache/new.lst", "hts-cache/damaged.lst"},
+      {"hts-cache/new.txt", "hts-cache/damaged.txt"}};
+  char BIGSTK dst[HTS_URLMAXSIZE * 2];
+  size_t i;
+
+  for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+    strcpybuff(dst, reconcile_path(opt, names[i][1]));
+    if (fexist_utf8(reconcile_path(opt, names[i][0])) &&
+        !hts_rename_over(opt, reconcile_path(opt, names[i][0]), dst))
+      hts_log_print(opt, LOG_WARNING | LOG_ERRNO,
+                    "Cache: could not set %s aside", names[i][0]);
+  }
+  hts_log_print(opt, LOG_WARNING,
+                "Cache: the last cache is beyond repair, so the previous "
+                "cache is used instead");
+}
+
 // Initialisation du cache: créer nouveau, renomer ancien, charger..
 void cache_init(cache_back * cache, httrackp * opt) {
+  hts_boolean keep_old = HTS_FALSE;
+
   // ---
   // utilisation du cache: renommer ancien éventuel et charger index
   hts_log_print(opt, LOG_DEBUG, "Cache: enabled=%d, base=%s, ro=%d",
@@ -1211,12 +1282,16 @@ void cache_init(cache_back * cache, httrackp * opt) {
               OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
               StringBuff(opt->path_log),
               "hts-cache/new.zip")))) { // a previous cache exists.. rename it
-        if (!hts_rename_over(
-                opt,
-                fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                        StringBuff(opt->path_log), "hts-cache/new.zip"),
-                fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                        StringBuff(opt->path_log), "hts-cache/old.zip"))) {
+        if (!cache_new_generation_usable(opt)) {
+          keep_old = HTS_TRUE;
+          cache_set_aside_damaged(opt);
+        } else if (!hts_rename_over(
+                       opt,
+                       fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                               StringBuff(opt->path_log), "hts-cache/new.zip"),
+                       fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                               StringBuff(opt->path_log),
+                               "hts-cache/old.zip"))) {
           hts_log_print(opt, LOG_WARNING | LOG_ERRNO,
                         "Cache: error while moving previous cache");
         } else {
@@ -1310,7 +1385,7 @@ void cache_init(cache_back * cache, httrackp * opt) {
                   && zfi.size_filename < sizeof(filename) - 2) {
                 long int pos =
                   (long int) unzGetOffset((unzFile) cache->zipInput);
-                assertf(readSizeHeader < sizeof(comment));
+                assertf((size_t) readSizeHeader < sizeof(comment));
                 comment[readSizeHeader] = '\0';
                 entries++;
                 if (pos > 0) {
@@ -1399,7 +1474,14 @@ void cache_init(cache_back * cache, httrackp * opt) {
                                StringBuff(opt->path_log), "hts-cache/"));
 
       {
-        /* Create ZIP file cache */
+        /* owner-only before an entry names a URL: zip's "wb" keeps the mode */
+        FILE *const zfp = hts_fopen_private(
+            fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                    StringBuff(opt->path_log), "hts-cache/new.zip"),
+            "wb");
+
+        if (zfp != NULL)
+          fclose(zfp);
         cache->zipOutput = (void *) hts_zipOpen_utf8(
             fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
                     StringBuff(opt->path_log), "hts-cache/new.zip"),
@@ -1407,15 +1489,15 @@ void cache_init(cache_back * cache, httrackp * opt) {
 
         if (cache->zipOutput != NULL) {
           // supprimer old.lst
-          if (fexist_utf8(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                                  StringBuff(opt->path_log),
-                                  "hts-cache/old.lst")))
+          if (!keep_old && fexist_utf8(fconcat(
+                               OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                               StringBuff(opt->path_log), "hts-cache/old.lst")))
             UNLINK(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
                            StringBuff(opt->path_log), "hts-cache/old.lst"));
           // renommer
-          if (fexist_utf8(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                                  StringBuff(opt->path_log),
-                                  "hts-cache/new.lst")))
+          if (!keep_old && fexist_utf8(fconcat(
+                               OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                               StringBuff(opt->path_log), "hts-cache/new.lst")))
             RENAME(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
                            StringBuff(opt->path_log), "hts-cache/new.lst"),
                    fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
@@ -1429,24 +1511,25 @@ void cache_init(cache_back * cache, httrackp * opt) {
           opt->state.strc.lst = cache->lst;
 
           // supprimer old.txt
-          if (fexist_utf8(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                                  StringBuff(opt->path_log),
-                                  "hts-cache/old.txt")))
+          if (!keep_old && fexist_utf8(fconcat(
+                               OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                               StringBuff(opt->path_log), "hts-cache/old.txt")))
             UNLINK(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
                            StringBuff(opt->path_log), "hts-cache/old.txt"));
           // renommer
-          if (fexist_utf8(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                                  StringBuff(opt->path_log),
-                                  "hts-cache/new.txt")))
+          if (!keep_old && fexist_utf8(fconcat(
+                               OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                               StringBuff(opt->path_log), "hts-cache/new.txt")))
             RENAME(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
                            StringBuff(opt->path_log), "hts-cache/new.txt"),
                    fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
                            StringBuff(opt->path_log), "hts-cache/old.txt"));
           // ouvrir
-          cache->txt =
-              FOPEN(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                            StringBuff(opt->path_log), "hts-cache/new.txt"),
-                    "wb");
+          /* owner-only: it lists URLs with their passwords */
+          cache->txt = hts_fopen_private(
+              fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                      StringBuff(opt->path_log), "hts-cache/new.txt"),
+              "wb");
           if (cache->txt) {
             fprintf(cache->txt,
                     "date\tsize'/'remotesize\tflags(request:Update,Range state:File response:Modified,Chunked,gZipped)\t");
@@ -1473,11 +1556,12 @@ char *readfile(const char *fil) {
   return readfile2(fil, NULL);
 }
 
-/* Note: NOT utf-8 */
-static char *readfile_gen(const char *fil, LLint *size, hts_boolean inmem) {
+/* "utf8" says "fil" is UTF-8 rather than in the system codepage. */
+static char *readfile_gen(const char *fil, LLint *size, hts_boolean inmem,
+                          hts_boolean utf8) {
   char *adr = NULL;
   char catbuff[CATBUFF_SIZE];
-  const LLint len = fsize(fil);
+  const LLint len = utf8 ? fsize_utf8(fil) : fsize(fil);
 
   /* a size too large for size_t (32-bit Windows/i386) must fail closed: it
      would wrap malloct() short while fread() still read the untruncated len.
@@ -1490,7 +1574,8 @@ static char *readfile_gen(const char *fil, LLint *size, hts_boolean inmem) {
   if (buflen != (size_t) -1) { // exists, and is addressable
     FILE *fp;
 
-    fp = fopen(fconv(catbuff, sizeof(catbuff), fil), "rb");
+    fp = utf8 ? FOPEN(fconv(catbuff, sizeof(catbuff), fil), "rb")
+              : fopen(fconv(catbuff, sizeof(catbuff), fil), "rb");
     if (fp != NULL) {           // n'existe pas (!)
       adr = (char *) malloct(buflen + 1);
       if (size != NULL)
@@ -1511,12 +1596,12 @@ static char *readfile_gen(const char *fil, LLint *size, hts_boolean inmem) {
 
 /* Note: NOT utf-8 */
 char *readfile2(const char *fil, LLint *size) {
-  return readfile_gen(fil, size, HTS_FALSE);
+  return readfile_gen(fil, size, HTS_FALSE, HTS_FALSE);
 }
 
-/* Note: NOT utf-8 */
+/* Note: utf-8 */
 char *readfile2_inmem(const char *fil, LLint *size) {
-  return readfile_gen(fil, size, HTS_TRUE);
+  return readfile_gen(fil, size, HTS_TRUE, HTS_TRUE);
 }
 
 /* Note: utf-8 */
@@ -1601,16 +1686,6 @@ int cache_brstr(char *adr, char *s, size_t s_size) {
     s[0] = '\0';
   }
   return off;
-}
-
-/* binput bounded to a NUL-terminated buffer: refuse to start a read at or
-   past `end`, so a prior over-advance can't walk a cache-index parse OOB. */
-int cache_binput(const char *adr, const char *end, char *s, int max) {
-  if (adr >= end) {
-    s[0] = '\0';
-    return 0;
-  }
-  return binput(adr, s, max);
 }
 
 // -- cache --

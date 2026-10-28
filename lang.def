@@ -1013,7 +1013,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 LANG_COOKIEFILE
 Load cookies from file:
 LANG_COOKIEFILETIP
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 LANG_PAUSEFILES
 Pause between files:
 LANG_PAUSEFILESTIP
@@ -1080,3 +1080,81 @@ LANG_SITEMAPURLTIP
 Address of a sitemap to read instead of probing the site; leave blank to probe robots.txt then /sitemap.xml.
 LANG_MANUAL
 Manual
+LANG_MAXRETRYAFTER
+Max Retry-After(s)
+LANG_MAXRETRYAFTERTIP
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+LANG_LIVERULES
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+LANG_LIVERULESBAD
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+LANG_UITHEME
+Theme:
+LANG_UITHEMECLASSIC
+Classic
+LANG_ACCEPT
+Accept headers
+LANG_ACCEPTTIP
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+LANG_ACCEPTAUTO
+Automatic
+LANG_ACCEPTLEGACY
+Old HTTrack value
+LANG_ACCEPTDEFAULT
+Default
+LANG_ACCEPTDOCUMENT
+Pages
+LANG_ACCEPTIFRAME
+Inline frames
+LANG_ACCEPTFRAME
+Frames
+LANG_ACCEPTIMAGE
+Images
+LANG_ACCEPTSTYLE
+Style sheets
+LANG_ACCEPTSCRIPT
+Scripts
+LANG_ACCEPTFONT
+Fonts
+LANG_ACCEPTAUDIO
+Audio
+LANG_ACCEPTVIDEO
+Video
+LANG_ACCEPTOBJECT
+Objects
+LANG_ACCEPTEMBED
+Embedded content
+LANG_BROWSERLOGIN
+Log in with a browser...
+LANG_BROWSERLOGINTIP
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+LANG_BROWSERLOGINNORUNTIME
+No Microsoft Edge WebView2 runtime is installed on this computer
+LANG_BROWSERLOGINTITLE
+Log in with a browser
+LANG_BROWSERLOGINGO
+Go
+LANG_BROWSERLOGINDONE
+Done
+LANG_BROWSERLOGINCLEAR
+Clear login
+LANG_BROWSERLOGINFAILED
+The browser did not open: %s.
+LANG_BROWSERLOGINNONE
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+LANG_BROWSERLOGINGOT
+Cookies collected: %d. They are used when you press OK.
+LANG_BROWSERLOGINGOTFINISH
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+LANG_BROWSERLOGINNOTSAVED
+The login could not be written to %s.
+LANG_BROWSERLOGINDROPPED
+%d of the browser's cookies were left out, because the engine would not read them.
+LANG_BROWSERLOGINPASTE
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+LANG_BROWSERLOGINFOR
+Cookies for: %s. Browser identity: %s.
+LANG_BROWSERLOGINNONAME
+A login cannot be saved for this address, so nothing was kept.
+LANG_YES
+Yes

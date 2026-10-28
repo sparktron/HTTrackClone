@@ -91,7 +91,8 @@ the operational checklist: toolchain, invariants, and how to ship a change.
   The right width is not a core count. Tests mostly sleep, waiting on a server
   trickle or httrack's own pacing, so an idle core covers a sleeping one.
   Measured on 4 cores, `-j8` takes 245s and `-j16` 161s, so CI passes a flat 16
-  through the `CHECK_JOBS` variable in `ci.yml`.
+  through the `CHECK_JOBS` variable, which `ci.yml`, `tier2.yml` and
+  `sanitizer.yml` each carry.
   That includes macOS, because the test server raises its listen backlog
   (`request_queue_size`) so macOS/BSD don't drop connections under a parallel
   `-c16` bigcrawl the way Python's default backlog of 5 did.
@@ -115,12 +116,24 @@ the operational checklist: toolchain, invariants, and how to ship a change.
 - `make check` prepends the build's `src/` to `PATH`, but a hand-run `.test` does
   not — an installed `/usr/bin/httrack` then shadows your build. Run via `make
   check`, or `PATH="<bld>/src:$PATH"` for a manual run.
+- **Tier-2 holds the slow legs**, in `tier2.yml`: the configure-variant builds,
+  the macOS bundle, the emulated s390x suite, and the distro packaging canaries.
+  It runs weekly on master and on demand, so point it at a branch with
+  `gh workflow run tier2.yml --ref <branch>` before a release. An absorbed
+  workflow keeps `workflow_call` and `workflow_dispatch` and has no schedule of
+  its own. Drop its `uses:` from `tier2.yml` and nothing runs it again. A canary
+  that watches the outside world (`appstream-network`, `mptcp-network`,
+  `downstream-drift`, `httraqt-upstream`, `psl-drift`) has to fire when no
+  branch moved, so it keeps its own cron and stays out of tier-2.
 - `distcheck` is a required context and builds from the dist tarball, which has no
   `.github/`. A test reading a file from there must skip when it is missing, not
   fail. Fail only when the directory is present and the file is not, so a real
-  deletion is still caught. Tests 226, 278, 399, 432 and 437 carry the pattern.
+  deletion is still caught. Tests 226, 278, 399 and 432 carry the pattern.
 - Give new `.test` scripts `set -e`: the older ones predate the rule, so several
   `local-crawl.sh` calls with no `set -e` report PASS on any non-last failure.
+- After a `( ... )` statement, write `subshell_ok $?` on the next line. This is
+  because macOS bash 3.2 ignores a failing subshell under `set -e`, and
+  `( ... ) || fail` turns `set -e` off inside it. Test 532 checks this.
 - Each test runs under a 600s wall-clock guard that reports a wedge as 124. A test
   whose own work outlasts it raises the budget with a `# TEST_TIMEOUT_AT_LEAST: N`
   line, at column 0 within its first 40 lines, and paces itself with
@@ -141,7 +154,8 @@ the operational checklist: toolchain, invariants, and how to ship a change.
   `head -c N` and `head -n N` end the same way, and there the reds are
   platform-specific: GNU `tail | head -c 3` survives, the uutils coreutils leg
   turns the same line into exit 141 with no output at all. Let the reader seek
-  instead: `od -An -c -j <skip> -N <len> file`.
+  instead: `od -An -c -j <skip> -N <len> file`. Test 585 checks the `printf` and
+  `echo` producers.
 - Never assert a fault by signal *number*: SIGBUS is 7 on x86, arm, powerpc and
   s390x but 10 on hppa, alpha, mips and sparc. Map it with `kill -l "$n"`.
 - A fixture that needs a host to stay silent must settle (500ms), re-probe every
@@ -165,14 +179,17 @@ the operational checklist: toolchain, invariants, and how to ship a change.
   byte-wise (`perl -0pi`, `sed`), not through a tool that re-encodes to UTF-8
   and corrupts them. The rest of the tree, including `lang/*.txt` and
   `html/contact.html`, is UTF-8 and safe to edit normally.
-- **Never add a matrix axis to `windows-build.yml`.** The `libhttrack` job has no
-  `name:`, so GitHub builds each status context from the job id plus the matrix
-  values. That yields `libhttrack (x64, Release)` and `libhttrack (Win32,
-  Release)`, and the `Protect master` ruleset requires both by name. A third axis
-  renames them, so both stop reporting on every open PR in the repo, not only the
-  one that added the axis. Give a new Windows leg its own job with a pinned
-  `name:`, or add a step to the existing job. `437_ci-windows-contexts.test`
-  fails on any such rename.
+- **The `Protect master` ruleset requires three checks: `ci gate`, `windows
+  gate` and `DCO sign-off`.** Each gate fails unless every job in its workflow
+  succeeded, or skipped on purpose, so a new job goes into its gate's `needs:`, and
+  `496_ci-tier2-split.test` fails when one is missing. A matrix change or a job
+  rename no longer touches the ruleset.
+- **A required status context must stay on a workflow that runs on
+  `pull_request`.** A required check that never reports leaves every open PR
+  waiting for it forever. `tier2.yml` runs on a schedule and on demand, never on
+  a PR, so moving a job there is what makes this happen.
+  `496_ci-tier2-split.test` pins the required list and fails when one stops
+  being emitted.
 
 ## Security (HTTrack parses hostile input off the network)
 - Bounds-check every copy. Overflow-safe form: put the untrusted value alone,
@@ -204,9 +221,11 @@ more care than its diff size suggests.
   string reaches your test it may already have been entity-decoded and
   truncated at `#` and `?`. Read what happened to it upstream, rather than
   assuming it still holds what the page held.
-- **Prove it by differential against the previous release binary.** Build both,
-  crawl one fixture, diff the mirrored output. A source read that has not been
-  confronted with two running binaries is a hypothesis.
+- **Prove it by differential against the previous release binary.** `bash
+  tools/parser-diff.sh` builds both, crawls `tools/parser-corpus/` with each and
+  diffs the mirrors. Run `--self-check` first, because it proves the diff could
+  have seen a change at all. A source read that has not been confronted with
+  two running binaries is a hypothesis.
 - **Pair every probe with a control that fires**, including one in the narrowing
   direction. A mutant that wrongly rejects tells you the differential can see a
   loss and not only a gain.
@@ -233,8 +252,13 @@ more care than its diff size suggests.
 - Strip AI tells from prose (em-dash overuse, rule-of-three, filler, vague
   attributions). Ref: Wikipedia "Signs of AI writing". Claude Code: `/humanizer`.
 - Behavior change → add a test. Fast path: a hidden `httrack -#test=NAME` engine
-  self-test (registry in `htsselftest.c`; `-#test` lists them) driven by a
-  `tests/NN_*.test`, over a slow crawl.
+  self-test driven by a `tests/NN_*.test`, over a slow crawl. `-#test` lists them.
+- **A self-test lives with the module it exercises**, in `hts<module>_selftest.c`.
+  Each publishes its own `selftests_<module>[]` table, declared in
+  `htsselftest_int.h` and walked by `hts_selftest()`. Adding a test therefore
+  touches one file, holding the handler and its row. Fixtures more than one
+  module needs go in `htsselftest_util.c`. A new file must also be listed in
+  `src/Makefile.am` and `src/libhttrack.vcxproj` (test 342).
 - A list of self-test assertions goes through `selftest_queue` +
   `selftest_run_queued`, which run the file's cases in one engine instead of one
   per assertion. Queued args reach the handler verbatim, so a case exercising an
@@ -285,10 +309,12 @@ Before pushing, and when reviewing others, don't skim for bugs:
 
 ## PR descriptions
 - Plain concise prose; lead with what changed and why. No What/Why/How template.
-- Title names the problem, not the implementation.
+- Title says what the change does, in plain words anyone can follow without
+  opening the diff. Not the problem behind it, and not the implementation.
 - Don't restate the diff — give what it can't show: motivation, context,
   tradeoffs, risk.
-- Length tracks the change: a typo is one sentence; a security fix earns a writeup.
+- Write two sentences: what it does, and what a reviewer would miss. A third
+  needs a reason.
 - Verify claims against the code before you write them; flag drift, don't repeat it.
 - Don't hard-wrap (GitHub reflows). No "Generated with Claude" footer. Run the
   prose through `/humanizer`.

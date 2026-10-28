@@ -7,6 +7,8 @@
 	<title>'${html:projname}' - HTTrack Website Copier</title>
 
 	<link rel="stylesheet" type="text/css" media="screen" href="style.css">
+	<link rel="stylesheet" type="text/css" media="screen" href="/server/theme.css">
+	<link rel="stylesheet" type="text/css" media="screen" href="user.css">
 	<script type="text/javascript" src="ping.js" defer></script>
 
 <script language="javascript">
@@ -30,7 +32,7 @@ function info(str) {
 </script>
 
 </head>
-<body onLoad="do_load();" onUnload="do_unload();" onKeyPress="return key_event(event);">
+<body class="page-step4" onLoad="do_load();" onUnload="do_unload();" onKeyPress="return key_event(event);">
 
 <table width="76%" border="0" align="center" cellspacing="0" cellpadding="0" class="tableWidth">
 	<tr>
@@ -46,7 +48,6 @@ ${do:if-file-exists:html/doc/html/index.html}
 		<a href="/doc/html/index.html" target="_blank"
 			onClick="window.open('/doc/html/index.html', 'httrack-doc', 'toolbar=no, location=no, directories=no, status=yes, menubar=no, scrollbars=yes, resizable=yes, width=980, height=760'); return false"
 			title='${html:LANG_MANUAL}' onMouseOver="info('${js:LANG_MANUAL}'); return true" onMouseOut="info('&nbsp;'); return true"
-			style="color:#FFFFFF"
 		>
 		${LANG_MANUAL}
 		</a>
@@ -113,7 +114,7 @@ httrack \
 	${test:todo:--mirror:--mirror:--mirror:--get:--mirrorlinks:--testlinks:--continue:--update}
 	${unquoted:urls}
 	${test:filelist:-%L "}${arg:filelist}${test:filelist:"}
-	--path "${arg:path}/${arg:projname}" 
+	-O1 "${arg:path}/${arg:projname}" 
 \
 	${test:parseall:--near}
 	${test:link:--test}
@@ -146,6 +147,7 @@ ${do:end-if}${do:output-mode:html}
 	${test:timeout:--timeout=}${unquoted:timeout}
 	${test:remt:--host-control=1}
 	${test:retry:--retries=}${unquoted:retry}
+	${test:maxretryafter:--max-retry-after=}${unquoted:maxretryafter}
 	${test:rate:--min-rate=}${unquoted:rate}
 	${test:rems:--host-control=2}
 \
@@ -163,6 +165,19 @@ ${/* -m<n> resets the html limit, so the bare form must precede the -m,<n> one *
 \
 ${/* an empty -F mutes the header instead of defaulting, so a blank box sends nothing */}
 	${test:user:--user-agent "}${arg:user}${test:user:"}
+${/* the engine reads a default such as image=x as the image row, so it is not sent */}
+	${do:if-not-accept-kind:acceptdefault}${test:acceptdefault:--accept "}${arg:acceptdefault}${test:acceptdefault:"}${do:end-if}${do:output-mode:html}
+	${test:acceptdocument:--accept "document=}${arg:acceptdocument}${test:acceptdocument:"}
+	${test:acceptiframe:--accept "iframe=}${arg:acceptiframe}${test:acceptiframe:"}
+	${test:acceptframe:--accept "frame=}${arg:acceptframe}${test:acceptframe:"}
+	${test:acceptimage:--accept "image=}${arg:acceptimage}${test:acceptimage:"}
+	${test:acceptstyle:--accept "style=}${arg:acceptstyle}${test:acceptstyle:"}
+	${test:acceptscript:--accept "script=}${arg:acceptscript}${test:acceptscript:"}
+	${test:acceptfont:--accept "font=}${arg:acceptfont}${test:acceptfont:"}
+	${test:acceptaudio:--accept "audio=}${arg:acceptaudio}${test:acceptaudio:"}
+	${test:acceptvideo:--accept "video=}${arg:acceptvideo}${test:acceptvideo:"}
+	${test:acceptobject:--accept "object=}${arg:acceptobject}${test:acceptobject:"}
+	${test:acceptembed:--accept "embed=}${arg:acceptembed}${test:acceptembed:"}
 	--footer "${arg:footer}"
 \
 	${unquoted:url2}
@@ -266,6 +281,7 @@ Changes=${ztest:changes:0:1}
 SingleFile=${ztest:singlefile:0:1}
 SingleFileMaxSize=${singlefilemax}
 LogType=${logtype}
+DebugMode=${ztest:windebug:0:1}
 UseHTTPProxyForFTP=${ztest:ftpprox:0:1}
 ProxyType=${proxytype}
 Build=${build}
@@ -281,11 +297,24 @@ MaxWait=${pausebytes}
 PauseFiles=${pausefiles}
 Sockets=${connexion}
 Retry=${retry}
+MaxRetryAfter=${maxretryafter}
 MaxTime=${maxtime}
 TimeOut=${timeout}
 RateOut=${rate}
 UserID=${user}
 Footer=${footer}
+AcceptDefault=${acceptdefault}
+AcceptDocument=${acceptdocument}
+AcceptIframe=${acceptiframe}
+AcceptFrame=${acceptframe}
+AcceptImage=${acceptimage}
+AcceptStyle=${acceptstyle}
+AcceptScript=${acceptscript}
+AcceptFont=${acceptfont}
+AcceptAudio=${acceptaudio}
+AcceptVideo=${acceptvideo}
+AcceptObject=${acceptobject}
+AcceptEmbed=${acceptembed}
 MaxRate=${maxrate}
 WildCardFilters=${url2}
 Depth=${depth}
@@ -327,7 +356,7 @@ ${do:output-mode:}
 			title='${html:LANG_TIPPREV}' onMouseOver="info('${js:LANG_TIPPREV}'); return true" onMouseOut="info('&nbsp;'); return true"			
 			>
 		</td><td align="right">
-			<input name="nextBtn" type="submit" value=" ${attr:LANG_J9} >> "
+			<input class="primary" name="nextBtn" type="submit" value=" ${attr:LANG_J9} >> "
 			title='${html:LANG_TIPNEXT}' onMouseOver="info('${js:LANG_TIPNEXT}'); return true" onMouseOut="info('&nbsp;'); return true"
 			>
 		</td></tr></table>

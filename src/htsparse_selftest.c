@@ -38,10 +38,7 @@ Please visit our Website: http://www.httrack.com
 
 #include "htsparse_selftest.h"
 
-#include "htscore.h"
-#include "htslib.h"
-#include "htsparse.h"
-#include "htstools.h"
+#include "htsselftest_int.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -320,7 +317,8 @@ typedef enum {
   JSGUARD_NONE = 0,
   JSGUARD_TAG_QUOTE, /* the quote the enclosing attribute is written with */
   JSGUARD_SPACE_BEFORE,
-  JSGUARD_NO_NAME_BYTE, /* neither an alphanumeric nor an underscore */
+  JSGUARD_NO_IDENT_BYTE,  /* nothing JavaScript allows inside a name */
+  JSGUARD_NO_IDENT_QUOTE, /* nor a quote, which ends a string */
   JSGUARD_SPACE_AFTER
 } jsscan_guard;
 
@@ -330,20 +328,54 @@ static const struct jsscan_word {
   const char *ends;      /* what may close it, NULL for the default */
   hts_boolean no_mime;   /* window.open("text/html") is a type, not a URL */
   hts_boolean no_method; /* xhr.open("GET", url): the method is not a URL */
+  hts_boolean url_only;  /* from "jquery" names a module, not a file */
   jsscan_guard guard;
 } jsscan_words[] = {
-    {".src", '=', NULL, HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
-    {"src", '=', NULL, HTS_FALSE, HTS_FALSE, JSGUARD_TAG_QUOTE},
-    {".location", '=', NULL, HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
-    {":location", '=', NULL, HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
-    {"location", '=', NULL, HTS_FALSE, HTS_FALSE, JSGUARD_SPACE_BEFORE},
-    {".href", '=', NULL, HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
-    {".open", '(', "),", HTS_TRUE, HTS_TRUE, JSGUARD_NONE},
-    {".replace", '(', ")", HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
-    {".link", '(', ")", HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
-    {"url", '(', ")", HTS_FALSE, HTS_FALSE, JSGUARD_NO_NAME_BYTE},
-    {"import", 0, NULL, HTS_FALSE, HTS_FALSE, JSGUARD_SPACE_AFTER},
+    {".src", '=', NULL, HTS_FALSE, HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
+    {"src", '=', NULL, HTS_FALSE, HTS_FALSE, HTS_FALSE, JSGUARD_TAG_QUOTE},
+    {".location", '=', NULL, HTS_FALSE, HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
+    {":location", '=', NULL, HTS_FALSE, HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
+    {"location", '=', NULL, HTS_FALSE, HTS_FALSE, HTS_FALSE,
+     JSGUARD_SPACE_BEFORE},
+    {".href", '=', NULL, HTS_FALSE, HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
+    {".open", '(', "),", HTS_TRUE, HTS_TRUE, HTS_FALSE, JSGUARD_NONE},
+    {".replace", '(', ")", HTS_FALSE, HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
+    {".link", '(', ")", HTS_FALSE, HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
+    {".url", '(', ")", HTS_FALSE, HTS_FALSE, HTS_FALSE, JSGUARD_NONE},
+    {"url", '(', ")", HTS_FALSE, HTS_FALSE, HTS_FALSE, JSGUARD_NO_IDENT_BYTE},
+    {"import", 0, NULL, HTS_FALSE, HTS_FALSE, HTS_FALSE, JSGUARD_SPACE_AFTER},
+    {"from", 0, NULL, HTS_FALSE, HTS_FALSE, HTS_TRUE, JSGUARD_NO_IDENT_QUOTE},
 };
+
+/* The code point ending at cursor[-1], or the byte itself where no UTF-8 lead
+   precedes it, which is how a Latin-1 page spells a non-breaking space. */
+static unsigned int model_prev_codepoint(const char *cursor,
+                                         const char *buffer) {
+  const unsigned char *const p = (const unsigned char *) cursor;
+  const size_t before = (size_t) (cursor - buffer);
+
+  if (before >= 3 && (p[-3] & 0xF0) == 0xE0)
+    return ((unsigned int) (p[-3] & 0x0F) << 12) |
+           ((unsigned int) (p[-2] & 0x3F) << 6) | (p[-1] & 0x3Fu);
+  if (before >= 2 && (p[-2] & 0xE0) == 0xC0)
+    return ((unsigned int) (p[-2] & 0x1F) << 6) | (p[-1] & 0x3Fu);
+  return p[-1];
+}
+
+/* Every ECMAScript WhiteSpace and LineTerminator above 127. */
+static hts_boolean js_space_codepoint(unsigned int cp) {
+  return cp == 0xA0 || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) ||
+                 cp == 0x2028 || cp == 0x2029 || cp == 0x202F || cp == 0x205F ||
+                 cp == 0x3000 || cp == 0xFEFF
+             ? HTS_TRUE
+             : HTS_FALSE;
+}
+
+/* The CSS ident code points that ECMAScript reads as spaces, so that a name
+   ends in one language and continues in the other. */
+static hts_boolean css_ident_codepoint(unsigned int cp) {
+  return cp == 0x1680 || cp == 0xFEFF ? HTS_TRUE : HTS_FALSE;
+}
 
 /* This models what hts_js_scan_link is meant to find: one of the keywords
    above, its separator, a quoted operand, and a byte closing the statement. */
@@ -378,15 +410,31 @@ static hts_boolean jsscan_model(httrackp *opt, const char *cursor,
       if (!isspace(prev))
         continue;
       break;
-    case JSGUARD_NO_NAME_BYTE:
-      /* The engine leaves its "url" match in place when this guard fails, so
-         "aurl=" and "_url=" go on to match the plain assignment form. Modelled
-         as the engine behaves, not as the guard reads. */
-      if (isalnum(prev) || prev == '_') {
-        w = &jsscan_words[0]; /* borrow the plain "name=" shape */
-        a = cursor + l;
-        goto matched;
-      }
+    case JSGUARD_NO_IDENT_BYTE:
+      /* The engine matches UTF-8 byte triples and this decodes the code point,
+         so the two agree on which characters glue only by accident. Membership
+         itself is pinned by cases[] below, never by the sweep. */
+      if (isalnum((unsigned char) prev) || prev == '_' || prev == '$' ||
+          prev == '.' ||
+          ((unsigned char) prev >= 0x80 &&
+           !js_space_codepoint(model_prev_codepoint(cursor, buffer))))
+        continue;
+      /* CSS reads a wider name, so url() glues to more there (#1754) */
+      if (in_css &&
+          (prev == '-' ||
+           ((unsigned char) prev >= 0x80 &&
+            css_ident_codepoint(model_prev_codepoint(cursor, buffer)))))
+        continue;
+      break;
+    case JSGUARD_NO_IDENT_QUOTE:
+      if (prev == '"' || prev == '\'' || prev == '`')
+        continue;
+      /* Quotes aside, the identifier test below applies here too. */
+      if (isalnum((unsigned char) prev) || prev == '_' || prev == '$' ||
+          prev == '.' ||
+          ((unsigned char) prev >= 0x80 &&
+           !js_space_codepoint(model_prev_codepoint(cursor, buffer))))
+        continue;
       break;
     case JSGUARD_SPACE_AFTER:
       if (!is_space(cursor[l]))
@@ -462,10 +510,22 @@ matched:
     }
   }
 
-  /* a leading ',' or ';' says this is code, and a quote or a control byte says
-     the operand never was one string */
+  /* Spelled again as prefixes, not as indexed bytes: a specifier is a URL
+     when it is a path or carries a scheme. */
+  if (w->url_only && strncmp(a, "/", 1) != 0 && strncmp(a, "./", 2) != 0 &&
+      strncmp(a, "../", 3) != 0 && strfield(a, "http:") == 0 &&
+      strfield(a, "https:") == 0 && strfield(a, "ftp:") == 0)
+    return HTS_FALSE;
+
+  /* a leading ',' or ';' says this is code, a quote or a control byte says the
+     operand never was one string, and "${" says it is interpolated.
+     Near-verbatim with the engine's loop on purpose. The sweep compares the
+     two, so an edit to both would agree; what catches that is cases[] and the
+     crawl in test 490, which never consult this model. */
   for (n = 0, i = 0; i < (size_t) len; i++) {
-    if (a[i] == ',' || a[i] == ';') {
+    if (a[i] == '$' && i + 1 < (size_t) len && a[i + 1] == '{') {
+      return HTS_FALSE;
+    } else if (a[i] == ',' || a[i] == ';') {
       if (n == 0)
         return HTS_FALSE;
     } else if (a[i] == '"' || a[i] == '\'' || a[i] == '\t' || a[i] == '\r' ||
@@ -516,15 +576,36 @@ static void jsscan_case(httrackp *opt, selftest_sweep *sw, const char *text,
    operand + tail, taking one representative per class the scanner branches on
    rather than every byte. */
 static void jsscan_sweep(httrackp *opt, selftest_sweep *sw) {
-  static const char *const prefix[] = {"", " ", "a", "_", "\""};
+  /* The non-ASCII prefixes are the control on the two decoders agreeing, not
+     on the byte list, which cases[] pins. U+20A0 ends in 0xA0, so an engine
+     reading that byte as a space disagrees with the model here and nowhere
+     else. */
+  static const char *const prefix[] = {"",
+                                       " ",
+                                       "a",
+                                       "_",
+                                       "\"",
+                                       "$",
+                                       ".",
+                                       "`",
+                                       ":",
+                                       "}",
+                                       "\n",
+                                       "\302\240",
+                                       "\303\251",
+                                       "\342\202\240",
+                                       "-",
+                                       "\341\232\200",
+                                       "\357\273\277"};
   static const char *const word[] = {
-      ".src",     "src",    ".SRC",  ".location", ":location",
-      "location", ".href",  ".open", ".replace",  ".link",
-      "url",      "import", "foo"};
+      ".src",     "src",   ".SRC",   ".location", ":location",
+      "location", ".href", ".open",  ".replace",  ".link",
+      ".url",     "url",   "import", "from",      "foo"};
   static const char *const sep[] = {"=", "(", ",", "", " ="};
   static const char *const quote[] = {"\"", "'", ""};
-  static const char *const operand[] = {"a.gif", "text/html", "GET", ",x",
-                                        "x;y",   "",          "a b"};
+  static const char *const operand[] = {
+      "a.gif", "text/html", "GET",     ",x",    "x;y",    "",
+      "a b",   "./a.js",    "../a.js", "/a.js", "..x.js", "http://h/a.js"};
   static const char *const tail[] = {";", ")", ",", "\n", " ;", "", "x"};
   char text[128];
   size_t p, w, s, q, o, t;
@@ -589,15 +670,98 @@ int parse_selftest_jsscan(httrackp *opt, hts_boolean dump) {
       /* a bare location needs a space before it */
       {" location=\"a\";", 1, HTS_FALSE, HTS_FALSE, HTS_TRUE, 10, 1},
       {"alocation=\"a\";", 1, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
-      /* the "url" guard rejects the match and keeps it, so the assignment
-         form still fires: see JSGUARD_NO_NAME_BYTE */
-      {"aurl=\"pic.gif\";", 1, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 7},
+      /* a name ending in "url" is one identifier token, so neither its
+         assignment nor its call carries a link (#1739) */
+      {"aurl=\"pic.gif\";", 1, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
       {"myurl(\"pic.gif\")", 2, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      {"var myurl = \"hello world\";", 6, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0,
+       0},
+      {"var baseurl = \"jquery7\";", 8, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      {"var a_url = \"a.gif\";", 6, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      {"$url(\"a.gif\")", 1, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      {"\303\251url(\"a.gif\")", 2, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      /* the spellings CSS writes url() in, which must all still be taken */
+      {":url(a.png)", 1, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      {",url(a.png)", 1, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      {"(url(a.png)", 1, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      {" url(a.png)", 1, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      {"\302\240url(a.png)", 2, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      /* CSS has no template literal and juxtaposes its tokens, so a quote
+         before url() is a boundary there and a name byte in code */
+      {"content:\"x\"url(a.png)", 11, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      {"`url('${t}')`", 1, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      {"`url('/r/r1')`", 1, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 5},
+      {"`url('/a/${t}.png')`", 1, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      /* .url() is a method call, and has its own row the way .href has */
+      {"o.url(\"/t/x.gif\")", 1, HTS_FALSE, HTS_FALSE, HTS_TRUE, 6, 8},
+      {"o.myurl(\"/t/x\")", 1, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      {"content:'x'url(a.png)", 11, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      /* a quote ends a string, so the url() right after one is real */
+      {"'url('a.gif')", 1, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 5},
+      {"\"url(\"a.gif\")", 1, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 5},
+      {"a_url(\"a.gif\")", 2, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      /* a name ends on any Unicode space, not only the three once spelled */
+      {"\343\200\200url(a.png)", 3, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      {"\342\200\257url(a.png)", 3, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      {"\341\273\277url(a.png)", 3, HTS_FALSE, HTS_TRUE, HTS_FALSE, 0, 0},
+      {"\240url(a.png)", 1, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      /* U+1680 and U+FEFF: a JavaScript space, a CSS ident code point */
+      {"\341\232\200url(\"a.png\")", 3, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 5},
+      {"\341\232\200url(a.png)", 3, HTS_FALSE, HTS_TRUE, HTS_FALSE, 0, 0},
+      {"x\341\232\200url(a.png)", 4, HTS_FALSE, HTS_TRUE, HTS_FALSE, 0, 0},
+      {"\357\273\277url(\"a.png\")", 3, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 5},
+      {"\357\273\277url(a.png)", 3, HTS_FALSE, HTS_TRUE, HTS_FALSE, 0, 0},
+      {"x\357\273\277url(a.png)", 4, HTS_FALSE, HTS_TRUE, HTS_FALSE, 0, 0},
+      /* "-" continues a CSS name, so image-url() is a function of its own.
+         JavaScript subtracts there instead, so url() really is called. */
+      {"image-url(a.png)", 6, HTS_FALSE, HTS_TRUE, HTS_FALSE, 0, 0},
+      {"image-url(\"a.png\")", 6, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 5},
+      {"-url(a.png)", 1, HTS_FALSE, HTS_TRUE, HTS_FALSE, 0, 0},
+      {"\342\201\237url(a.png)", 3, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      {"\342\200\250url(a.png)", 3, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      {"\342\200\251url(a.png)", 3, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      /* U+2000..200A are spaces and U+200B is not, so both ends are pinned */
+      {"\342\200\200url(a.png)", 3, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      {"\342\200\212url(a.png)", 3, HTS_FALSE, HTS_TRUE, HTS_TRUE, 4, 5},
+      {"\342\200\213url(a.png)", 3, HTS_FALSE, HTS_TRUE, HTS_FALSE, 0, 0},
+      /* a zero-width joiner is part of a name, so it glues */
+      {"\342\200\214url(a.png)", 3, HTS_FALSE, HTS_TRUE, HTS_FALSE, 0, 0},
+      /* JavaScript's new URL(x) takes the same token, quoted */
+      {"new URL(\"a.gif\")", 4, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 5},
       /* an operand holding code is not a URL */
       {"x.src=\",a.gif\";", 1, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
       {"x.src=\"\";", 1, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
       /* a script inside a tag ends on the attribute's own quote */
       {"x.src='a.gif'\"", 1, HTS_TRUE, HTS_FALSE, HTS_TRUE, 6, 5},
+      /* a module specifier is followed when it is a path, and export takes
+         the same keyword as import */
+      {"import x from\"./x.js\";", 9, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 6},
+      {"import x from \"../x.js\";", 9, HTS_FALSE, HTS_FALSE, HTS_TRUE, 6, 7},
+      {"from\"/x.js\";", 0, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 5},
+      {"export{a}from\"./x.js\";", 9, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 6},
+      /* an absolute specifier is a URL too, and both spellings must agree */
+      {"from\"https://h/x.js\";", 0, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 14},
+      {"import \"https://h/x.js\";", 0, HTS_FALSE, HTS_FALSE, HTS_TRUE, 8, 14},
+      /* a query rides along: the rule reads the leading bytes only */
+      {"from\"./x.js?v=1\";", 0, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 10},
+      /* a module id the loader resolves. The ESM grammar wants a slash after
+         the dots, so "..x.js" and ".config/a.js" are ids and not paths. */
+      {"from\"@scope/pkg\";", 0, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      {"from\"..x.js\";", 0, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      {"from\".config/a.js\";", 0, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      /* the keyword stands alone, and is not a call */
+      {"xfrom\"./x.js\";", 1, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      {"x.from(\"./x.js\")", 2, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      /* a name ending in "from" is not the keyword, and the assignment it
+         carries is not a link. The sweep's "_" prefix covers that arm of the
+         name set, so one spelling is enough here. */
+      {"var copyFrom = \"hello world\";", 8, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0,
+       0},
+      /* '$' opens a name, and a byte above 127 opens a Unicode one. UTF-8
+         whitespace does not, so the keyword still stands alone after it. */
+      {"$from\"./x.js\";", 1, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      {"\303\251from\"./x.js\";", 2, HTS_FALSE, HTS_FALSE, HTS_FALSE, 0, 0},
+      {"\302\240from\"./x.js\";", 2, HTS_FALSE, HTS_FALSE, HTS_TRUE, 5, 6},
   };
 
   selftest_sweep sw;
@@ -621,6 +785,63 @@ int parse_selftest_jsscan(httrackp *opt, hts_boolean dump) {
               got.length, (int) cases[i].want, cases[i].offset,
               cases[i].length);
       err = 1;
+    }
+  }
+
+  /* A quoted url() may hold ')', so only an unquoted one ends there. A style
+     attribute may write the quotes as entities. */
+  {
+    static const struct {
+      const char *text;
+      int at, length;
+      char end;
+      hts_boolean in_tag, in_css, escape;
+      char entity;
+    } ends[] = {
+        {"url(a.png)", 0, 5, ')', HTS_FALSE, HTS_TRUE, HTS_TRUE, '\0'},
+        {"url('a (2).png')", 0, 9, '\0', HTS_FALSE, HTS_TRUE, HTS_TRUE, '\0'},
+        {"url(\"a (2).png\")", 0, 9, '\0', HTS_FALSE, HTS_TRUE, HTS_TRUE, '\0'},
+        {"x.src=\"a (2).png\";", 1, 9, '\0', HTS_FALSE, HTS_FALSE, HTS_FALSE,
+         '\0'},
+        {"url(&quot;a (2).png&quot;)", 0, 9, '\0', HTS_TRUE, HTS_TRUE, HTS_TRUE,
+         '"'},
+        {"url(&#39;a.png?b&amp;c&#x27;)", 0, 13, '\0', HTS_TRUE, HTS_TRUE,
+         HTS_TRUE, '\''},
+        {"url(&quot;it&#39;s.png&#34;)", 0, 12, '\0', HTS_TRUE, HTS_TRUE,
+         HTS_TRUE, '"'},
+        /* a <style> block does not decode entities */
+        {"url(&quot;a.png&quot;)", 0, 17, ')', HTS_FALSE, HTS_TRUE, HTS_TRUE,
+         '\0'},
+        /* HTML has no &APOS; */
+        {"url(&APOS;a.png&APOS;)", 0, 17, ')', HTS_TRUE, HTS_TRUE, HTS_TRUE,
+         '\0'}};
+
+    /* the closing entity must stand for the same quote, before a raw one or '>'
+     */
+    static const char *const unclosed[] = {"url(&quot;a.png&#39;)",
+                                           "url(&quot;a.png\")",
+                                           "url(&quot;a.png)>b&quot;)"};
+
+    for (i = 0; i < sizeof(ends) / sizeof(ends[0]); i++) {
+      hts_js_link got;
+
+      if (!hts_js_scan_link(opt, ends[i].text + ends[i].at, ends[i].text,
+                            ends[i].in_tag, '"', ends[i].in_css, &got) ||
+          got.length != ends[i].length || got.unquoted_end != ends[i].end ||
+          got.escape_parens != ends[i].escape ||
+          got.entity_quote != ends[i].entity) {
+        fprintf(stderr, "jsscan \"%s\": wrong end of link\n", ends[i].text);
+        err = 1;
+      }
+    }
+    for (i = 0; i < sizeof(unclosed) / sizeof(unclosed[0]); i++) {
+      hts_js_link got;
+
+      if (hts_js_scan_link(opt, unclosed[i], unclosed[i], HTS_TRUE, '"',
+                           HTS_TRUE, &got)) {
+        fprintf(stderr, "jsscan \"%s\": took an unclosed link\n", unclosed[i]);
+        err = 1;
+      }
     }
   }
 
@@ -681,6 +902,10 @@ int parse_selftest_jsimport(httrackp *opt) {
       {"", HTS_FALSE},
       /* a keyword cut short by the document's first byte */
       {"mport(", HTS_FALSE},
+      /* UTF-8 whitespace is a boundary, a Unicode name is not */
+      {"\302\240import(", HTS_TRUE},
+      {"\342\200\250import(", HTS_TRUE},
+      {"caf\303\251import(", HTS_FALSE},
       /* The walk sees bytes, not syntax, so a commented-out call reads as one.
          The parser's comment automaton is what never asks here. */
       {"// import(", HTS_TRUE},
@@ -920,3 +1145,668 @@ int parse_selftest_tagattr(httrackp *opt) {
          (int) sw.accepted);
   return 0;
 }
+
+/* Names the string on failure, since a bare line number cannot say which row
+   went red. */
+static void st_linkdir_case(const char *lien, hts_boolean frag_or_query,
+                            hts_boolean multisegment) {
+  const hts_boolean got_frag = link_dir_has_fragment_or_query(lien);
+  const hts_boolean got_multi = link_dir_is_multisegment(lien);
+
+  if (got_frag != frag_or_query || got_multi != multisegment) {
+    fprintf(
+        stderr,
+        "linkdir \"%s\": fragment %d wanted %d, multisegment %d wanted %d\n",
+        lien, got_frag, frag_or_query, got_multi, multisegment);
+    assertf(!"linkdir case failed");
+  }
+}
+
+static int st_linkdir(httrackp *opt, int argc, char **argv) {
+  size_t i;
+
+  /* Each row is one string with the answer from
+     link_dir_has_fragment_or_query, then from link_dir_is_multisegment. Both
+     are asked on the raw string here. The engine asks the first on the raw
+     string too, but the second on what the marker cut left. */
+  static const struct {
+    const char *lien;
+    hts_boolean frag_or_query;
+    hts_boolean multisegment;
+  } cases[] = {
+      /* #1612 refused these, and still must */
+      {"/", HTS_FALSE, HTS_FALSE},
+      {"image/", HTS_FALSE, HTS_FALSE},
+      {"Alt+/", HTS_FALSE, HTS_FALSE},
+      {"$&/", HTS_FALSE, HTS_FALSE},
+      {"////", HTS_FALSE, HTS_FALSE},
+      /* a second segment is evidence on its own */
+      {"a/b/", HTS_FALSE, HTS_TRUE},
+      {"/api/v1/", HTS_FALSE, HTS_TRUE},
+      /* a marker opens a path, from the site root to a deeper one */
+      {"/#top", HTS_TRUE, HTS_FALSE},
+      {"/?q=1", HTS_TRUE, HTS_FALSE},
+      {"img/#x", HTS_TRUE, HTS_FALSE},
+      {"img/?q=1", HTS_TRUE, HTS_FALSE},
+      {"a/b/#x", HTS_TRUE, HTS_TRUE},
+      /* the marker must open a path, not follow a name or nothing */
+      {"page.html#x", HTS_FALSE, HTS_FALSE},
+      {"page.html?q=1", HTS_FALSE, HTS_FALSE},
+      {"#top", HTS_FALSE, HTS_FALSE},
+      {"?q=1", HTS_FALSE, HTS_FALSE},
+      {"", HTS_FALSE, HTS_FALSE},
+      /* a run of slashes carries no name, so the marker buys nothing */
+      {"////#x", HTS_FALSE, HTS_TRUE},
+      {"//#x", HTS_FALSE, HTS_TRUE},
+      /* an entity before the marker decodes into an earlier one */
+      {"//&num;/#x", HTS_FALSE, HTS_TRUE},
+      {"/&#35;", HTS_FALSE, HTS_FALSE},
+      {"a&b/#x", HTS_FALSE, HTS_FALSE},
+      /* an '&' after the marker is part of the query, so it is left alone */
+      {"/?a=1&b=2", HTS_TRUE, HTS_FALSE},
+  };
+
+  (void) opt;
+  (void) argc;
+  (void) argv;
+  for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    st_linkdir_case(cases[i].lien, cases[i].frag_or_query,
+                    cases[i].multisegment);
+  }
+  printf("linkdir self-test OK\n");
+  return 0;
+}
+
+static int st_dirtylink(httrackp *opt, int argc, char **argv) {
+  return parse_selftest_dirtylink(
+      opt, (argc > 0 && strcmp(argv[0], "dump") == 0) ? HTS_TRUE : HTS_FALSE);
+}
+
+static int st_jsscan(httrackp *opt, int argc, char **argv) {
+  return parse_selftest_jsscan(
+      opt, (argc > 0 && strcmp(argv[0], "dump") == 0) ? HTS_TRUE : HTS_FALSE);
+}
+
+static int st_jsimport(httrackp *opt, int argc, char **argv) {
+  (void) argc;
+  (void) argv;
+  return parse_selftest_jsimport(opt);
+}
+
+static int st_tagattr(httrackp *opt, int argc, char **argv) {
+  (void) argc;
+  (void) argv;
+  return parse_selftest_tagattr(opt);
+}
+
+/* Each call parses `txt` under a fresh host, then checkrobots() for `path`. */
+static int rb_decide(robots_wizard *r, const char *txt, const char *path) {
+  static int n = 0;
+  char host[64];
+
+  snprintf(host, sizeof(host), "h%d.example", n++);
+  robots_parse(NULL, r, host, txt, strlen(txt), NULL, 0, HTS_TRUE, NULL, 0);
+  return checkrobots(r, host, path);
+}
+
+/* The rule store must reach the RFC 9309 §2.5 floor, whatever the macro says.
+ */
+enum { rb_rfc9309_floor = 1 / (HTS_ROBOTS_MAX_TOKEN_SIZE >= 500 * 1024) };
+
+/* robots.txt filling about `blobsize` stored bytes with "/padNNNNN/" rules
+   (12 each: pattern plus marker and LF), then the two rules a caller asserts
+   on: an Allow re-opening /pad00000/open/, and a final Disallow. */
+static char *rb_bulk(size_t blobsize) {
+  const size_t capa = blobsize * 2 + 4096;
+  char *const txt = (char *) malloct(capa);
+  size_t n, blob;
+  int i;
+
+  assertf(txt != NULL);
+  n = (size_t) snprintf(txt, capa, "User-agent: *\n");
+  for (i = 0, blob = 0; blob + 12 <= blobsize; i++, blob += 12) {
+    assertf(i < 100000); // past that "/padNNNNNN/" costs 13, not 12
+    n += (size_t) snprintf(txt + n, capa - n, "Disallow: /pad%05d/\n", i);
+    assertf(n < capa);
+  }
+  n += (size_t) snprintf(txt + n, capa - n, "Allow: /pad00000/open/\n");
+  assertf(n < capa);
+  (void) snprintf(txt + n, capa - n, "Disallow: /secret/\n");
+  return txt;
+}
+
+static int st_robots(httrackp *opt, int argc, char **argv) {
+  robots_wizard robots;
+  (void) opt;
+  (void) argc;
+  (void) argv;
+  memset(&robots, 0, sizeof(robots));
+
+  /* Longer Allow re-opens subtree under Disallow: / (old matcher couldn't). */
+  {
+    const char *txt = "User-agent: *\nDisallow: /\nAllow: /public/\n";
+
+    assertf(rb_decide(&robots, txt, "/public/x") == 0); /* allowed */
+    assertf(rb_decide(&robots, txt, "/private") == -1); /* denied */
+    assertf(rb_decide(&robots, txt, "/") == -1);        /* denied */
+  }
+
+  /* Equal-length match: Allow wins the tie over Disallow. */
+  {
+    const char *txt = "User-agent: *\nDisallow: /foo\nAllow: /foo\n";
+
+    assertf(rb_decide(&robots, txt, "/foo/bar") == 0);
+  }
+
+  /* Longest match wins even when it is not the last rule. */
+  {
+    assertf(rb_decide(&robots, "User-agent: *\nDisallow: /a/b\nAllow: /a\n",
+                      "/a/b/c") == -1);
+    assertf(rb_decide(&robots, "User-agent: *\nAllow: /a/b\nDisallow: /a\n",
+                      "/a/b/c") == 0);
+  }
+
+  /* '*' matches any run of characters. */
+  {
+    const char *txt = "User-agent: *\nDisallow: /*.php\n";
+
+    assertf(rb_decide(&robots, txt, "/a/b/index.php") == -1);
+    assertf(rb_decide(&robots, txt, "/a/b/index.html") == 0);
+  }
+
+  /* Trailing '$' anchors the end of the path. */
+  {
+    const char *txt = "User-agent: *\nDisallow: /a$\n";
+
+    assertf(rb_decide(&robots, txt, "/a") == -1);
+    assertf(rb_decide(&robots, txt, "/ab") == 0);
+    assertf(rb_decide(&robots, txt, "/a/b") == 0);
+  }
+
+  /* The httrack-specific group replaces the generic '*' group entirely. */
+  {
+    const char *txt = "User-agent: *\nDisallow: /everyone\n"
+                      "User-agent: httrack\nDisallow: /\n";
+
+    assertf(rb_decide(&robots, txt, "/anything") == -1);
+  }
+
+  /* Replace, not merge: the generic group does not bind the httrack group. */
+  {
+    const char *txt = "User-agent: *\nDisallow: /x\n"
+                      "User-agent: httrack\nDisallow: /y\n";
+
+    assertf(rb_decide(&robots, txt, "/x") == 0);
+    assertf(rb_decide(&robots, txt, "/y") == -1);
+  }
+
+  /* RFC 9309 2.2.1: a user-agent line following a rule opens a new group, so
+     the generic group written after ours is a fallback we no longer take. */
+  {
+    const char *txt = "User-agent: httrack\nDisallow: /secret\n\n"
+                      "User-agent: *\nDisallow: /public\n";
+
+    assertf(rb_decide(&robots, txt, "/secret") == -1);
+    assertf(rb_decide(&robots, txt, "/public") == 0);
+
+    /* the blank line is not what ends the group */
+    txt = "User-agent: httrack\nDisallow: /secret\n"
+          "User-agent: *\nDisallow: /public\n";
+    assertf(rb_decide(&robots, txt, "/secret") == -1);
+    assertf(rb_decide(&robots, txt, "/public") == 0);
+  }
+
+  /* Consecutive user-agent lines name one group, whichever comes first. */
+  {
+    assertf(rb_decide(&robots,
+                      "User-agent: httrack\nUser-agent: *\n"
+                      "Disallow: /x\n",
+                      "/x") == -1);
+    assertf(rb_decide(&robots,
+                      "User-agent: httrack\nUser-agent: Googlebot\n"
+                      "Disallow: /x\n",
+                      "/x") == -1);
+    assertf(rb_decide(&robots,
+                      "User-agent: Googlebot\nUser-agent: httrack\n"
+                      "Disallow: /x\n",
+                      "/x") == -1);
+    /* a blank line does not end the list either */
+    assertf(rb_decide(&robots,
+                      "User-agent: httrack\n\nUser-agent: *\n"
+                      "Disallow: /x\n",
+                      "/x") == -1);
+  }
+
+  /* A group naming somebody else stays somebody else's. */
+  {
+    const char *txt = "User-agent: Googlebot\nDisallow: /y\n\n"
+                      "User-agent: httrack\nDisallow: /x\n";
+
+    assertf(rb_decide(&robots, txt, "/y") == 0);
+    assertf(rb_decide(&robots, txt, "/x") == -1);
+  }
+
+  /* Two groups naming us are combined, and the generic one between them is
+     still skipped. */
+  {
+    const char *txt = "User-agent: httrack\nDisallow: /a\n\n"
+                      "User-agent: winhttrack\nDisallow: /b\n";
+
+    assertf(rb_decide(&robots, txt, "/a") == -1);
+    assertf(rb_decide(&robots, txt, "/b") == -1);
+
+    txt = "User-agent: httrack\nDisallow: /a\n"
+          "User-agent: *\nDisallow: /generic\n"
+          "User-agent: httrack\nDisallow: /b\n";
+    assertf(rb_decide(&robots, txt, "/a") == -1);
+    assertf(rb_decide(&robots, txt, "/b") == -1);
+    assertf(rb_decide(&robots, txt, "/generic") == 0);
+  }
+
+  /* With no group naming us, every generic group still counts. */
+  {
+    const char *txt = "User-agent: *\nDisallow: /a\n\n"
+                      "User-agent: *\nDisallow: /b\n";
+
+    assertf(rb_decide(&robots, txt, "/a") == -1);
+    assertf(rb_decide(&robots, txt, "/b") == -1);
+
+    txt = "User-agent: *\nDisallow: /a\n"
+          "User-agent: Googlebot\nDisallow: /b\n"
+          "User-agent: *\nDisallow: /c\n";
+    assertf(rb_decide(&robots, txt, "/a") == -1);
+    assertf(rb_decide(&robots, txt, "/b") == 0);
+    assertf(rb_decide(&robots, txt, "/c") == -1);
+  }
+
+  /* No rules: everything is allowed. */
+  assertf(rb_decide(&robots, "User-agent: *\nDisallow:\n", "/x") == 0);
+
+  /* #1286: rules survive to the RFC 9309 floor. Past the old 4 KB store, just
+     under the floor, and past it, where only the tail is left out. */
+  {
+    char *txt = rb_bulk(8192); /* past the old cap, well under the new one */
+
+    assertf(rb_decide(&robots, txt, "/pad00000/x") == -1);
+    assertf(rb_decide(&robots, txt, "/pad00000/open/x") == 0); /* Allow wins */
+    assertf(rb_decide(&robots, txt, "/secret/x") == -1);
+    freet(txt);
+
+    txt = rb_bulk(HTS_ROBOTS_MAX_TOKEN_SIZE - 1024); /* just under the cap */
+    assertf(rb_decide(&robots, txt, "/pad00000/x") == -1);
+    assertf(rb_decide(&robots, txt, "/pad00000/open/x") == 0);
+    assertf(rb_decide(&robots, txt, "/secret/x") == -1);
+    freet(txt);
+
+    /* Past it the tail is lost, which robots_parse reports through the log. */
+    txt = rb_bulk(HTS_ROBOTS_MAX_TOKEN_SIZE + 4096);
+    assertf(rb_decide(&robots, txt, "/pad00000/x") == -1);
+    assertf(rb_decide(&robots, txt, "/pad00000/open/x") == -1);
+    assertf(rb_decide(&robots, txt, "/secret/x") == 0);
+    freet(txt);
+  }
+
+  /* A rule costs marker + pattern + LF, the accounting tests/309 computes. */
+  {
+    const char *const txt = "User-agent: *\nDisallow: /pad00000/\n";
+    robots_wizard rb;
+
+    memset(&rb, 0, sizeof(rb));
+    robots_parse(NULL, &rb, "h.test", txt, strlen(txt), NULL, 0, HTS_TRUE, NULL,
+                 0);
+    assertf(rb.next != NULL && rb.next->token != NULL);
+    assertf(strlen(rb.next->token) == strlen("/pad00000/") + 2);
+    checkrobots_free(&rb);
+  }
+
+  /* A rule longer than the line buffer is read as a prefix of itself. Kept for
+     a Disallow, which can then only forbid more; dropped for an Allow, which
+     would otherwise permit more than the site wrote and beat the Disallow. */
+  {
+    char BIGSTK txt[HTS_ROBOTS_LINE_SIZE * 3];
+    char BIGSTK path[HTS_ROBOTS_LINE_SIZE * 2];
+
+    memset(path, 'a', sizeof(path));
+    path[0] = '/';
+    path[HTS_ROBOTS_LINE_SIZE + 200] = '\0';
+
+    snprintf(txt, sizeof(txt), "User-agent: *\nDisallow: %s\n", path);
+    assertf(rb_decide(&robots, txt, path) == -1);
+
+    snprintf(txt, sizeof(txt), "User-agent: *\nDisallow: /a\nAllow: %s\n",
+             path);
+    assertf(rb_decide(&robots, txt, path) == -1);
+
+    /* The longest line the buffer holds whole is not cut, so this Allow wins;
+       one byte more is cut, and the Disallow it would have beaten stands. */
+    path[HTS_ROBOTS_LINE_SIZE - 2 - strlen("Allow: ")] = '\0';
+    snprintf(txt, sizeof(txt), "User-agent: *\nDisallow: /a\nAllow: %s\n",
+             path);
+    assertf(rb_decide(&robots, txt, path) == 0);
+
+    path[HTS_ROBOTS_LINE_SIZE - 2 - strlen("Allow: ")] = 'a';
+    path[HTS_ROBOTS_LINE_SIZE - 1 - strlen("Allow: ")] = '\0';
+    snprintf(txt, sizeof(txt), "User-agent: *\nDisallow: /a\nAllow: %s\n",
+             path);
+    assertf(rb_decide(&robots, txt, path) == -1);
+  }
+
+  /* #1294: an over-long Disallow must not hand its own tail back as a rule. */
+  {
+    /* one past the HTS_ROBOTS_LINE_SIZE - 2 bytes the old read kept */
+    const size_t resume = HTS_ROBOTS_LINE_SIZE - 1;
+    char BIGSTK txt[HTS_ROBOTS_LINE_SIZE * 3];
+    size_t head = (size_t) snprintf(
+        txt, sizeof(txt), "User-agent: *\nDisallow: /open/\nDisallow: ");
+    const size_t line = head - strlen("Disallow: ");
+
+    memset(txt + head, 'a', line + resume - head);
+    head = line + resume;
+    head += (size_t) snprintf(txt + head, sizeof(txt) - head,
+                              "Allow: /open/\nDisallow: /next/\n");
+    assertf(head < sizeof(txt));
+    assertf(rb_decide(&robots, txt, "/open/x") == -1);
+    /* the line after the cut one is still a rule: consuming it whole must not
+       become discarding the rest of the file */
+    assertf(rb_decide(&robots, txt, "/next/x") == -1);
+
+    /* control: that same text on a line of its own is a rule we do honour, so
+       the refusal above is the tail never being read and not a dead pattern */
+    assertf(rb_decide(&robots,
+                      "User-agent: *\nDisallow: /open/\nAllow: /open/\n",
+                      "/open/x") == 0);
+  }
+
+  checkrobots_free(&robots);
+  printf("robots self-test OK\n");
+  return 0;
+}
+
+/* Collect the URLs a sitemap scan hands out. */
+typedef struct sm_collect {
+  int n;
+  char url[8][HTS_URLMAXSIZE];
+} sm_collect;
+
+static hts_boolean sm_take(void *arg, const char *url) {
+  sm_collect *const c = (sm_collect *) arg;
+
+  if (c->n < (int) (sizeof(c->url) / sizeof(c->url[0])))
+    strcpybuff(c->url[c->n], url);
+  c->n++;
+  return HTS_TRUE;
+}
+
+/* Scan `doc` off a heap buffer with no NUL terminator, so a read past the
+   declared size is an ASan error rather than a silent pass. */
+static int sm_scan(const char *doc, int maxurls, hts_boolean *is_index,
+                   sm_collect *out) {
+  const size_t len = strlen(doc);
+  char *raw = malloct(len);
+  int n;
+
+  memset(out, 0, sizeof(*out));
+  assertf(raw != NULL);
+  memcpy(raw, doc, len);
+  n = hts_sitemap_scan(raw, len, maxurls, is_index, sm_take, out);
+  freet(raw);
+  return n;
+}
+
+static int st_sitemap(httrackp *opt, int argc, char **argv) {
+  sm_collect c;
+  hts_boolean idx;
+  (void) opt;
+  (void) argc;
+  (void) argv;
+
+  /* A urlset yields its <loc> URLs, in order, unescaped. */
+  assertf(sm_scan("<?xml version=\"1.0\"?><urlset>"
+                  "<url><loc>http://h.test/a.html</loc></url>"
+                  "<url><loc>  https://h.test/b?x=1&amp;y=2\n  </loc></url>"
+                  "</urlset>",
+                  100, &idx, &c) == 2);
+  assertf(!idx);
+  assertf(strcmp(c.url[0], "http://h.test/a.html") == 0);
+  assertf(strcmp(c.url[1], "https://h.test/b?x=1&y=2") == 0);
+
+  /* A sitemapindex is flagged: its URLs are child sitemaps, not pages. */
+  assertf(sm_scan("<sitemapindex><sitemap><loc>http://h.test/s2.xml.gz</loc>"
+                  "</sitemap></sitemapindex>",
+                  100, &idx, &c) == 1);
+  assertf(idx);
+
+  /* Root element decides even when the other name appears later as text. */
+  assertf(sm_scan("<urlset><url><loc>http://h.test/a</loc></url>"
+                  "<!-- sitemapindex --></urlset>",
+                  100, &idx, &c) == 1);
+  assertf(!idx);
+
+  /* Numeric character references, decimal and hex, decode to ASCII. */
+  assertf(sm_scan("<urlset><loc>http://h.test/a&#63;b&#x3D;c</loc></urlset>",
+                  100, &idx, &c) == 1);
+  assertf(strcmp(c.url[0], "http://h.test/a?b=c") == 0);
+
+  /* A reference decoding to a control byte is dropped: the shared decoder
+     writes the real character and the URL check refuses it. A reference the
+     decoder cannot represent (&#0;) stays verbatim, like an unknown entity. */
+  assertf(sm_scan("<urlset><loc>http://h.test/a&#10;b</loc></urlset>", 100,
+                  &idx, &c) == 0);
+  assertf(sm_scan("<urlset><loc>http://h.test/a&#9;b</loc></urlset>", 100, &idx,
+                  &c) == 0);
+  assertf(sm_scan("<urlset><loc>http://h.test/a&#0;b</loc></urlset>", 100, &idx,
+                  &c) == 1);
+  assertf(strcmp(c.url[0], "http://h.test/a&#0;b") == 0);
+
+  /* A comment naming the other root element must not flip the verdict. */
+  assertf(sm_scan("<!-- <sitemapindex> --><urlset><url>"
+                  "<loc>http://h.test/p</loc></url></urlset>",
+                  100, &idx, &c) == 1);
+  assertf(!idx);
+  assertf(sm_scan("<?xml version=\"1.0\"?><!-- <urlset> -->"
+                  "<sitemapindex><loc>http://h.test/s</loc></sitemapindex>",
+                  100, &idx, &c) == 1);
+  assertf(idx);
+
+  /* <location> is not <loc>. */
+  assertf(sm_scan("<urlset><location>http://h.test/a</location></urlset>", 100,
+                  &idx, &c) == 0);
+
+  /* Rejected: relative, non-http scheme, embedded space, empty. */
+  assertf(sm_scan("<urlset><loc>/a.html</loc><loc>ftp://h.test/a</loc>"
+                  "<loc>javascript:alert(1)</loc>"
+                  "<loc>http://h.test/a b</loc><loc></loc></urlset>",
+                  100, &idx, &c) == 0);
+
+  /* The URL length bound: one under fits, exactly at it is dropped rather than
+     truncated into a different URL. */
+  {
+    char BIGSTK doc[HTS_URLMAXSIZE * 2];
+    char BIGSTK url[HTS_URLMAXSIZE + 1];
+    size_t i;
+
+    strcpybuff(url, "http://h.test/");
+    for (i = strlen(url); i < HTS_URLMAXSIZE - 1; i++)
+      url[i] = 'a';
+    url[i] = '\0';
+    snprintf(doc, sizeof(doc), "<urlset><loc>%s</loc></urlset>", url);
+    assertf(sm_scan(doc, 100, &idx, &c) == 1);
+
+    url[i] = 'a';
+    url[i + 1] = '\0';
+    snprintf(doc, sizeof(doc), "<urlset><loc>%s</loc></urlset>", url);
+    assertf(sm_scan(doc, 100, &idx, &c) == 0);
+  }
+
+  /* The URL cap stops the scan. */
+  assertf(sm_scan("<urlset><loc>http://h.test/1</loc><loc>http://h.test/2</loc>"
+                  "<loc>http://h.test/3</loc></urlset>",
+                  2, &idx, &c) == 2);
+
+  /* The per-document cap at the value the engine actually uses. */
+  {
+    const int many = HTS_SITEMAP_MAX_URLS_DOC + 10;
+    const size_t cap = (size_t) many * 40 + 32;
+    char *big = malloct(cap);
+    size_t off;
+    int i;
+
+    assertf(big != NULL);
+    off = (size_t) snprintf(big, cap, "<urlset>");
+    assertf(off < cap);
+    for (i = 0; i < many; i++) {
+      const int len =
+          snprintf(big + off, cap - off, "<loc>http://h.test/%d</loc>", i);
+
+      assertf(len > 0 && (size_t) len < cap - off);
+      off += (size_t) len;
+    }
+    memset(&c, 0, sizeof(c));
+    assertf(hts_sitemap_scan(big, off, HTS_SITEMAP_MAX_URLS_DOC, &idx, sm_take,
+                             &c) == HTS_SITEMAP_MAX_URLS_DOC);
+    /* The handler count, not just the return: a call site hardcoding a smaller
+       cap would still return its own argument. */
+    assertf(c.n == HTS_SITEMAP_MAX_URLS_DOC);
+    freet(big);
+  }
+
+  /* A highly compressible document decodes without running away: the ratio
+     budget cannot bind (deflate tops out near 1032:1), so this pins the
+     decompression path itself rather than the 64 MiB ceiling. */
+  {
+    const char *const one = "<url><loc>http://h.test/bomb</loc></url>";
+    const size_t reps = 40000;
+    size_t xlen = 8 + reps * strlen(one) + 10, i;
+    char *x = malloct(xlen + 1);
+    uLongf zlen;
+    char *z;
+    z_stream zs;
+
+    assertf(x != NULL);
+    {
+      size_t w = (size_t) snprintf(x, xlen, "<urlset>");
+      int len;
+
+      assertf(w < xlen);
+      for (i = 0; i < reps; i++) {
+        len = snprintf(x + w, xlen - w, "%s", one);
+        assertf(len > 0 && (size_t) len < xlen - w);
+        w += (size_t) len;
+      }
+      len = snprintf(x + w, xlen - w, "</urlset>");
+      assertf(len > 0 && (size_t) len < xlen - w);
+      w += (size_t) len;
+      xlen = w;
+    }
+    zlen = compressBound((uLong) xlen) + 32;
+    z = malloct((size_t) zlen);
+    assertf(z != NULL);
+    memset(&zs, 0, sizeof(zs));
+    assertf(deflateInit2(&zs, 9, Z_DEFLATED, 16 + MAX_WBITS, 8,
+                         Z_DEFAULT_STRATEGY) == Z_OK);
+    zs.next_in = (const Bytef *) x;
+    zs.avail_in = (uInt) xlen;
+    zs.next_out = (Bytef *) z;
+    zs.avail_out = (uInt) zlen;
+    assertf(deflate(&zs, Z_FINISH) == Z_STREAM_END);
+    zlen = (uLongf) zs.total_out;
+    deflateEnd(&zs);
+    /* well over the 4096:1 budget's 1 MiB floor, and far under the 64 MiB cap
+     */
+    assertf(xlen > 1024 * 1024 && (size_t) zlen < xlen / 100);
+    memset(&c, 0, sizeof(c));
+    assertf(hts_sitemap_scan(z, (size_t) zlen, 10, &idx, sm_take, &c) == 10);
+    assertf(strcmp(c.url[0], "http://h.test/bomb") == 0);
+    freet(z);
+    freet(x);
+  }
+
+  /* An unterminated <loc> at end of buffer must not read past it. */
+  assertf(sm_scan("<urlset><loc>http://h.test/a", 100, &idx, &c) == 0);
+  assertf(sm_scan("<urlset><lo", 100, &idx, &c) == 0);
+
+  /* A gzip-framed document is decompressed before scanning. */
+  {
+    const char *const xml =
+        "<urlset><url><loc>http://h.test/gz.html</loc></url></urlset>";
+    uLongf zlen = compressBound((uLong) strlen(xml)) + 32;
+    char *z = malloct((size_t) zlen);
+    z_stream zs;
+
+    assertf(z != NULL);
+    memset(&zs, 0, sizeof(zs));
+    assertf(deflateInit2(&zs, 9, Z_DEFLATED, 16 + MAX_WBITS, 8,
+                         Z_DEFAULT_STRATEGY) == Z_OK);
+    zs.next_in = (const Bytef *) xml;
+    zs.avail_in = (uInt) strlen(xml);
+    zs.next_out = (Bytef *) z;
+    zs.avail_out = (uInt) zlen;
+    assertf(deflate(&zs, Z_FINISH) == Z_STREAM_END);
+    zlen = (uLongf) zs.total_out;
+    deflateEnd(&zs);
+
+    memset(&c, 0, sizeof(c));
+    assertf(hts_sitemap_scan(z, (size_t) zlen, 100, &idx, sm_take, &c) == 1);
+    assertf(strcmp(c.url[0], "http://h.test/gz.html") == 0);
+
+    /* Truncated gzip: refused, not scanned as plain text. */
+    memset(&c, 0, sizeof(c));
+    assertf(hts_sitemap_scan(z, 4, 100, &idx, sm_take, &c) == -1);
+    freet(z);
+  }
+
+  /* robots.txt: only Sitemap: records, comments stripped, case-insensitive,
+     and group-independent (no User-agent line needed). */
+  /* robots_parse collects Sitemap: whatever the user-agent group, strips the
+     comment and keeps the rules working alongside it. */
+  {
+    const char *const txt = "User-agent: *\nDisallow: /x\n"
+                            "SITEMAP:  http://h.test/s1.xml  # first\n"
+                            "Sitemapper: http://h.test/no.xml\n"
+                            "Sitemap:\thttps://h.test/s2.xml\n";
+    char BIGSTK maps[1024];
+    robots_wizard rb;
+
+    memset(&rb, 0, sizeof(rb));
+    robots_parse(NULL, &rb, "h.test", txt, strlen(txt), NULL, 0, HTS_TRUE, maps,
+                 sizeof(maps));
+    assertf(strcmp(maps, "http://h.test/s1.xml\nhttps://h.test/s2.xml\n") == 0);
+    assertf(checkrobots(&rb, "h.test", "/x") == -1);
+    checkrobots_free(&rb);
+  }
+
+  printf("sitemap self-test OK\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------ */
+/* Registry: this module's tests, in the order -#test lists them. */
+/* ------------------------------------------------------------ */
+
+const struct selftest_entry selftests_parse[] = {
+    {"linkdir", "",
+     "a quoted directory string is a link only with a second segment, or a "
+     "fragment or query opening right after the path",
+     st_linkdir},
+    {"dirtylink", "[dump]",
+     "is a quoted string a link? sweeps the parser's alphabet against a model, "
+     "or dumps its verdicts",
+     st_dirtylink},
+    {"jsscan", "[dump]",
+     "does a script statement hand a URL to .src, .location, .open, url() and "
+     "friends? sweeps the shapes against a model",
+     st_jsscan},
+    {"jsimport", "",
+     "is a quoted string the operand of a dynamic import(), whose base is the "
+     "script and not the page?",
+     st_jsimport},
+    {"tagattr", "",
+     "may the dirty parser read this in-tag quoted value? resolves the owning "
+     "attribute and refuses the names that carry no link",
+     st_tagattr},
+    {"robots", "", "robots.txt RFC 9309 Allow/Disallow precedence self-test",
+     st_robots},
+    {"sitemap", "",
+     "sitemap <loc> extraction, caps and robots.txt Sitemap:", st_sitemap},
+    {NULL, NULL, NULL, NULL},
+};

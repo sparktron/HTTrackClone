@@ -1,5 +1,5 @@
-/* Generated from winprofile-keys.tsv by tools/gen-winprofile-keys.py.
- * Do not edit. */
+/* Generated from winprofile-keys.tsv at the top of the source tree, by
+ * tools/gen-winprofile-keys.py. Do not edit. */
 #ifndef WINPROFILE_KEYS_H
 #define WINPROFILE_KEYS_H
 
@@ -17,16 +17,29 @@ typedef struct {
   const char *legacy_of;
 } winprofile_key_t;
 
-#define WINPROFILE_KEY_COUNT 106
+#define WINPROFILE_KEY_COUNT 121
 
 /* clang-format off */
 static const winprofile_key_t winprofile_keys[WINPROFILE_KEY_COUNT] = {
+  {"AcceptDefault", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
+  {"AcceptDocument", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
+  {"AcceptIframe", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
+  {"AcceptFrame", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
+  {"AcceptImage", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
+  {"AcceptStyle", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
+  {"AcceptScript", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
+  {"AcceptFont", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
+  {"AcceptAudio", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
+  {"AcceptVideo", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
+  {"AcceptObject", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
+  {"AcceptEmbed", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
   {"AcceptLanguage", "win,droid", "setting", "string", "", "", "", "derived", "", "literal", ""},
   {"Build", "win,web,droid", "setting", "list:0:15", "", "", "BuildString", "agreed", "0", "", ""},
   {"BuildString", "win,web,droid", "setting", "string", "", "", "Build", "agreed", "%h%p/%n%q.%t", "literal", ""},
   {"Cache", "win,web,droid", "setting", "checkbox", "", "--cache=0", "", "agreed", "1", "", ""},
   {"Category", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
   {"Changes", "win,web,droid", "setting", "checkbox", "--changes", "", "", "agreed", "0", "", ""},
+  {"Charset", "", "read_only", "string", "", "", "", "none", "", "absent", ""},
   {"CheckType", "win,web,droid", "setting", "list:0:3", "", "", "", "agreed", "1", "", ""},
   {"Cookies", "win,web,droid", "setting", "checkbox", "", "--cookies=0", "", "agreed", "1", "", ""},
   {"CookiesFile", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
@@ -35,6 +48,7 @@ static const winprofile_key_t winprofile_keys[WINPROFILE_KEY_COUNT] = {
   {"CurrentPath2", "", "read_only", "string", "", "", "", "none", "", "", ""},
   {"CurrentURLList", "win,web", "project", "string", "", "", "", "agreed", "", "absent", ""},
   {"CurrentUrl", "win,web,droid", "project", "string", "", "", "", "agreed", "", "absent", ""},
+  {"DebugMode", "win,web", "setting", "checkbox", "", "", "", "agreed", "0", "", ""},
   {"Debugging", "droid", "setting", "string", "", "", "", "none", "", "", ""},
   {"DefaultReferer", "win,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
   {"Depth", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
@@ -76,6 +90,7 @@ static const winprofile_key_t winprofile_keys[WINPROFILE_KEY_COUNT] = {
   {"MaxLinks", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
   {"MaxOther", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
   {"MaxRate", "win,web,droid", "setting", "number", "", "", "", "none", "", "absent", ""},
+  {"MaxRetryAfter", "win,web", "setting", "string", "", "", "", "none", "", "absent", ""},
   {"MaxTime", "win,web,droid", "setting", "string", "", "", "", "agreed", "", "absent", ""},
   {"MaxWait", "win,web", "setting", "string", "", "", "", "agreed", "", "absent", ""},
   {"Near", "win,web,droid", "setting", "checkbox", "--near", "", "", "agreed", "0", "", ""},
@@ -120,7 +135,7 @@ static const winprofile_key_t winprofile_keys[WINPROFILE_KEY_COUNT] = {
   {"WarcCdx", "win,web", "setting", "checkbox", "--warc-cdx", "", "Warc", "agreed", "0", "", ""},
   {"WarcFile", "web,droid", "setting", "string", "", "", "Warc", "none", "", "", ""},
   {"WarcMaxSize", "web", "setting", "string", "", "", "Warc", "none", "", "", ""},
-  {"WildCardFilters", "win,web,droid", "setting", "string", "", "", "", "agreed", "+*.png +*.gif +*.jpg +*.jpeg +*.css +*.js -ad.doubleclick.net/* -mime:application/foobar", "literal", ""},
+  {"WildCardFilters", "win,web,droid", "setting", "string", "", "", "", "agreed", "+*.png +*.gif +*.jpg +*.jpeg +*.webp +*.avif +*.svg +*.css +*.js +*.woff2 +*.woff +*.ttf +*.otf +*.mp4 +*.webm -ad.doubleclick.net/* -mime:application/foobar", "literal", ""},
   {"WordIndex", "win,web,droid", "setting", "checkbox", "--search-index", "--search-index=0", "", "agreed", "0", "", ""},
   {"KeepDoubleSlashes", "", "setting", "string", "", "", "", "", "", "", "KeepSlashes"},
   {"KeepWwwPrefix", "", "setting", "string", "", "", "", "", "", "", "KeepWww"},

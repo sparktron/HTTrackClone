@@ -41,6 +41,7 @@ Please visit our Website: http://www.httrack.com
 /* specific definitions */
 #include "htsbase.h"
 /* Includes and definitions */
+#include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -158,7 +159,6 @@ struct lien_adrfilsave {
 typedef struct hts_connect_fallback {
   int addr_index;       /**< candidate being connected (0-based) */
   int addr_count;       /**< resolved addresses; -1 = not yet probed */
-  TStamp connect_start; /**< when the current candidate's connect began */
 } hts_connect_fallback;
 
 /** The download-slot ring: the set of concurrent transfers in flight.
@@ -178,8 +178,11 @@ struct struct_back {
   coucal ready;           /**< index of slots whose transfer completed */
   LLint ready_size_bytes; /**< total bytes buffered in completed slots */
   hts_connect_fallback *connect_fallback; /**< per-slot, count+1 entries */
+  hts_fetch_meta *fetch; /**< per-slot Sec-Fetch-* values, count+1 entries */
   hts_boolean bot_challenge_noted; /**< the bot-protection note is already in
                                         this mirror's log (#1732) */
+  TStamp retry_after_until; /**< Retry-After: no new launch before this local
+                                 ms timestamp; 0 holds nothing */
 };
 
 /** Open handle to the mirror cache (the read-from-old / write-to-new state
@@ -318,7 +321,18 @@ char **hts_addurl_take(httrackp *opt);
 /* Free a list taken with hts_addurl_take(), strings included. */
 void hts_addurl_free(char **url);
 
+/* Detach the queued rules. Returns NULL if none. The caller frees the list
+   with hts_addurl_free(). */
+char **hts_addfilter_take(httrackp *opt);
+
+/* Takes the list hts_setfilters() queued, like hts_addfilter_take(). */
+char **hts_setfilters_take(httrackp *opt);
+
 #endif
+
+/* Has the -#L cap left fewer than two free slots? One parser step records
+   robots.txt and then the link itself, so both must still fit. */
+hts_boolean hts_maxlinks_no_room(const httrackp *opt);
 
 /* Record a link on the heap. All strings are copied (caller keeps ownership).
    Returns 1 on success, 0 if the link limit (opt->maxlink) is reached. */
@@ -333,16 +347,46 @@ size_t hts_record_link_latest(httrackp *opt);
 /* Mark link at index lpos as not to be processed (sets pass2 = -1). */
 void hts_invalidate_link(httrackp * opt, int lpos);
 
-/* Reset / free the engine's link heap. */
-void hts_record_init(httrackp *opt);
+/* Allocates the link heap if absent, and returns HTS_FALSE without memory. */
+hts_boolean hts_record_init(httrackp *opt);
 
 void hts_record_free(httrackp *opt);
+
+/* Load the -%L file at path into *buff, NUL-terminated after its *size bytes,
+   to be freed with freet(). Returns NULL, or why it could not be read, and then
+   *buff is NULL. The reason may be written in errbuf, of HTS_STRERROR_SIZE
+   bytes. */
+const char *hts_urllist_load(const char *path, char **buff, size_t *size,
+                             char *errbuf);
+
+/* The size of the line buffer hts_urllist_next() fills. */
+#define HTS_URLLIST_LINE_SIZE (HTS_URLMAXSIZE * 2)
+
+typedef enum hts_urllist_status {
+  HTS_URLLIST_END,  /* no line is left */
+  HTS_URLLIST_LINE, /* line holds the next line */
+  HTS_URLLIST_LONG, /* the line is longer than HTS_URLMAXSIZE bytes */
+  HTS_URLLIST_NUL   /* the line holds a NUL byte */
+} hts_urllist_status;
+
+/* Read the next -%L line of buff at *pos, and move *pos past it. Returns how
+   the line ended. line holds the head of a LONG or NUL line, which the crawl
+   drops. */
+hts_urllist_status hts_urllist_next(const char *buff, size_t size, size_t *pos,
+                                    char line[HTS_URLLIST_LINE_SIZE]);
 
 /* Run the mirror for the given start URL(s) under opt. Top-level engine entry.
    Returns 1 once the crawl loop ran, 0 or -1 for a bailout. *completed says
    whether it reached the end: false for a bailout, and for any stop that cut it
    short, however it arrived (state.stop or exit_xh). */
 int httpmirror(char *url1, httrackp *opt, hts_boolean *completed);
+
+/* Start the stats clock HTS_STAT.stat_timestart (seconds) and the --max-time
+   clock hts_mirror_elapsed_ms(). */
+void hts_mirror_clock_start(void);
+
+/* Return the time since hts_mirror_clock_start(), in monotonic ms. */
+TStamp hts_mirror_elapsed_ms(void);
 
 /* Write len bytes of adr to local path s. url_adr/url_fil (may be NULL) name
    the source URL for logging/notification. */
@@ -375,12 +419,6 @@ int filenote(filenote_strc * strct, const char *s, filecreate_params * params);
    sits under it. Also the change report's key, so the two must not drift. */
 void hts_savename_listed(const char *root, const char *s, char *dest,
                          size_t destsize);
-
-/* Copy the whitespace-delimited token at *ptr into dest (destsize bytes, NUL
-   included) and advance *ptr past it and the whitespace after it. HTS_FALSE
-   when the token was longer, dest then holding what fit. A caller reading a
-   filter must refuse it: a cut pattern authorizes something else. */
-hts_boolean hts_scan_token(char **ptr, char *dest, size_t destsize);
 
 void file_notify(httrackp * opt, const char *adr, const char *fil,
                  const char *save, int create, int modify, int wasupdated);
@@ -438,6 +476,10 @@ void hts_finish_html_file(httrackp *opt, cache_back *cache, htsblk *r,
   (1 + (HTS_URLMAXSIZE * 2 - 1) + 1 + (HTS_URLMAXSIZE * 2 - 1) +               \
    HTS_FILTER_SUFFIX_MAX)
 
+/* Largest -#F, and the largest filter list that may still grow by
+   HTS_FILTERSINC, because the list's byte size must fit an int. */
+#define HTS_FILTERS_MAX (INT_MAX / HTS_FILTER_SLOT_SIZE - HTS_FILTERSINC - 2)
+
 int filters_init(char ***ptrfilters, int maxfilter, int filterinc);
 
 /* Binds this crawl's filter array to `opt`, and empties the wizard block with
@@ -449,17 +491,39 @@ void filters_bind(httrackp *opt, char ***ptrfilters, int *filptr);
   (HTS_FILTER_SLOT_SIZE - 1 < STRJOKER_MAXLEN ? HTS_FILTER_SLOT_SIZE - 1       \
                                               : STRJOKER_MAXLEN)
 
-/* Stores `pattern` at `pos`, shifting the rules from there up a slot; the
-   caller has ensured there is room. The one door into the array: a rule past
-   HTS_FILTER_MAXLEN warns and returns HTS_FALSE, never stored dead (#1270). */
+/* Stores `pattern` at `pos`, shifting the rules from there up a slot. The one
+   door into the array: a rule past HTS_FILTER_MAXLEN, or one that finds the
+   array full, warns and returns HTS_FALSE, never stored dead (#1270). */
 hts_boolean filters_insert(httrackp *opt, int pos, const char *pattern);
+
+/* Remove the n rules starting at pos, shifting the rest down. */
+void filters_remove(httrackp *opt, int pos, int n);
+
+/* Can a filter array of maxfilter rules grow by HTS_FILTERSINC? */
+hts_boolean filters_may_grow(int maxfilter);
+
+/* Makes room for n more rules. Returns HTS_FALSE, having logged it, only when
+   memory runs out. At the HTS_FILTERS_MAX cap it returns HTS_TRUE and
+   filters_insert() drops what does not fit. */
+hts_boolean filters_grow(httrackp *opt, int n);
+
+/* Same as filters_grow(), but aborts when memory runs out. */
+void filters_make_room(httrackp *opt, int n);
+
+/* Returns the fa_strjoker_dual() verdict of the nfil filters on adr+fil, in
+   both forms the wizard tests, and sets *depth when depth is not NULL. */
+int filters_match_url(char **filters, int nfil, const char *adr,
+                      const char *fil, int *depth);
+
+/* Apply the queued list and rules to the user's rules, then drop the queued
+   links after ptr that the change makes them refuse. Crawl thread only, as it
+   alone reads the filters. */
+void hts_apply_live_filters(httrackp *opt, struct_back *sback, int ptr);
 
 int fspc(httrackp * opt, FILE * fp, const char *type);
 /* Count one log event into opt's counters that hts_get_stats() publishes,
    whether or not a log file is open. "panic" counts as an error. */
 void fspc_count(httrackp *opt, const char *type);
-
-char *next_token(char *p, int flag);
 
 /* Like fil_normalized(), but first drops query keys in STRIP (comma-separated,
    "*" = all); STRIP NULL/empty behaves exactly like fil_normalized(). */
@@ -477,6 +541,18 @@ char *fil_normalized_filtered_ex(const char *source, char *dest,
 const char *hts_query_strip_keys(const char *rules, const char *adr,
                                  const char *fil, char *dest, size_t destsize);
 
+/* Is the key ARG[0..KEYLEN) in the comma list STRIP? Tokens are space-trimmed
+   and case-sensitive, and "*" matches any key. */
+hts_boolean hts_query_key_stripped(const char *arg, size_t keylen,
+                                   const char *strip);
+
+/* Return the canonical host (length *CANONLEN) of the last RULES entry whose
+   aliases match HOST or FULL ("scheme://host"), or NULL. COLLAPSE_WWW ignores
+   a "www." prefix on both sides. */
+const char *hts_host_alias_match(const char *rules, const char *host,
+                                 const char *full, hts_boolean collapse_www,
+                                 size_t *canonlen);
+
 /* The --host-alias rules of OPT, or NULL when the option was not given. */
 const char *hts_host_alias_rules(httrackp *opt);
 
@@ -489,6 +565,13 @@ const char *hts_host_alias_rules(httrackp *opt);
 const char *hts_host_alias(const char *rules, const char *adr,
                            hts_boolean collapse_www, char *dest,
                            size_t destsize);
+
+/* Resolve like hts_host_alias, and set *SETTLED, when SETTLED is not NULL, to
+   whether the chain ended within the hop limit. Exposed for the -#test=spandiff
+   test. */
+const char *hts_host_alias_resolve(const char *rules, const char *adr,
+                                   hts_boolean collapse_www, char *dest,
+                                   size_t destsize, hts_boolean *settled);
 
 /* HTS_TRUE when OPT's url hacks collapse www.host onto host. */
 hts_boolean hts_host_alias_collapse_www(httrackp *opt);
@@ -518,7 +601,8 @@ char *readfile2(const char *fil, LLint * size);
 
 /* readfile2() refusing a body too large for the int indexes downstream, on the
    same stat that sizes the read: a caller checking the size itself would leave
-   a window for the file to grow. NULL when it does not fit. */
+   a window for the file to grow. NULL when it does not fit. "fil" is UTF-8,
+   as a mirror path is. */
 char *readfile2_inmem(const char *fil, LLint *size);
 
 char *readfile_utf8(const char *fil);
@@ -556,6 +640,10 @@ hts_boolean hts_wait_available_socket(struct_back *sback, httrackp *opt,
 /* Randomized inter-file pause target in [min_ms,max_ms] (#185), derived from a
    timestamp seed so it is stable within one gap and rerolls per launch. */
 int hts_pause_target_ms(TStamp seed, int min_ms, int max_ms);
+
+/* Withhold every new launch for `seconds`, clipped to opt->max_retry_after.
+   A hold already running further out is kept. */
+void back_set_retry_after(struct_back *sback, httrackp *opt, int seconds);
 
 /* Schedule more links from the heap into free slots. Returns the number queued,
    or <=0 if none could be added (no free slot / paused / stopped). */

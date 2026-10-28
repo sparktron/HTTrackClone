@@ -34,7 +34,11 @@ Please visit our Website: http://www.httrack.com
 
 #include "htsglobal.h"
 #include "htssafe.h"
+#include "htsurlport.h"
 
+#include <ctype.h>
+#include <limits.h>
+#include <stdint.h>
 #include <string.h>
 
 /* hts_lowcase() lives in the library proxytrack does not link. */
@@ -47,6 +51,11 @@ static void lowcase(char *s) {
 }
 
 struct tm *convert_time_rfc822(struct tm *result, const char *s) {
+  return convert_time_rfc822_pivot(result, s, 50);
+}
+
+struct tm *convert_time_rfc822_pivot(struct tm *result, const char *s,
+                                     int pivot) {
   char months[] = "jan feb mar apr may jun jul aug sep oct nov dec";
   char str[256];
   char *a;
@@ -77,11 +86,9 @@ struct tm *convert_time_rfc822(struct tm *result, const char *s) {
     char *first, *last;
     char tok[256];
 
-    while (*a == ' ')
-      a++;
+    a += strspn(a, " ");
     first = a;
-    while ((*a) && (*a != ' '))
-      a++;
+    a += strcspn(a, " ");
     last = a;
     tok[0] = '\0';
     if (first != last) {
@@ -92,9 +99,16 @@ struct tm *convert_time_rfc822(struct tm *result, const char *s) {
       if ((pos = strstr(months, tok))) { /* month always in letters */
         result_mm = ((int) (pos - months)) / 4;
       } else {
-        int number;
+        const char *digits = tok;
+        LLint value;
 
-        if (sscanf(tok, "%d", &number) == 1) { /* number token */
+        /* A '+' zone such as "+0100" reads as its digits. */
+        digits += strspn(digits, HTS_REALSPACES);
+        if (digits[0] == '+' && isdigit((unsigned char) digits[1]))
+          digits++;
+        if (hts_scan_llint(&digits, 0, INT_MAX, &value) == HTS_SCAN_OK) {
+          const int number = (int) value;
+
           if (result_dd < 0)                   /* day always first number */
             result_dd = number;
           else if (result_n1 < 0)
@@ -121,7 +135,7 @@ struct tm *convert_time_rfc822(struct tm *result, const char *s) {
       result->tm_hour = result_n2;
       result->tm_min = result_n3;
       result->tm_sec = result_n4 > 0 ? result_n4 : 0;
-      if (result_n1 <= 50) /* 00 means 2000 */
+      if (result_n1 <= pivot) /* 00 means 2000 */
         result->tm_year = result_n1 + 100;
       else if (result_n1 < 1000) /* 99 means 1999 */
         result->tm_year = result_n1;
@@ -136,4 +150,57 @@ struct tm *convert_time_rfc822(struct tm *result, const char *s) {
     return result;
   }
   return NULL;
+}
+
+/* See htsdate.h. */
+int64_t hts_utc_seconds(const struct tm *tm) {
+  // days from the civil date, counting years from March (Howard Hinnant)
+  int64_t y = (int64_t) tm->tm_year + 1900 + tm->tm_mon / 12;
+  int64_t m = tm->tm_mon % 12;
+  int64_t era, yoe, doy, days;
+
+  if (m < 0) {
+    m += 12;
+    y--;
+  }
+  if (m < 2)
+    y--;
+  era = (y >= 0 ? y : y - 399) / 400;
+  yoe = y - era * 400;
+  doy = (153 * ((m + 10) % 12) + 2) / 5 + (int64_t) tm->tm_mday - 1;
+  days = era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+  return days * 86400 + (int64_t) tm->tm_hour * 3600 +
+         (int64_t) tm->tm_min * 60 + tm->tm_sec;
+}
+
+/* See htsdate.h. */
+time_t hts_time_clip(int64_t t) {
+  if (sizeof(time_t) < sizeof(int64_t)) {
+    if (t > INT32_MAX)
+      return (time_t) INT32_MAX;
+    if (t < INT32_MIN)
+      return (time_t) INT32_MIN;
+  }
+  return (time_t) t;
+}
+
+/* See htsdate.h. */
+hts_boolean hts_time_exact(int64_t t, time_t *out) {
+  const time_t clipped = hts_time_clip(t);
+
+  if ((int64_t) clipped != t)
+    return HTS_FALSE;
+  *out = clipped;
+  return HTS_TRUE;
+}
+
+/* See htsdate.h. */
+hts_boolean hts_tm_filetime(const struct tm *tm, time_t *out) {
+  const int64_t t = hts_utc_seconds(tm);
+
+  if (t == -1 || t == 0)
+    return HTS_FALSE;
+  // A date past what time_t holds stamps its last second, never 1901.
+  *out = hts_time_clip(t);
+  return HTS_TRUE;
 }

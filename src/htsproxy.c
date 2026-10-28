@@ -123,20 +123,21 @@ int http_proxy_tunnel(httrackp *opt, htsblk *retour, const char *adr,
                                         OPT_GET_BUFF_SIZE(opt), user_pass));
     code64((unsigned char *) user_pass, (int) strlen(user_pass),
            (unsigned char *) autorisation, 0);
+    hts_secret_add(opt, autorisation, strlen(autorisation), HTS_SECRET_HEADER);
     strlcatbuff(req, "Proxy-Authorization: Basic ", sizeof(req));
     strlcatbuff(req, autorisation, sizeof(req));
     strlcatbuff(req, H_CRLF, sizeof(req));
   }
   strlcatbuff(req, H_CRLF, sizeof(req)); // end of request headers
 
-  // raw send(): sendc() would route to TLS when ssl is set (https tunnel)
+  // Not sendc(): it would route to TLS when ssl is set (https tunnel)
   {
     const char *p = req;
     size_t remain = strlen(req);
     int stalls = 0;
 
     while (remain > 0) {
-      const int n = (int) send(soc, p, (int) remain, HTS_MSG_NOSIGNAL);
+      const int n = hts_send_nosignal(soc, p, (int) remain);
 
       if (n > 0) {
         p += n;
@@ -164,8 +165,7 @@ int http_proxy_tunnel(httrackp *opt, htsblk *retour, const char *adr,
     strcpybuff(retour->msg, "proxy CONNECT: no response");
     return 0;
   }
-  if (sscanf(line, "HTTP/%*d.%*d %d", &code) < 1)
-    code = 0;
+  code = hts_status_line_code(line);
   if (code < 200 || code >= 300) {
     htsblk_failf(retour, "proxy CONNECT refused: %s",
                  strnotempty(line) ? line : "(no status)");
@@ -276,9 +276,8 @@ static int socks5_write_all(socks5_stream *st, const unsigned char *buf,
     return 1;
   }
   while (remain > 0) {
-    // raw send: the socket is still plain here, sendc() would route to TLS
-    const int n =
-        (int) send(st->soc, (const char *) buf, (int) remain, HTS_MSG_NOSIGNAL);
+    // Not sendc(): the socket is still plain here, and that would route to TLS
+    const int n = hts_send_nosignal(st->soc, (const char *) buf, (int) remain);
 
     if (n > 0) {
       buf += n;

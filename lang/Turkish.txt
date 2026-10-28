@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Proxy protokolü. HTTP: standart proxy. HTTP (CONNECT tüneli): her isteği bir CONNECT tüneli üzerinden gönderir; Tor'un HTTPTunnelPort gibi yalnızca CONNECT destekleyen proxy'ler için. SOCKS5: varsayılan bağlantı noktası 1080.
 Load cookies from file:
 Çerezleri dosyadan yükle:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Taramadan önce bir Netscape cookies.txt dosyasından çerezleri önceden yükle.
 Pause between files:
 Dosyalar arasında bekleme:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 %s ve altındaki tüm sunucuları yoksay
 Manual
 Kılavuz
+Max Retry-After(s)
+En çok Retry-After (sn)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Bir sunucu Retry-After başlığı gönderdiğinde uyulacak en uzun bekleme. Beklemeden yeniden denemek için 0 girin.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+Burada belirlediğiniz kurallar şu anda çalışan yansıya uygulanır. Bir kuralı kaldırmak yeni bağlantıların yeniden geçmesine izin verir, ancak kuralın daha önce reddettiği bir bağlantı bu yansıda geri gelmez.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Bu tarama kuralı kullanılamaz. Bir kural + veya - ile başlar, ardından bir desen gelir ve tek bir kısa satıra sığmalıdır.
+Theme:
+Tema:
+Classic
+Klasik
+Accept headers
+Accept üstbilgileri
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+Her bağlantı türü için gönderilen Accept üstbilgisi. Otomatik, seçilen tarayıcının gönderdiğini gönderir.
+Automatic
+Otomatik
+Old HTTrack value
+Eski HTTrack değeri
+Default
+Varsayılan
+Pages
+Sayfalar
+Inline frames
+Satır içi çerçeveler
+Frames
+Çerçeveler
+Images
+Görüntüler
+Style sheets
+Stil sayfaları
+Scripts
+Betikler
+Fonts
+Yazı tipleri
+Audio
+Ses
+Video
+Video
+Objects
+Nesneler
+Embedded content
+Gömülü içerik
+Log in with a browser...
+Tarayıcıyla oturum aç...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Siteye bir tarayıcıda oturum açın ve yansılamayı onun aldığı çerezlerle ve tarayıcı kimliğiyle yapın
+No Microsoft Edge WebView2 runtime is installed on this computer
+Bu bilgisayarda Microsoft Edge WebView2 çalışma zamanı yüklü değil
+Log in with a browser
+Tarayıcıyla oturum aç
+Go
+Git
+Done
+Bitti
+Clear login
+Oturumu kapat
+The browser did not open: %s.
+Tarayıcı açılmadı: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+Tarayıcı hiç çerez döndürmedi. Sihirbaz bittiğinde adres ve tarayıcı kimliği projeyle birlikte kaydedilecek.
+Cookies collected: %d. They are used when you press OK.
+Toplanan çerez sayısı: %d. Tamam'a bastığınızda kullanılacaklar.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Toplanan çerez sayısı: %d. Sihirbaz bittiğinde projeyle birlikte kaydedilecekler.
+The login could not be written to %s.
+Oturum açma bilgisi %s dosyasına yazılamadı.
+%d of the browser's cookies were left out, because the engine would not read them.
+Tarayıcının çerezlerinden %d tanesi dışarıda bırakıldı, çünkü HTTrack onları okuyamazdı.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Bu tarayıcının başka bir sekmesinde siteye giriş yapın. Geliştirici araçlarını (F12) ve ardından Ağ sekmesini açın, sayfayı yeniden yükleyin, ilk isteğe sağ tıklayın ve Copy as cURL (bash) seçeneğini seçin. Metni buraya yapıştırın. Bir cookies.txt dışa aktarımı da kullanılabilir; listedeki ilk adres için kullanılır.
+Cookies for: %s. Browser identity: %s.
+Çerezlerin ait olduğu siteler: %s. Tarayıcı kimliği: %s.
+A login cannot be saved for this address, so nothing was kept.
+Bu adres için oturum açma bilgisi kaydedilemiyor, bu yüzden hiçbir şey saklanmadı.
+Yes
+Evet

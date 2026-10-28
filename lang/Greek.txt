@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Πρωτόκολλο διαμεσολαβητή. HTTP: τυπικός διαμεσολαβητής. HTTP (σήραγγα CONNECT): στέλνει κάθε αίτημα μέσω σήραγγας CONNECT, για διαμεσολαβητές που υποστηρίζουν μόνο CONNECT όπως το HTTPTunnelPort του Tor. SOCKS5: προεπιλεγμένη θύρα 1080.
 Load cookies from file:
 Φόρτωση cookies από αρχείο:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Προφόρτωση των cookies από ένα αρχείο Netscape cookies.txt πριν την ανίχνευση.
 Pause between files:
 Παύση μεταξύ αρχείων:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 Αγνόηση του %s και κάθε host κάτω από αυτό
 Manual
 Εγχειρίδιο
+Max Retry-After(s)
+Μέγ. Retry-After (δευτ.)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Η μεγαλύτερη αναμονή που τηρείται όταν ένας διακομιστής στέλνει κεφαλίδα Retry-After. Το 0 σημαίνει επανάληψη χωρίς αναμονή.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+Οι κανόνες που ορίζετε εδώ ισχύουν για την αντιγραφή που εκτελείται τώρα. Η αφαίρεση ενός κανόνα επιτρέπει ξανά τους νέους συνδέσμους, αλλά ένας σύνδεσμος που ο κανόνας έχει ήδη απορρίψει δεν θα επιστρέψει σε αυτή την αντιγραφή.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Αυτός ο κανόνας αναζήτησης δεν μπορεί να χρησιμοποιηθεί. Ένας κανόνας ξεκινά με + ή -, ακολουθεί ένα μοτίβο, και πρέπει να χωρά σε μία σύντομη γραμμή.
+Theme:
+Θέμα:
+Classic
+Κλασικό
+Accept headers
+Κεφαλίδες Accept
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+Η κεφαλίδα Accept που αποστέλλεται για κάθε είδος συνδέσμου. Η αυτόματη επιλογή στέλνει ό,τι στέλνει το επιλεγμένο πρόγραμμα περιήγησης.
+Automatic
+Αυτόματα
+Old HTTrack value
+Παλιά τιμή του HTTrack
+Default
+Προεπιλογή
+Pages
+Σελίδες
+Inline frames
+Ενσωματωμένα πλαίσια
+Frames
+Πλαίσια
+Images
+Εικόνες
+Style sheets
+Φύλλα στυλ
+Scripts
+Σενάρια
+Fonts
+Γραμματοσειρές
+Audio
+Ήχος
+Video
+Βίντεο
+Objects
+Αντικείμενα
+Embedded content
+Ενσωματωμένο περιεχόμενο
+Log in with a browser...
+Σύνδεση με πρόγραμμα περιήγησης...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Συνδεθείτε στην τοποθεσία μέσω ενός προγράμματος περιήγησης και κάντε την αντιγραφή με τα cookies και την ταυτότητα περιήγησης που πήρε
+No Microsoft Edge WebView2 runtime is installed on this computer
+Δεν είναι εγκατεστημένο το περιβάλλον εκτέλεσης Microsoft Edge WebView2 σε αυτόν τον υπολογιστή
+Log in with a browser
+Σύνδεση με πρόγραμμα περιήγησης
+Go
+Μετάβαση
+Done
+Τέλος
+Clear login
+Αποσύνδεση
+The browser did not open: %s.
+Το πρόγραμμα περιήγησης δεν άνοιξε: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+Το πρόγραμμα περιήγησης δεν επέστρεψε cookies. Η διεύθυνση και η ταυτότητα του προγράμματος περιήγησης θα αποθηκευτούν με την εργασία όταν ολοκληρωθεί ο βοηθός.
+Cookies collected: %d. They are used when you press OK.
+Cookies που συλλέχθηκαν: %d. Θα χρησιμοποιηθούν όταν πατήσετε Εντάξει.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Cookies που συλλέχθηκαν: %d. Θα αποθηκευτούν με την εργασία όταν ολοκληρωθεί ο βοηθός.
+The login could not be written to %s.
+Δεν ήταν δυνατή η εγγραφή της σύνδεσης στο %s.
+%d of the browser's cookies were left out, because the engine would not read them.
+%d από τα cookies του προγράμματος περιήγησης παραλείφθηκαν, επειδή το HTTrack δεν θα τα διάβαζε.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Συνδεθείτε στον ιστότοπο σε άλλη καρτέλα αυτού του προγράμματος περιήγησης. Ανοίξτε τα εργαλεία προγραμματιστή (F12) και μετά την καρτέλα Δίκτυο, φορτώστε ξανά τη σελίδα, κάντε δεξί κλικ στο πρώτο αίτημα και επιλέξτε Copy as cURL (bash). Επικολλήστε το κείμενο εδώ. Λειτουργεί και μια εξαγωγή cookies.txt, για την πρώτη διεύθυνση της λίστας.
+Cookies for: %s. Browser identity: %s.
+Cookies για: %s. Ταυτότητα προγράμματος περιήγησης: %s.
+A login cannot be saved for this address, so nothing was kept.
+Δεν μπορεί να αποθηκευτεί σύνδεση για αυτή τη διεύθυνση, οπότε δεν κρατήθηκε τίποτα.
+Yes
+Ναι

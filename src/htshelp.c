@@ -523,6 +523,7 @@ void help(const char *app, int more) {
   infomsg("  AN maximum transfer rate in bytes/seconds (1000=1KB/s max)");
   infomsg(" %cN maximum number of connections/seconds (*%c5)");
   infomsg(" %G  random pause of MIN[:MAX] seconds between files (e.g. %G5:10)");
+  infomsg(" %JN longest Retry-After obeyed, in seconds (*%J60, 0=no wait)");
   infomsg
     ("  GN pause transfer if N bytes reached, and wait until lock file is deleted");
   infomsg("");
@@ -594,7 +595,10 @@ void help(const char *app, int more) {
   infomsg("");
   infomsg("Spider options:");
   infomsg("  bN accept cookies in cookies.txt (0=do not accept,* 1=accept)");
-  infomsg(" %K  load extra cookies from a Netscape cookies.txt");
+  infomsg(" %K  use a Netscape cookies.txt as the jar, rewritten at the end");
+  infomsg("     <URL>#httrack-bundle=<name> crawls <URL> with the user agent,");
+  infomsg("     headers and cookies of the login bundle <name>.hts, read from "
+          "the project folder or from --bundle-dir <dir>");
   infomsg(" %Y  explain which filter rule accepts or rejects a URL, then exit");
   infomsg
     ("  u  check document type if unknown (cgi,asp..) (u0 don't check, * u1 check but /, u2 check always)");
@@ -609,8 +613,8 @@ void help(const char *app, int more) {
   infomsg(" %z  do not request compressed content (%z0 request)");
   infomsg
     (" %B  tolerant requests (accept bogus responses on some servers, but not standard!)");
-  infomsg
-    (" %s  update hacks: various hacks to limit re-transfers when updating (identical size, bogus response..)");
+  infomsg(" %s  update hacks: keep a file already on disk when its size "
+          "matches, even on a first crawl, and accept some bogus responses");
   infomsg
     (" %u  url hacks: various hacks to limit duplicate URLs (strip //, www.foo.com==foo.com..)");
   infomsg("     opt out of one url-hack part: --keep-www-prefix "
@@ -624,6 +628,8 @@ void help(const char *app, int more) {
     ("     can also be used to force a specific file type: --assume foo.cgi=text/html");
   infomsg
     (" @iN internet protocol (0=both ipv6+ipv4, 4=ipv4 only, 6=ipv6 only)");
+  infomsg(" @mN carry connections over Multipath TCP where the system offers"
+          " it (0=no, 1=yes)");
   infomsg(" %w  disable a specific external mime module (-%w httrack-plugin)");
   infomsg("");
   infomsg("Browser ID:");
@@ -637,8 +643,16 @@ void help(const char *app, int more) {
            hts_footer_field_list(fields, sizeof(fields)));
   infomsg(info);
   infomsg(" %l  preferred language (-%l \"fr, en, jp, *\"");
-  infomsg(" %a  accepted formats (-%a \"text/html,image/png;q=0.9,*/*;q=0.1\"");
-  infomsg(" %X  additional HTTP header line (-%X \"X-Magic: 42\"");
+  infomsg(" %a  accepted formats (-%a \"text/html,image/png;q=0.9,*/*;q=0.1\""
+          "; repeat as -%a \"KIND=formats\" for one kind of link: document"
+          " iframe frame image style script font audio video object embed");
+  infomsg(" %X  additional HTTP header line (-%X \"X-Magic: 42\"; an Accept"
+          " line replaces every computed Accept, per-kind values included;"
+          " Content-Length, Transfer-Encoding, Connection, Keep-Alive, TE,"
+          " Upgrade and Expect are dropped");
+  infomsg(" %Q  send the headers a browser -F implies: its Accept values,"
+          " header order and Sec-Fetch-*, and client hints over HTTPS (%Q0"
+          " don't)");
   infomsg("");
   infomsg("Log, index, cache");
   infomsg("  C  create/use a cache for updates and retries (C0 no cache,* C1 "

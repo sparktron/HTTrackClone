@@ -9,7 +9,7 @@ LANGUAGE_AUTHOR
 LANGUAGE_WINDOWSID
 Bulgarian
 OK
-Да
+OK
 Cancel
 Отказ
 Exit
@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Протокол на прокси. HTTP: стандартно прокси. HTTP (CONNECT тунел): изпраща всяка заявка през CONNECT тунел, за прокси поддържащи само CONNECT като HTTPTunnelPort на Tor. SOCKS5: порт по подразбиране 1080.
 Load cookies from file:
 Зареждане на 'бисквитки' от файл:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Предварително зареждане на 'бисквитки' от файл Netscape cookies.txt преди обхождането.
 Pause between files:
 Пауза между файловете:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 Игнорирай %s и всички хостове под него
 Manual
 Ръководство
+Max Retry-After(s)
+Макс. Retry-After (с)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Най-дългото изчакване, което се спазва, когато сървърът изпрати заглавка Retry-After. Използвайте 0 за повторен опит без изчакване.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+Правилата, които задавате тук, важат за огледалото, което се изпълнява в момента. Премахването на правило отново пропуска новите връзки, но връзка, която то вече е отхвърлило, няма да се върне при това изпълнение.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Това правило за сканиране не може да се използва. Правилото започва с + или -, следвано от шаблон, и трябва да се побира на един кратък ред.
+Theme:
+Тема:
+Classic
+Класическа
+Accept headers
+Заглавки Accept
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+Заглавката Accept, изпращана за всеки вид връзка. „Автоматично“ изпраща това, което изпраща избраният браузър.
+Automatic
+Автоматично
+Old HTTrack value
+Старата стойност на HTTrack
+Default
+По подразбиране
+Pages
+Страници
+Inline frames
+Вградени рамки
+Frames
+Рамки
+Images
+Изображения
+Style sheets
+Стилови таблици
+Scripts
+Скриптове
+Fonts
+Шрифтове
+Audio
+Аудио
+Video
+Видео
+Objects
+Обекти
+Embedded content
+Вградено съдържание
+Log in with a browser...
+Вход през браузър...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Влезте в сайта през браузър и огледалото ще се създаде с получените 'бисквитки' и идентификацията на браузъра
+No Microsoft Edge WebView2 runtime is installed on this computer
+На този компютър не е инсталирана средата за изпълнение Microsoft Edge WebView2
+Log in with a browser
+Вход през браузър
+Go
+Отиди
+Done
+Готово
+Clear login
+Изход от профила
+The browser did not open: %s.
+Браузърът не се отвори: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+Браузърът не върна нито една 'бисквитка'. Адресът и идентичността на браузъра се запазват с проекта, когато съветникът приключи.
+Cookies collected: %d. They are used when you press OK.
+Събрани 'бисквитки': %d. Те се използват, когато натиснете „Да“.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Събрани 'бисквитки': %d. Те се запазват с проекта, когато съветникът приключи.
+The login could not be written to %s.
+Входът не можа да бъде записан в %s.
+%d of the browser's cookies were left out, because the engine would not read them.
+Пропуснати 'бисквитки' на браузъра: %d, защото HTTrack не би могъл да ги прочете.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Влезте в сайта в друг раздел на този браузър. Отворете инструментите за разработчици (F12), след това раздела Мрежа, презаредете страницата, щракнете с десния бутон върху първата заявка и изберете Copy as cURL (bash). Поставете текста тук. Експорт във формат cookies.txt също работи, за първия адрес в списъка.
+Cookies for: %s. Browser identity: %s.
+'Бисквитки' за: %s. Идентичност на браузъра: %s.
+A login cannot be saved for this address, so nothing was kept.
+За този адрес не може да се запази вход, затова нищо не беше запазено.
+Yes
+Да

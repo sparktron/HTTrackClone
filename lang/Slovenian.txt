@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Protokol proxy. HTTP: standardni proxy. HTTP (tunel CONNECT): poslje vsako zahtevo skozi tunel CONNECT, za posrednike, ki podpirajo samo CONNECT, kot je HTTPTunnelPort v Toru. SOCKS5: privzeta vrata 1080.
 Load cookies from file:
 Nalozi piskotke iz datoteke:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Predhodno nalozi piskotke iz datoteke Netscape cookies.txt pred zajemanjem.
 Pause between files:
 Premor med datotekami:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 Prezri %s in vse gostitelje pod njim
 Manual
 Priročnik
+Max Retry-After(s)
+Najv. Retry-After (s)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Najdaljše čakanje, ki se upošteva, ko strežnik pošlje glavo Retry-After. Vnesite 0 za ponovni poskus brez čakanja.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+Pravila, ki jih nastavite tukaj, veljajo za zrcaljenje, ki trenutno poteka. Odstranitev pravila znova prepusti nove povezave, toda povezava, ki jo je pravilo že zavrnilo, se v tem zrcaljenju ne bo vrnila.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Tega pravila iskanja ni mogoče uporabiti. Pravilo se začne z znakom + ali -, nato sledi vzorec, in mora biti v eni kratki vrstici.
+Theme:
+Tema:
+Classic
+Klasična
+Accept headers
+Glave Accept
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+Glava Accept, poslana za vsako vrsto povezave. Samodejno pošlje to, kar pošlje izbrani brskalnik.
+Automatic
+Samodejno
+Old HTTrack value
+Stara vrednost HTTrack
+Default
+Privzeto
+Pages
+Strani
+Inline frames
+Vgrajeni okvirji
+Frames
+Okvirji
+Images
+Slike
+Style sheets
+Slogovne predloge
+Scripts
+Skripti
+Fonts
+Pisave
+Audio
+Zvok
+Video
+Video
+Objects
+Predmeti
+Embedded content
+Vdelana vsebina
+Log in with a browser...
+Prijava prek brskalnika...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Prijavite se na stran v brskalniku, zrcaljenje pa bo teklo z dobljenimi piškotki in istovetnostjo brskalnika
+No Microsoft Edge WebView2 runtime is installed on this computer
+V tem računalniku ni nameščenega izvajalnega okolja Microsoft Edge WebView2
+Log in with a browser
+Prijava prek brskalnika
+Go
+Pojdi
+Done
+Končano
+Clear login
+Odjava
+The browser did not open: %s.
+Brskalnik se ni odprl: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+Brskalnik ni vrnil nobenega piškotka. Naslov in identiteta brskalnika bosta shranjena s projektom, ko se čarovnik konča.
+Cookies collected: %d. They are used when you press OK.
+Zbrani piškotki: %d. Uporabljeni bodo, ko pritisnete „Vredu“.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Zbrani piškotki: %d. Shranjeni bodo s projektom, ko se čarovnik konča.
+The login could not be written to %s.
+Prijave ni bilo mogoče zapisati v %s.
+%d of the browser's cookies were left out, because the engine would not read them.
+Izpuščeni piškotki brskalnika: %d, ker jih HTTrack ne bi mogel prebrati.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Prijavite se na spletno mesto v drugem zavihku tega brskalnika. Odprite orodja za razvijalce (F12), nato zavihek Omrežje, znova naložite stran, z desno tipko kliknite prvo zahtevo in izberite Copy as cURL (bash). Prilepite besedilo sem. Deluje tudi izvoz cookies.txt, za prvi naslov na seznamu.
+Cookies for: %s. Browser identity: %s.
+Piškotki za: %s. Identiteta brskalnika: %s.
+A login cannot be saved for this address, so nothing was kept.
+Za ta naslov prijave ni mogoče shraniti, zato ni bilo nič shranjeno.
+Yes
+Da

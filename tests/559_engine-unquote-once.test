@@ -1,0 +1,58 @@
+#!/bin/bash
+#
+
+# An .httrackrc value has exactly one quote pair stripped, except the path,
+# which -O decodes itself. The file is read once. doit.log line 1 shows the
+# argv the engine kept.
+
+set -euo pipefail
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+bin=$(httrack_path)
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/httrack_unquote.XXXXXX") || exit 1
+cleanup_push rm -rf "$tmp"
+url="file://$tmp/none.html"
+
+doit() {
+    local line
+    assert_file "$1/hts-cache/doit.log"
+    IFS= read -r line <"$1/hts-cache/doit.log"
+    # Windows writes doit.log with CR LF.
+    printf '%s\n' "${line%$'\r'}"
+}
+has() { # has WANT LINE LABEL: WANT is whole words of LINE
+    [[ " $2 " == *" $1 "* ]] || fail "$3: want '$1' in: $2"
+}
+# rc DIR LINES [ARGS...]: mirror from DIR, whose rc file holds LINES
+rc() {
+    local dir=$1 lines=$2 rc=0
+    shift 2
+    mkdir -p "$dir"
+    printf '%s' "$lines" >"$dir/.httrackrc"
+    # Windows reads HTS_HTTRACKRC as httrackrc
+    cp "$dir/.httrackrc" "$dir/httrackrc"
+    # the proxy avoids DNS
+    (cd "$dir" && "$bin" "$@" "$url" -q -r1 -R0 -P 127.0.0.1:1 >"$dir.out" 2>&1) || rc=$?
+    test "$rc" -eq 0 || fail "httrack in $dir exited $rc: $(<"$dir.out")"
+}
+
+# an argv token keeps its leading quote, and an unclosed rc quote is skipped
+rc "$tmp/c" $'set footer ""ft""\nuser-agent "ua"\nfrom "a b"\nreferer "ref\nretries 7\n' '"+*x*'
+line=$(doit "$tmp/c")
+has '-%F "\"ft\"" -F ua -%E "a b" -R7 "\"+*x*"' "$line" "rc file"
+[[ $line != *-%R* ]] || fail "rc file: an unclosed quote was kept: $line"
+grep -qF 'missing quote in "ref, ignored' "$tmp/c.out" || fail "rc file: no warning: $(<"$tmp/c.out")"
+test "$(grep -o -- ' -%F' <<<" $line" | wc -l)" -eq 1 || fail "rc file read twice: $line"
+# doit.log merges identical copies, so count -R7 in the log's argv line
+argv=$(grep -m1 '^(' "$tmp/c/hts-log.txt") || fail "no argv line in hts-log.txt"
+test "$(grep -o -- ' -R7 ' <<<"$argv" | wc -l)" -eq 1 || fail "rc file read twice: $argv"
+
+# a quote in the path groups a comma, as on the command line
+rc "$tmp/p1" $'path "a,b"\n'
+assert_file "$tmp/p1/a,b/hts-log.txt"
+rc "$tmp/p2" $'path "p a","l g"\n'
+assert_file "$tmp/p2/l g/hts-log.txt"
+test -d "$tmp/p2/p a" || fail "rc path lost its mirror directory: $(ls "$tmp/p2")"
+echo PASS

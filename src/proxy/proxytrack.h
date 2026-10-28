@@ -53,13 +53,6 @@ Please visit our Website: http://www.httrack.com
 int proxytrack_main(char *proxyAddr, int proxyPort, char *icpAddr, int icpPort,
                     PT_Indexes index);
 
-/* Spaces: CR,LF,TAB,FF */
-#define  is_space(c)      ( ((c)==' ') || ((c)=='\"') || ((c)==10) || ((c)==13) || ((c)==9) || ((c)==12) || ((c)==11) || ((c)=='\'') )
-#define  is_realspace(c)  ( ((c)==' ')                || ((c)==10) || ((c)==13) || ((c)==9) || ((c)==12) || ((c)==11)                )
-#define  is_taborspace(c) ( ((c)==' ')                                          || ((c)==9)                             )
-#define  is_quote(c)      (               ((c)=='\"')                                                    || ((c)=='\'') )
-#define  is_retorsep(c)   (                              ((c)==10) || ((c)==13) || ((c)==9)                                          )
-
 /* Static definitions */
 
 /* Log one line; a NULL severity discards it. */
@@ -285,7 +278,7 @@ HTS_UNUSED static struct tm PT_GetTime(time_t t) {
 HTS_UNUSED static int set_filetime(const char *file, struct tm *tm_time) {
   struct utimbuf tim;
 
-  tim.actime = tim.modtime = timegm(tm_time);
+  tim.actime = tim.modtime = hts_time_clip(hts_utc_seconds(tm_time));
   return utime(file, &tim);
 }
 HTS_UNUSED static int set_filetime_time_t(const char *file, time_t t) {

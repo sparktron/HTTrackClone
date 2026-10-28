@@ -26,17 +26,16 @@ Please visit our Website: http://www.httrack.com
 */
 
 /* ------------------------------------------------------------ */
-/* File: percent-escape decoding, shared by the engine and       */
-/*       htsserver                                              */
+/* File: percent-escape decoding and '&'-separated queries,     */
+/*       shared by the engine and htsserver                     */
 /* Author: Xavier Roche                                         */
 /* ------------------------------------------------------------ */
 
 #include "htsescape.h"
 
-/* CR, LF or TAB, as htslib.h's is_retorsep(). */
-static HTS_INLINE int hts_is_retorsep(const char c) {
-  return c == 10 || c == 13 || c == 9;
-}
+#include "htslib.h"
+
+#include <string.h>
 
 /* The bounds check must run before hts_ehex(), or a truncated escape is read
    past the terminator. */
@@ -75,7 +74,7 @@ void hts_unescapeini(const char *s, String *tempo) {
                (h = hts_ehex(&s[i + 1])) >= 0) {
       const char hc = (char) h;
 
-      if (!hts_is_retorsep(hc) || !hts_is_retorsep(lastc)) {
+      if (!is_retorsep(hc) || !is_retorsep(lastc)) {
         StringAddchar(*tempo, lastc = hc);
       }
       i += 2;
@@ -83,4 +82,46 @@ void hts_unescapeini(const char *s, String *tempo) {
       StringAddchar(*tempo, lastc = s[i]);
     }
   }
+}
+
+hts_boolean hts_query_next(const char **cur, hts_query_field *field) {
+  const char *p = *cur;
+  const char *eq = NULL;
+
+  if (p == NULL) {
+    return HTS_FALSE;
+  }
+  field->key = p;
+  while (*p != '\0' && *p != '&') {
+    if (eq == NULL && *p == '=') {
+      eq = p;
+    }
+    p++;
+  }
+  field->len = (size_t) (p - field->key);
+  if (eq != NULL) {
+    field->keylen = (size_t) (eq - field->key);
+    field->val = eq + 1;
+    field->vallen = (size_t) (p - field->val);
+  } else {
+    field->keylen = field->len;
+    field->val = NULL;
+    field->vallen = 0;
+  }
+  *cur = *p == '&' ? p + 1 : NULL;
+  return HTS_TRUE;
+}
+
+hts_boolean hts_query_find(const char *query, const char *name,
+                           hts_query_field *field) {
+  const size_t namelen = strlen(name);
+  const char *cur = query;
+
+  while (hts_query_next(&cur, field)) {
+    if (field->val != NULL && field->keylen == namelen &&
+        strncmp(field->key, name, namelen) == 0) {
+      return HTS_TRUE;
+    }
+  }
+  return HTS_FALSE;
 }

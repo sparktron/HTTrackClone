@@ -44,6 +44,7 @@ Please visit our Website: http://www.httrack.com
 #include "htscrashtest.h"
 
 #include <limits.h>
+#include <stdint.h>
 
 #ifdef _WIN32
 #else
@@ -81,17 +82,27 @@ static void ftp_worker_register(FTPDownloadStruct *worker) {
   hts_mutexrelease(&ftp_workers_mutex);
 }
 
-static void ftp_worker_unregister(FTPDownloadStruct *worker) {
+/* Leave the live list. The caller holds ftp_workers_mutex. */
+static void ftp_worker_unlink(FTPDownloadStruct *worker) {
   FTPDownloadStruct **prev;
 
-  hts_mutexlock(&ftp_workers_mutex);
   for (prev = &ftp_workers; *prev != NULL; prev = &(*prev)->pNext) {
     if (*prev == worker) {
       *prev = worker->pNext;
       break;
     }
   }
+}
+
+/* Whether any worker is still registered, as ftp_stop_workers() sees it. That
+   walk dereferences every entry, so one left behind is a use-after-free. */
+static hts_boolean ftp_workers_live(void) {
+  hts_boolean live;
+
+  hts_mutexlock(&ftp_workers_mutex);
+  live = ftp_workers != NULL;
   hts_mutexrelease(&ftp_workers_mutex);
+  return live;
 }
 
 void ftp_stop_workers(void) {
@@ -105,7 +116,7 @@ void ftp_stop_workers(void) {
        not missed. A registered worker's slot is still live by construction:
        back_delete_all() drains before back_free(). */
     for (worker = ftp_workers; worker != NULL; worker = worker->pNext)
-      worker->pBack->stop_ftp = HTS_TRUE;
+      hts_store_release_int(&worker->pBack->stop_ftp, HTS_TRUE);
     wait = ftp_workers != NULL;
     hts_mutexrelease(&ftp_workers_mutex);
     if (wait)
@@ -120,11 +131,14 @@ static void ftp_worker_release(FTPDownloadStruct *worker, const char *error) {
     strcpybuff(worker->pBack->r.msg, error);
     worker->pBack->r.statuscode = STATUSCODE_INVALID;
   }
-  worker->pBack->status = STATUS_FTP_READY;
-
-  /* The status store above was this worker's last read of the slot and of opt,
-     so deregistering lets the engine free both. */
-  ftp_worker_unregister(worker);
+  /* Publish and unlink as one step. A teardown that still holds this worker
+     would otherwise set stop_ftp on a slot the crawl thread now owns. That
+     needs a second engine in this process, because ftp_workers is static. This
+     is also the worker's last touch of the slot and of opt. */
+  hts_mutexlock(&ftp_workers_mutex);
+  hts_store_release_int(&worker->pBack->status, STATUS_FTP_READY);
+  ftp_worker_unlink(worker);
+  hts_mutexrelease(&ftp_workers_mutex);
   freet(worker);
 }
 
@@ -191,9 +205,9 @@ int ftp_worker_selftests(void) {
                       "registered, so ftp_stop_workers() would never return\n");
       err++;
     }
-    if (back.status != STATUS_FTP_READY) {
+    if (back_status(&back) != STATUS_FTP_READY) {
       fprintf(stderr, "ftp-worker-selftest: slot status %d, expected %d\n",
-              back.status, STATUS_FTP_READY);
+              back_status(&back), STATUS_FTP_READY);
       err++;
     }
     if (returned) {
@@ -212,6 +226,207 @@ int ftp_worker_selftests(void) {
       err++;
     }
   }
+  return err;
+}
+
+/* --- The slot handoff, across a real worker thread (see htsftp.h) --- */
+
+/* Enough rounds that a publish lands between two back_wait() passes rather
+   than always before the first one. */
+#define FTP_HANDOFF_ROUNDS 32
+/* The settle tells a blocked tail from one the scheduler never ran. */
+#define FTP_HANDOFF_SETTLE 500
+/* Per wait, and at 1ms a spin: the whole test must stay inside the suite's
+   600s guard even when every wait runs out. */
+#define FTP_HANDOFF_SPINS 2000
+
+/* The payload a worker body leaves behind. Negative, so back_wait()'s reap
+   skips back_finalize(): what this pins is the read, not the cache write after
+   it. A slot nobody published reads 0 and "" instead. */
+#define FTP_HANDOFF_CODE STATUSCODE_INVALID
+static const char ftp_handoff_msg[] = "Transfer complete";
+
+/* Stands in for run_launch_ftp(), writing the payload back_wait() reads. */
+static void ftp_handoff_body(void *pP) {
+  FTPDownloadStruct *const worker = (FTPDownloadStruct *) pP;
+
+  strcpybuff(worker->pBack->r.msg, ftp_handoff_msg);
+  worker->pBack->r.statuscode = FTP_HANDOFF_CODE;
+  worker->pBack->r.size = (LLint) sizeof(ftp_handoff_msg);
+  worker->body_returned = HTS_TRUE;
+}
+
+static int ftp_handoff_at_tail = 0;
+
+/* Raise the flag one call before ftp_worker_done() publishes the slot, so a
+   test waiting on it gains no ordering over the publish that follows. */
+static void ftp_handoff_tail(void *pP) {
+  hts_store_release_int(&ftp_handoff_at_tail, 1);
+  ftp_worker_done(pP);
+}
+
+/* Spawn a worker on the registered slot. The caller releases it on a refusal,
+   since ftp_worker_release() wants a lock the second phase already holds. */
+static hts_boolean ftp_handoff_spawn(FTPDownloadStruct *worker,
+                                     void (*tail)(void *)) {
+  if (hts_newthread_tail(ftp_handoff_body, worker, tail) == 0)
+    return HTS_TRUE;
+  fprintf(stderr, "ftp-handoff-selftest: cannot spawn a worker\n");
+  return HTS_FALSE;
+}
+
+/* Wait for *flag to read 'value'. HTS_FALSE once the spin budget is out. */
+static hts_boolean ftp_handoff_await(const int *flag, int value) {
+  int spins;
+
+  for (spins = 0; hts_load_acquire_int(flag) != value; spins++) {
+    if (spins >= FTP_HANDOFF_SPINS)
+      return HTS_FALSE;
+    Sleep(1);
+  }
+  return HTS_TRUE;
+}
+
+/* Put a fresh worker on the slot and on the live list, not yet running. The
+   caller spawns it, because the second phase takes the list lock in between. */
+static FTPDownloadStruct *ftp_handoff_register(lien_back *slot) {
+  FTPDownloadStruct *const worker = calloct(1, sizeof(*worker));
+
+  assertf(worker != NULL);
+  slot->status = STATUS_FTP_TRANSFER;
+  worker->pBack = slot;
+  ftp_handoff_at_tail = 0;
+  ftp_worker_register(worker);
+  return worker;
+}
+
+/* Drive back_wait() until the worker has left the list, and once more after
+   that. back_wait() is the reader this pins, so the loop must not synchronize
+   with the worker ahead of it: ftp_workers_live() takes the lock the publish
+   happens under, and a lock that still finds the worker listed took it first,
+   so it carries nothing from the publish. */
+static void ftp_handoff_drive(struct_back *sback, httrackp *opt,
+                              cache_back *cache) {
+  int spins;
+
+  for (spins = 0; spins < FTP_HANDOFF_SPINS; spins++) {
+    back_wait(sback, opt, cache, HTS_STAT.stat_timestart);
+    if (!ftp_workers_live())
+      break;
+    Sleep(1);
+  }
+  back_wait(sback, opt, cache, HTS_STAT.stat_timestart);
+}
+
+/* back_wait() reaped the slot, carrying the payload its worker published. */
+static int ftp_handoff_check_reaped(const lien_back *slot, int round) {
+  if (back_status(slot) != STATUS_READY) {
+    fprintf(stderr,
+            "ftp-handoff-selftest: round %d left status %d, so back_wait() "
+            "never reaped the slot\n",
+            round, back_status(slot));
+    return 1;
+  }
+  if (slot->r.statuscode != FTP_HANDOFF_CODE ||
+      strcmp(slot->r.msg, ftp_handoff_msg) != 0 ||
+      slot->r.size != (LLint) sizeof(ftp_handoff_msg)) {
+    fprintf(stderr,
+            "ftp-handoff-selftest: round %d read %d '%s' " LLintP
+            " behind the status back_wait() reaped\n",
+            round, slot->r.statuscode, slot->r.msg, (LLint) slot->r.size);
+    return 1;
+  }
+  return 0;
+}
+
+/* See htsftp.h. */
+int ftp_handoff_selftests(httrackp *opt) {
+  struct_back *sback = back_new(opt, 1);
+  cache_back cache;
+  int err = 0;
+  int round;
+
+  if (sback == NULL) {
+    fprintf(stderr, "ftp-handoff-selftest: no backing table\n");
+    return 1;
+  }
+  memset(&cache, 0, sizeof(cache));
+
+  /* url_sav stays empty for every round, which keeps back_clean()'s sweeps off
+     the slot: they all want a save name. */
+  for (round = 0; round < FTP_HANDOFF_ROUNDS && err == 0; round++) {
+    lien_back *const slot = &sback->lnk[0];
+
+    FTPDownloadStruct *const worker = ftp_handoff_register(slot);
+
+    if (!ftp_handoff_spawn(worker, ftp_handoff_tail)) {
+      ftp_worker_release(worker, "Unable to launch FTP thread");
+      err++;
+      break;
+    }
+    /* Wait on the tail's flag rather than on the slot, so the wait does not
+       stand in for the acquire back_wait() has to bring itself. */
+    if (!ftp_handoff_await(&ftp_handoff_at_tail, 1)) {
+      fprintf(stderr, "ftp-handoff-selftest: round %d never reached the tail\n",
+              round);
+      err++;
+    }
+    ftp_handoff_drive(sback, opt, &cache);
+    htsthread_wait();
+    if (ftp_workers_live()) {
+      fprintf(stderr,
+              "ftp-handoff-selftest: round %d left a worker registered, so "
+              "ftp_stop_workers() would walk a freed one\n",
+              round);
+      err++;
+    } else {
+      err += ftp_handoff_check_reaped(slot, round);
+    }
+    back_clear_entry(slot);
+  }
+
+  /* No worker may hand its slot back while a teardown holds the live-worker
+     list, because ftp_stop_workers() raises stop_ftp through a slot the crawl
+     thread is free to recycle as soon as its status reads ready. */
+  {
+    lien_back *const slot = &sback->lnk[0];
+    FTPDownloadStruct *const worker = ftp_handoff_register(slot);
+
+    /* Held before the worker exists, so its publish has nowhere to slip in. */
+    hts_mutexlock(&ftp_workers_mutex);
+    if (!ftp_handoff_spawn(worker, ftp_handoff_tail)) {
+      hts_mutexrelease(&ftp_workers_mutex);
+      ftp_worker_release(worker, "Unable to launch FTP thread");
+      back_free(&sback);
+      return err + 1;
+    }
+    if (!ftp_handoff_await(&ftp_handoff_at_tail, 1)) {
+      fprintf(stderr, "ftp-handoff-selftest: the tail never ran\n");
+      err++;
+    } else {
+      Sleep(FTP_HANDOFF_SETTLE);
+      if (hts_load_acquire_int(&slot->status) != STATUS_FTP_TRANSFER) {
+        fprintf(stderr, "ftp-handoff-selftest: a worker handed its slot back "
+                        "while the live-worker list was held\n");
+        err++;
+      }
+    }
+    hts_mutexrelease(&ftp_workers_mutex);
+    htsthread_wait();
+    if (ftp_workers_live()) {
+      fprintf(stderr, "ftp-handoff-selftest: the held round left a worker "
+                      "registered\n");
+      err++;
+    }
+    if (back_status(slot) != STATUS_FTP_READY) {
+      fprintf(stderr,
+              "ftp-handoff-selftest: the released list left status %d\n",
+              back_status(slot));
+      err++;
+    }
+    back_clear_entry(slot);
+  }
+  back_free(&sback);
   return err;
 }
 
@@ -330,6 +545,70 @@ hts_boolean ftp_command(char *line, size_t line_size, const char *verb,
   return HTS_TRUE;
 }
 
+/* Read 1..max_digits decimal digits at s into *value, if it is at most max.
+   Returns the first byte past them, or NULL if it is empty, too long or over
+   max. */
+static const char *ftp_parse_decimal(const char *s, int max_digits, int max,
+                                     int *value) {
+  const char *end;
+  LLint n;
+
+  if (!hts_parse_llint(s, &end, 0, max, &n) || end - s > max_digits)
+    return NULL;
+  *value = (int) n;
+  return end;
+}
+
+hts_boolean ftp_parse_pasv(const char *line, char *ip, size_t ip_size,
+                           int *port) {
+  const char *s = strchr(line, '(');
+  int n[6];
+  int i, len;
+
+  if (s == NULL)
+    return HTS_FALSE;
+  s++;
+  for (i = 0; i < 6; i++) {
+    s = ftp_parse_decimal(s, 3, 255, &n[i]);
+    if (s == NULL || *s != (i < 5 ? ',' : ')'))
+      return HTS_FALSE;
+    s++;
+  }
+  if ((n[4] | n[5]) == 0) // port 0 means no data connection
+    return HTS_FALSE;
+  len = snprintf(ip, ip_size, "%d.%d.%d.%d", n[0], n[1], n[2], n[3]);
+  if (len < 0 || (size_t) len >= ip_size) {
+    ip[0] = '\0';
+    return HTS_FALSE;
+  }
+  *port = (n[4] << 8) + n[5];
+  return HTS_TRUE;
+}
+
+hts_boolean ftp_parse_epsv(const char *line, int *port) {
+  const char *s = strchr(line, '(');
+  char delim;
+  int p;
+
+  if (s == NULL)
+    return HTS_FALSE;
+  // RFC 2428: "(<d><d><d><port><d>)", d a printable non-digit
+  delim = s[1];
+  if (delim < 33 || delim > 126 || s[2] != delim || s[3] != delim)
+    return HTS_FALSE;
+  s = ftp_parse_decimal(s + 4, 5, 65535, &p);
+  if (s == NULL || s[0] != delim || s[1] != ')' || p == 0)
+    return HTS_FALSE;
+  *port = p;
+  return HTS_TRUE;
+}
+
+hts_boolean ftp_parse_size(const char *line, LLint *size) {
+  const char *s = strchr(line, ' ');
+
+  return s != NULL && hts_scan_llint(&s, 0, INT64_MAX, size) == HTS_SCAN_OK;
+}
+
 /* MDTM reply "213 YYYYMMDDHHMMSS[.frac]" (RFC 3659, UTC) into tm_time. */
 static hts_boolean ftp_parse_mdtm(const char *line, struct tm *tm_time) {
   int year, mon, mday, hour, min, sec;
@@ -360,7 +639,7 @@ static hts_boolean ftp_may_resume(httrackp *opt, const lien_back *back,
   if (back->r.totalsize <= back->range_req_size) {
     hts_log_print(opt, LOG_DEBUG,
                   "FTP: not resuming %s%s, the local copy is not shorter",
-                  back->url_adr, back->url_fil);
+                  adr_nologin(opt, back->url_adr), back->url_fil);
     return HTS_FALSE;
   }
   /* Equality, not ordering: a copy this code did not stamp carries a local
@@ -369,7 +648,7 @@ static hts_boolean ftp_may_resume(httrackp *opt, const lien_back *back,
       remote_mtime != local_mtime) {
     hts_log_print(opt, LOG_DEBUG,
                   "FTP: not resuming %s%s, the copy is not dated as the remote",
-                  back->url_adr, back->url_fil);
+                  adr_nologin(opt, back->url_adr), back->url_fil);
     return HTS_FALSE;
   }
   return HTS_TRUE;
@@ -379,11 +658,13 @@ static hts_boolean ftp_may_resume(httrackp *opt, const lien_back *back,
    the way it aborts an HTTP one. */
 static int ftp_wait_left(const httrackp *opt, int timeout) {
   if (opt != NULL && opt->maxtime > 0) {
-    const TStamp left =
-        (TStamp) opt->maxtime - (time_local() - HTS_STAT.stat_timestart);
+    /* rounded up, so the wait ends at the cap rather than before it */
+    const TStamp left_ms =
+        (TStamp) opt->maxtime * 1000 - hts_mirror_elapsed_ms();
+    const TStamp left = left_ms > 0 ? (left_ms + 999) / 1000 : 0;
 
     if (left < (TStamp) timeout)
-      timeout = left > 0 ? (int) left : 0;
+      timeout = (int) left;
   }
   return timeout;
 }
@@ -397,7 +678,8 @@ static hts_boolean ftp_connect(lien_back *back, T_SOC soc, SOCaddr *server,
   timeout = ftp_wait_left(opt, timeout);
   if (!socket_set_nonblocking(soc, HTS_TRUE))
     return HTS_FALSE;
-  if (connect(soc, &SOCaddr_sockaddr(*server), SOCaddr_size(*server)) != 0) {
+  if (hts_socket_connect(soc, &SOCaddr_sockaddr(*server), SOCaddr_size(*server),
+                         opt) != 0) {
 #ifdef _WIN32
     if (WSAGetLastError() != WSAEWOULDBLOCK)
 #else
@@ -407,7 +689,8 @@ static hts_boolean ftp_connect(lien_back *back, T_SOC soc, SOCaddr *server,
     /* state.stop counts here, unlike in the waits below: a mirror the user
        stopped has nothing to finish on a connection never established. */
     while (check_socket_connect(soc) == 0) {
-      if (back->stop_ftp || (opt != NULL && opt->state.stop) ||
+      if (hts_load_acquire_int(&back->stop_ftp) ||
+          (opt != NULL && hts_load_acquire_int(&opt->state.stop)) ||
           (int) (time_local() - started) >= timeout)
         return HTS_FALSE;
       Sleep(100);
@@ -432,7 +715,8 @@ static T_SOC ftp_accept(lien_back *back, T_SOC soc, int timeout,
     return INVALID_SOCKET;
   /* state.stop counts as in ftp_connect: nothing is established yet */
   while (check_socket(soc) == 0) {
-    if (back->stop_ftp || (opt != NULL && opt->state.stop) ||
+    if (hts_load_acquire_int(&back->stop_ftp) ||
+        (opt != NULL && hts_load_acquire_int(&opt->state.stop)) ||
         (int) (time_local() - started) >= timeout)
       return INVALID_SOCKET;
     Sleep(100);
@@ -502,7 +786,7 @@ int run_launch_ftp(FTPDownloadStruct * pStruct) {
   // effacer
   strcpybuff(back->r.msg, "");
   back->r.statuscode = 0;
-  back->r.size = 0;
+  hts_store_relaxed_llint(&back->r.size, 0);
   back->r.lastmodified[0] = '\0'; // a retry must not stamp the previous MDTM
 
   real_adr = ftp_jump_authority(back->url_adr);
@@ -587,18 +871,18 @@ int run_launch_ftp(FTPDownloadStruct * pStruct) {
     SOCaddr_copy_SOCaddr(server_data, server);
 
     // créer ("attachement") une socket (point d'accès) internet,en flot
-    soc_ctl = (T_SOC) socket(SOCaddr_sinfamily(server), SOCK_STREAM, 0);
+    soc_ctl = hts_socket_client(SOCaddr_sinfamily(server), opt, HTS_FALSE);
     if (soc_ctl == INVALID_SOCKET) {
       strcpybuff(back->r.msg, "Unable to create a socket");
       back->r.statuscode = STATUSCODE_INVALID;
       _HALT_FTP return 0;
     }
-    socket_set_nosigpipe(soc_ctl);
 
     SOCaddr_initport(server, port);
 
     strcpybuff(back->info, "connect");
-    hts_log_print(opt, LOG_DEBUG, "FTP: connecting to %s:%d", _adr, port);
+    hts_log_print(opt, LOG_DEBUG, "FTP: connecting to %s:%d",
+                  adr_nologin(opt, _adr), port);
 
     if (!ftp_connect(back, soc_ctl, &server, timeout, opt)) {
       strcpybuff(back->r.msg, "Unable to connect to the server");
@@ -675,55 +959,11 @@ int run_launch_ftp(FTPDownloadStruct * pStruct) {
         }
         _CHECK_HALT_FTP;
         if (line[0] == '2') {
-          char *a, *b, *c;
-
-          a = strchr(line, '(');        // exemple: 227 Entering Passive Mode (123,45,67,89,177,27)
-          if (a) {
-
-            // -- analyse de l'adresse IP et du port --
-            a++;
-            b = strchr(a, ',');
-            if (b)
-              b = strchr(b + 1, ',');
-            if (b)
-              b = strchr(b + 1, ',');
-            if (b)
-              b = strchr(b + 1, ',');
-            c = a;
-            while((c = strchr(c, ',')))
-              *c = '.';         // remplacer , par .
-            if (b)
-              *b = '\0';
-            //
-            strcpybuff(adr_ip, a);      // copier adresse ip
-            //
-            if (b) {
-              a = b + 1;        // début du port
-              b = strchr(a, '.');
-              if (b) {
-                int n1, n2;
-
-                //
-                *b = '\0';
-                b++;
-                c = strchr(b, ')');
-                if (c) {
-                  *c = '\0';
-                  if ((sscanf(a, "%d", &n1) == 1) && (sscanf(b, "%d", &n2) == 1)
-                      && (strlen(adr_ip) <= 16)) {
-                    port_pasv = n2 + (n1 << 8);
-                  }
-                } else {
-                  deletesoc(soc_dat);
-                  soc_dat = INVALID_SOCKET;
-                }               // sinon on est prêts
-              }
-            }
-            // -- fin analyse de l'adresse IP et du port --
-          } else {
+          // e.g. 227 Entering Passive Mode (123,45,67,89,177,27)
+          if (!ftp_parse_pasv(line, adr_ip, sizeof(adr_ip), &port_pasv)) {
             htsblk_failf(&back->r, "PASV incorrect: %s", linejmp(line));
             back->r.statuscode = STATUSCODE_INVALID;
-          }                     // sinon on est prêts
+          }
         } else {
           /*
            * try epsv (ipv6) *
@@ -734,24 +974,8 @@ int run_launch_ftp(FTPDownloadStruct * pStruct) {
           get_ftp_line(back, soc_ctl, line, sizeof(line), timeout, opt);
           _CHECK_HALT_FTP;
           if (line[0] == '2') { /* got it */
-            char *a;
-
-            a = strchr(line, '(');      // exemple: 229 Entering Extended Passive Mode (|||6446|)
-            if ((a != NULL)
-                && (*a == '(')
-                && (*(a + 1))
-                && (*(a + 1) == *(a + 2)) && (*(a + 1) == *(a + 3))
-                && (isdigit(*(a + 4)))
-                && (*(a + 5))
-              ) {
-              unsigned int n1 = 0;
-
-              if (sscanf(a + 4, "%d", &n1) == 1) {
-                if ((n1 < 65535) && (n1 > 0)) {
-                  port_pasv = n1;
-                }
-              }
-            } else {
+            // e.g. 229 Entering Extended Passive Mode (|||6446|)
+            if (!ftp_parse_epsv(line, &port_pasv)) {
               htsblk_failf(&back->r, "EPSV incorrect: %s", linejmp(line));
               back->r.statuscode = STATUSCODE_INVALID;
             }
@@ -777,17 +1001,12 @@ int run_launch_ftp(FTPDownloadStruct * pStruct) {
               get_ftp_line(back, soc_ctl, line, sizeof(line), timeout, opt);
               _CHECK_HALT_FTP;
               if (line[0] == '2') {     // SIZE compris, ALORS tester REST (sinon pas tester: cf probleme des txt.gz decompresses a la volee)
-                char *szstr = strchr(line, ' ');
+                LLint size;
                 time_t remote_mtime = (time_t) -1;
                 struct tm remote_tm;
 
-                if (szstr) {
-                  LLint size = 0;
-
-                  szstr++;
-                  if (sscanf(szstr, LLintP, &size) == 1) {
-                    back->r.totalsize = size;
-                  }
+                if (ftp_parse_size(line, &size)) {
+                  hts_store_relaxed_llint(&back->r.totalsize, size);
                 }
 
                 // MDTM?
@@ -807,7 +1026,10 @@ int run_launch_ftp(FTPDownloadStruct * pStruct) {
                     strlncatbuff(back->r.lastmodified, date,
                                  sizeof(back->r.lastmodified),
                                  sizeof(back->r.lastmodified) - 1);
-                    remote_mtime = timegm(&remote_tm);
+                    // a clipped date cannot prove the copy matches
+                    if (!hts_time_exact(hts_utc_seconds(&remote_tm),
+                                        &remote_mtime))
+                      remote_mtime = (time_t) -1;
                   }
                 }
 
@@ -865,7 +1087,8 @@ int run_launch_ftp(FTPDownloadStruct * pStruct) {
 #endif
           if (resolved) {
             // socket
-            soc_dat = (T_SOC) socket(SOCaddr_sinfamily(server), SOCK_STREAM, 0);
+            soc_dat =
+                hts_socket_client(SOCaddr_sinfamily(server), opt, HTS_FALSE);
             if (soc_dat != INVALID_SOCKET) {
               // structure: connexion au domaine internet, port 80 (ou autre)
               SOCaddr_initport(server, port_pasv);
@@ -958,7 +1181,7 @@ int run_launch_ftp(FTPDownloadStruct * pStruct) {
                         0);
             /* The bytes already on disk count too, or the completeness check
                below rejects every resumed transfer (#798). */
-            back->r.size = back->range_req_size;
+            hts_store_relaxed_llint(&back->r.size, back->range_req_size);
             back->r.fp = fileappend(&opt->state.strc, back->url_sav);
           } else {
             file_notify(opt, back->url_adr, back->url_fil, back->url_sav, 1, 1,
@@ -997,8 +1220,9 @@ int run_launch_ftp(FTPDownloadStruct * pStruct) {
               if (len) {
                 len = recv(soc_dat, buff, read_len, 0);
                 if (len > 0) {
-                  back->r.size += len;
-                  HTS_STAT.HTS_TOTAL_RECV += len;
+                  /* This worker is the only writer, so its read is safe. */
+                  hts_store_relaxed_llint(&back->r.size, back->r.size + len);
+                  hts_stat_recv_add(len);
                   if (back->r.fp) {
                     if (!hts_fwrite_exact(buff, (size_t) len, back->r.fp)) {
                       /*
@@ -1071,7 +1295,7 @@ int run_launch_ftp(FTPDownloadStruct * pStruct) {
     send_line(soc_ctl, "QUIT"); // bye bye
     /* A stopped mirror skips the second --timeout window this courtesy reply
        costs on a silent server; its text is discarded anyway (#1096). */
-    if (!opt->state.stop)
+    if (!hts_load_acquire_int(&opt->state.stop))
       get_ftp_line(back, soc_ctl, NULL, 0, timeout, opt);
 #ifdef _WIN32
     closesocket(soc_ctl);
@@ -1194,7 +1418,12 @@ int send_line(T_SOC soc, const char *data) {
 
   if (_DEBUG_HEAD) {
     if (ioinfo) {
-      fprintf(ioinfo, "---> %s\x0d\x0a", data);
+      if (strncmp(data, "PASS ", 5) == 0) {
+        fprintf(ioinfo, "---> PASS ");
+        fprint_redacted(ioinfo, strlen(data + 5));
+        fprintf(ioinfo, "\x0d\x0a");
+      } else
+        fprintf(ioinfo, "---> %s\x0d\x0a", data);
       fflush(ioinfo);
     }
   }
@@ -1218,15 +1447,15 @@ int send_line(T_SOC soc, const char *data) {
   }
 #if FTP_DEBUG
   {
-    int r =
-        (send(soc, line, strlen(line), HTS_MSG_NOSIGNAL) == (int) strlen(line));
+    int r = (hts_send_nosignal(soc, line, (int) strlen(line)) ==
+             (int) strlen(line));
 
     printf("%s\x0d\x0a", data);
     fflush(stdout);
     return r;
   }
 #else
-  return (send(soc, line, (int) strlen(line), HTS_MSG_NOSIGNAL) ==
+  return (hts_send_nosignal(soc, line, (int) strlen(line)) ==
           (int) strlen(line));
 #endif
 }
@@ -1263,7 +1492,7 @@ int get_ftp_line(lien_back *back, T_SOC soc, char *ptrline, size_t line_size,
 
     switch (recv(soc, &b, 1, 0)) {
     case 1:
-      HTS_STAT.HTS_TOTAL_RECV += 1;     // compter flux entrant
+      hts_stat_recv_add(1); // compter flux entrant
       if ((b != 10) && (b != 13) && (i < (int) sizeof(data) - 1))
         data[i++] = b; // truncate hostile over-long reply lines
       break;
@@ -1373,7 +1602,8 @@ int wait_socket_receive(lien_back *back, T_SOC soc, int timeout,
 #endif
   /* A stop raised by the engine ends the wait on the next 100ms tick instead of
      after the full timeout, so teardown does not sit on a silent server. */
-  while ((!(r = check_socket(soc))) && (back == NULL || !back->stop_ftp) &&
+  while ((!(r = check_socket(soc))) &&
+         (back == NULL || !hts_load_acquire_int(&back->stop_ftp)) &&
          (((int) ((TStamp) (time_local() - ltime))) < timeout)) {
     Sleep(100);
 #if FTP_DEBUG
@@ -1390,7 +1620,7 @@ int wait_socket_receive(lien_back *back, T_SOC soc, int timeout,
 
 // cancel reçu?
 int stop_ftp(lien_back * back) {
-  if (back->stop_ftp) {
+  if (hts_load_acquire_int(&back->stop_ftp)) {
     strcpybuff(back->r.msg, "Cancelled by User");
     back->r.statuscode = STATUSCODE_INVALID;
     return 1;
