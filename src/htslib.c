@@ -5671,9 +5671,8 @@ static int hts_dns_resolve_nocache_list(const char *const hostname,
   }
 }
 
-HTSEXT_API SOCaddr *hts_dns_resolve_nocache2(const char *const hostname,
-                                             SOCaddr *const addr,
-                                             const char **error) {
+SOCaddr *hts_dns_resolve_nocache2(const char *const hostname,
+                                  SOCaddr *const addr, const char **error) {
   SOCaddr_clear(*addr);
   if (hts_dns_resolve_nocache_list(hostname, addr, 1, error, NULL) > 0) {
     return SOCaddr_is_valid(*addr) ? addr : NULL;
@@ -5681,11 +5680,12 @@ HTSEXT_API SOCaddr *hts_dns_resolve_nocache2(const char *const hostname,
   return NULL;
 }
 
-HTSEXT_API SOCaddr* hts_dns_resolve_nocache(const char *const hostname, SOCaddr *const addr) {
+SOCaddr *hts_dns_resolve_nocache(const char *const hostname,
+                                 SOCaddr *const addr) {
   return hts_dns_resolve_nocache2(hostname, addr, NULL);
 }
 
-HTSEXT_API int check_hostname_dns(const char *const hostname) {
+int check_hostname_dns(const char *const hostname) {
   SOCaddr buffer;
   return hts_dns_resolve_nocache(hostname, &buffer) != NULL;
 }
@@ -6389,7 +6389,7 @@ HTSEXT_API int hts_uninit(void) {
   return 1;
 }
 
-HTSEXT_API int hts_uninit_module(void) {
+int hts_uninit_module(void) {
   if (!hts_init_ok)
     return 1;
   htsthread_uninit();
@@ -6684,6 +6684,7 @@ HTSEXT_API httrackp *hts_create_opt(void) {
   opt->links_unqueued = HTS_FALSE;
   opt->mirror_completed = HTS_DEFAULT;
   opt->transport_failures = 0;
+  opt->upper_links_refused = 0;
   opt->abort_left_partial = HTS_FALSE;
   StringCopy(opt->why_url, "");
   opt->pause_min_ms = 0;

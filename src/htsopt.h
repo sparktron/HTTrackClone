@@ -605,9 +605,17 @@ struct httrackp {
                                        published as stat_transport_failures.
                                        Live state, so copy_htsopt must leave it
                                        alone. Tail: ABI */
-  hts_boolean ssl_insecure;       /**< -%V0 / --insecure: do not verify https
-                                       certificates. Fork-only (upstream never
-                                       verifies). Tail: ABI */
+  hts_boolean upper_links_refused; /**< a link was refused for sitting above
+                                        the start directory, reported once at
+                                        the end so -B is discoverable. Live
+                                        state, so copy_htsopt must leave it
+                                        alone. Tail: ABI */
+  hts_boolean ssl_insecure;        /**< -%V0 / --insecure: do not verify
+                                        https certificates. Fork-only
+                                        (upstream never verifies), so it
+                                        stays the last member and every
+                                        upstream field keeps upstream's
+                                        offset; 904 checks this. Tail: ABI */
 };
 
 /* Running statistics for a mirror. */

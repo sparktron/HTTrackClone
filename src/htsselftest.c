@@ -2261,7 +2261,13 @@ static int st_ucs4_oom(httrackp *opt, int argc, char **argv) {
   (void) opt;
   (void) argc;
   (void) argv;
-#ifndef _WIN32
+#if defined(__GNU__)
+  /* GNU/Hurd does not come back from a starved process. The run dies on
+     SIGSEGV before the abort it grades, and the assert's own message never
+     reaches stderr. */
+  printf("ucs4: a capped process does not survive here, skipped\n");
+  return 0;
+#elif !defined(_WIN32)
   {
     enum { units = 512 * 1024 };
 
@@ -2682,6 +2688,43 @@ static int st_transportfailures(httrackp *opt, int argc, char **argv) {
   hts_free_opt(from);
   hts_free_opt(to);
   printf("transport-failures: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+/* The note is built twice from one buffer, so a caller reusing it must never
+   read the previous mirror's text back out of a silent run. */
+static int st_upperlinksnote(httrackp *opt, int argc, char **argv) {
+  httrackp *from = hts_create_opt();
+  httrackp *to = hts_create_opt();
+  char note[256];
+  int err = 0;
+
+  (void) opt;
+  (void) argc;
+  (void) argv;
+
+  strcpybuff(note, "stale");
+  if (hts_upper_links_note(to, note, sizeof(note)) || note[0] != '\0')
+    err = 1; /* a fresh opt refused nothing, and must empty the buffer */
+
+  to->upper_links_refused = HTS_TRUE;
+  if (!hts_upper_links_note(to, note, sizeof(note)) ||
+      strstr(note, "-B") == NULL)
+    err = 1; /* the note must name the option that lifts the refusal */
+
+  to->upper_links_refused = HTS_FALSE;
+  if (hts_upper_links_note(to, note, sizeof(note)) || note[0] != '\0')
+    err = 1;
+
+  /* the flag never travels onto another opt */
+  from->upper_links_refused = HTS_TRUE;
+  copy_htsopt(from, to);
+  if (to->upper_links_refused)
+    err = 1;
+
+  hts_free_opt(from);
+  hts_free_opt(to);
+  printf("upper-links-note: %s\n", err ? "FAIL" : "OK");
   return err;
 }
 
@@ -7399,6 +7442,12 @@ static int st_jsscan(httrackp *opt, int argc, char **argv) {
       opt, (argc > 0 && strcmp(argv[0], "dump") == 0) ? HTS_TRUE : HTS_FALSE);
 }
 
+static int st_jsimport(httrackp *opt, int argc, char **argv) {
+  (void) argc;
+  (void) argv;
+  return parse_selftest_jsimport(opt);
+}
+
 static int st_tagattr(httrackp *opt, int argc, char **argv) {
   (void) argc;
   (void) argv;
@@ -9888,14 +9937,15 @@ static int st_socketpair(T_SOC sv[2]) {
 }
 
 #ifndef _WIN32
-/* Drop the peer so the next write gets EPIPE: SO_LINGER with a zero timeout
-   sends RST rather than FIN. */
+/* Drop the peer so a write gets EPIPE, because SO_LINGER with a zero timeout
+   asks for a RST rather than a FIN. GNU/Hurd's pfinet sends a FIN anyway. */
 static void st_kill_peer(T_SOC soc) {
   struct linger lg;
 
   lg.l_onoff = 1;
   lg.l_linger = 0;
-  /* Checked, because a plain FIN would leave the next write succeeding. */
+  /* Checked, so a host that refuses the option says so here rather than
+     through the writes further down. */
   assertf(setsockopt(soc, SOL_SOCKET, SO_LINGER, (const char *) &lg,
                      sizeof(lg)) == 0);
   deletesoc(soc);
@@ -9909,7 +9959,8 @@ static int st_sigpipe(httrackp *opt, int argc, char **argv) {
   T_SOC sv[2];
   htsblk r;
   char discard[1];
-  int i;
+  hts_boolean fin_only;
+  int i, n;
 
   (void) opt;
   (void) argc;
@@ -9917,7 +9968,7 @@ static int st_sigpipe(httrackp *opt, int argc, char **argv) {
   inherited = signal(SIGPIPE, SIG_DFL);
   assertf(inherited != SIG_ERR);
 
-  /* The write path: sendc() to a peer that sent RST must report the failure
+  /* The write path: sendc() to a peer that is gone must report the failure
      rather than end the process. */
   assertf(st_socketpair(sv) == 0);
   st_kill_peer(sv[0]);
@@ -9926,12 +9977,22 @@ static int st_sigpipe(httrackp *opt, int argc, char **argv) {
   /* What newhttp_addr does to a real one. On macOS this is the whole cover,
      because HTS_MSG_NOSIGNAL is 0 there. */
   socket_set_nosigpipe(sv[1]);
-  /* Wait for the RST, rather than assume a write count outlasts it: Darwin
-     hands loopback input to another thread. The read takes the ECONNRESET,
-     so the writes below meet EPIPE. */
+  /* Wait for the peer to be gone rather than assume a write count outlasts it,
+     because Darwin hands loopback input to another thread. Nothing was ever
+     sent on this socket, so the read takes the reset, or the end of file. */
   assertf(check_readinput_t(sv[1], 10) == 1);
-  assertf(recv(sv[1], discard, sizeof(discard), 0) == -1);
-  /* Twice, so a platform that re-reports ECONNRESET still owes EPIPE. */
+  n = (int) recv(sv[1], discard, sizeof(discard), 0);
+  assertf(n <= 0);
+  fin_only = n == 0 ? HTS_TRUE : HTS_FALSE;
+  /* A FIN leaves this half of the connection open, so a write still succeeds
+     and only the peer's answer to it breaks the pipe. Paced, because that
+     answer and these writes race the way #1711 raced on Darwin. */
+  for (i = 0; fin_only && i < 100 && sendc(&r, "GET / HTTP/1.0\r\n\r\n") >= 0;
+       i++)
+    Sleep(100);
+  assertf(!fin_only || i < 100);
+  /* Twice, and both of them where the peer was reset, because a platform that
+     re-reports ECONNRESET still owes EPIPE. */
   for (i = 0; i < 2; i++)
     assertf(sendc(&r, "GET / HTTP/1.0\r\n\r\n") < 0);
   deletesoc(sv[1]);
@@ -16463,6 +16524,10 @@ static const struct selftest_entry {
      "does a script statement hand a URL to .src, .location, .open, url() and "
      "friends? sweeps the shapes against a model",
      st_jsscan},
+    {"jsimport", "",
+     "is a quoted string the operand of a dynamic import(), whose base is the "
+     "script and not the page?",
+     st_jsimport},
     {"tagattr", "",
      "may the dirty parser read this in-tag quoted value? resolves the owning "
      "attribute and refuses the names that carry no link",
@@ -16581,6 +16646,9 @@ static const struct selftest_entry {
     {"transportfailures", "",
      "a failed transfer is counted apart from an answered error",
      st_transportfailures},
+    {"upperlinksnote", "",
+     "the above-the-start-directory note empties its buffer when silent",
+     st_upperlinksnote},
     {"cachedefault", "", "-C default is C1 cache-priority, not C2",
      st_cachedefault},
     {"lastchar", "",

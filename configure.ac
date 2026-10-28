@@ -32,21 +32,28 @@ dnl src/Makefile.am compiles coucal/coucal.c directly. Without it configure
 dnl succeeds and the failure only surfaces as a missing make target, which
 dnl reads like a broken build system rather than an uninitialized checkout.
 AC_MSG_CHECKING([for the coucal submodule])
-AS_IF([test -f "$srcdir/src/coucal/coucal.c"],
-	[AC_MSG_RESULT([yes])],
-	[AC_MSG_RESULT([no])
-	 AC_MSG_ERROR([src/coucal is empty -- this checkout was cloned without its
-submodules. Run:
-
-    git submodule update --init --recursive
-
-from the top of the tree and re-run configure.])])
+if test -f "$srcdir/src/coucal/coucal.c"; then
+	AC_MSG_RESULT([yes])
+else
+	AC_MSG_RESULT([no])
+	AC_MSG_ERROR([src/coucal is empty: run git submodule update --init --recursive and re-run configure.])
+fi
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_HEADERS(config.h)
 # The public half of config.h: the switches the installed headers read, in a
 # header we can install without handing a consumer our PACKAGE_* and HAVE_*.
 AC_CONFIG_HEADERS([htsfeatures.h:src/htsfeatures.h.in])
 AM_INIT_AUTOMAKE([subdir-objects])
+# 3:24:0: revision-only DESPITE an ABI break. #1713 published thirteen exports
+# in httrack-library.h, which adds no symbol. It also dropped HTSEXT_API from
+# six calls only the library itself makes, so check_hostname_dns,
+# hts_dns_resolve_nocache, hts_dns_resolve_nocache2, hts_uninit_module,
+# htsthread_init and htsthread_uninit leave libhttrack.so.3. The libtool rules
+# want current++ and a libhttrack4 rename, declined as at 3:7:0. Every earlier
+# decline here moved a layout, which only bites a client that rebuilds. A
+# removed symbol also reaches one that never rebuilds, and that one fails at
+# load with a symbol lookup error. Accepted because HTTraQt is the only consumer
+# of the installed headers, and it is rebuilt.
 # 3:23:0: revision-only bump. httrackp gained a tail field (transport_failures)
 # and hts_stat_struct one (stat_transport_failures); no export came or went, and
 # hts_set_thread_runner's declaration only moved into an installed header. HTS_STAT
@@ -96,7 +103,7 @@ AM_INIT_AUTOMAKE([subdir-objects])
 # moves nothing). Soname stays .so.3: HTTrackQt is the only consumer of the installed
 # headers, so a libhttrack4 rename isn't worth it.
 # (3:0:0 was the htsblk mime-buffer widening, the ABI break that moved .so.2 -> .so.3.)
-VERSION_INFO="3:23:0"
+VERSION_INFO="3:24:0"
 AM_MAINTAINER_MODE
 AC_USE_SYSTEM_EXTENSIONS
 
@@ -229,6 +236,10 @@ AX_CHECK_COMPILE_FLAG([-fstack-protector-strong], [DEFAULT_CFLAGS="$DEFAULT_CFLA
 	[AX_CHECK_COMPILE_FLAG([-fstack-protector], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -fstack-protector"], [], [-Werror])], [-Werror])
 AX_CHECK_COMPILE_FLAG([-fstack-clash-protection], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -fstack-clash-protection"], [], [-Werror])
 AX_CHECK_COMPILE_FLAG([-fcf-protection], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -fcf-protection"], [], [-Werror])
+# -fcf-protection is x86-only, so arm64 needs its own flag to get any at all.
+# Do not pair this with an -march bump: from armv8.3-a the compiler folds the
+# return into retaa, which faults on an ARMv8.0 core where paciasp is a NOP.
+AX_CHECK_COMPILE_FLAG([-mbranch-protection=standard], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -mbranch-protection=standard"], [], [-Werror])
 # backtrace() unwinds through these; armhf, unlike amd64/arm64, defaults them off
 # and printed frameless crash reports.
 AX_CHECK_COMPILE_FLAG([-fasynchronous-unwind-tables], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -fasynchronous-unwind-tables"], [], [-Werror])

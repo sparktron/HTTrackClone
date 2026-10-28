@@ -43,10 +43,13 @@ env:
     -Wno-unused-function
     -Wno-unused-value
 
+# Every job runs on ubuntu-24.04, as upstream's do. ubuntu-latest moved to
+# 26.04, whose static libcrypto needs a libjitterentropy.a the image lacks, so
+# 222_pkgconfig-consumer's static link failed there. Move deliberately.
 jobs:
   build:
     name: build (${{ matrix.cc }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -92,7 +95,7 @@ jobs:
   # static-only build fails the tests that install or dlopen shared objects.
   sanitizers:
     name: asan+ubsan (gcc)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -133,7 +136,7 @@ jobs:
   # Replays upstream's corpora and smoke-runs the fork's own four harnesses.
   fuzz:
     name: fuzz (clang, asan+ubsan)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -171,7 +174,7 @@ jobs:
 
   analyze:
     name: clang static analyzer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -204,7 +207,7 @@ jobs:
 
   sbom:
     name: SBOM and third-party notices
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
