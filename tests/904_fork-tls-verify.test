@@ -11,6 +11,22 @@ set -euo pipefail
 
 : "${top_srcdir:=..}"
 
+# ssl_insecure must stay the last member of httrackp, so every upstream field
+# keeps the offset upstream's installed htsopt.h gives it. A merge puts a newly
+# appended upstream field after it; a size or offset assert cannot see one that
+# lands in the tail padding, so read the declaration order itself.
+last=$(awk '/^struct httrackp \{/ { f = 1; next }
+    f && /^};/ { exit }
+    f && /^  [A-Za-z_][A-Za-z0-9_ ]*[ *]+[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])*;/ { l = $0 }
+    END { print l }' "$top_srcdir/src/htsopt.h")
+case $last in
+"  hts_boolean ssl_insecure;"*) ;;
+*)
+    echo "httrackp no longer ends with ssl_insecure; last member: $last"
+    exit 1
+    ;;
+esac
+
 if test "${HTTPS_SUPPORT:-}" == "no"; then
     echo "no https support compiled, skipping"
     exit 77
