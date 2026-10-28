@@ -5,7 +5,8 @@
 # 14_local-https.test already proves a trusted certificate is accepted. This
 # test proves the other side: an untrusted certificate is refused, the refusal
 # is logged as a certificate failure, and -%V0 / --insecure bring back the old
-# accept-anything behaviour.
+# accept-anything behaviour. It also pins the name check: a trusted certificate
+# that names another host or address is refused, directly and over SOCKS.
 
 set -euo pipefail
 
@@ -32,32 +33,182 @@ if test "${HTTPS_SUPPORT:-}" == "no"; then
     exit 77
 fi
 
+# shellcheck source=tests/crawllib.sh
+. "${0%"${0##*/}"}./crawllib.sh"
+
 work=$(mktemp -d) || exit 1
-trap 'set +e; rm -rf "$work"' EXIT
+cleanup_push rm -rf "$work"
 # An empty trust store: the test server's self-signed certificate is unknown.
+# SSL_CERT_FILE alone only replaces the default CA file; the default CA
+# directory (/etc/ssl/certs on Debian) would still load, so empty both.
 : >"$work/empty-ca.pem"
+mkdir "$work/empty-ca.d"
+empty_store=(SSL_CERT_FILE="$work/empty-ca.pem" SSL_CERT_DIR="$work/empty-ca.d")
+# A crawl that trusts only the test certificate (SAN IP:127.0.0.1,
+# DNS:localhost), whatever the suite or the host trusts. Assignments, not
+# env(1), which cannot run a function; and no subshell, so a watchdog fail()
+# in local_crawl still ends the test.
+test_crawl() {
+    SSL_CERT_FILE="$testdir/server.crt" SSL_CERT_DIR="$work/empty-ca.d" \
+        local_crawl "$@"
+}
 
 # Untrusted: nothing is mirrored, and the log names the certificate check.
 # -R0: no retries, so one refused handshake logs exactly two errors (the check
 # that failed, then the link given up on).
-SSL_CERT_FILE="$work/empty-ca.pem" \
+env "${empty_store[@]}" \
     bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 2 --not-found 'simple/basic.html' \
     --log-found 'TLS certificate check failed for .*self.signed' \
     httrack 'BASEURL/simple/basic.html' -R0
 
 # Same untrusted store, verification turned off: the old behaviour.
-SSL_CERT_FILE="$work/empty-ca.pem" \
+env "${empty_store[@]}" \
     bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 0 --files 5 \
     --found 'simple/basic.html' \
     --log-not-found 'TLS certificate check failed' \
     httrack 'BASEURL/simple/basic.html' '-%V0'
 
-SSL_CERT_FILE="$work/empty-ca.pem" \
+env "${empty_store[@]}" \
     bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 0 --files 5 \
     --found 'simple/basic.html' \
     httrack 'BASEURL/simple/basic.html' --insecure
 
 # -%V0 must not survive an explicit -%V after it.
-SSL_CERT_FILE="$work/empty-ca.pem" \
+env "${empty_store[@]}" \
     bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 2 --not-found 'simple/basic.html' \
+    --log-found 'TLS certificate check failed for .*self.signed' \
     httrack 'BASEURL/simple/basic.html' -R0 '-%V0' '-%V'
+
+python=$(find_python) || skip "python3 not found"
+
+# assert_refused OUT MARKER REASON: the crawl in OUT wrote no file carrying
+# MARKER, and its log names a certificate refusal matching the ERE REASON.
+assert_refused() {
+    local out=$1 marker=$2 reason=$3 log
+    test -f "$out/hts-log.txt" || fail "no hts-log.txt in $out"
+    log=$(<"$out/hts-log.txt")
+    if grep -rqa --exclude-dir=hts-cache --exclude=hts-log.txt -- "$marker" "$out"; then
+        fail_dump "a refused host was mirrored ($marker)" "$out/hts-log.txt"
+    fi
+    grep -qE "TLS certificate check failed .*${reason}" <<<"$log" ||
+        fail_dump "no certificate refusal matching /$reason/" "$out/hts-log.txt"
+}
+
+# --- trusted chain, wrong name, through a SOCKS proxy -------------------------
+# 52_local-socks5's origin serves the test certificate as socks-origin.invalid,
+# a name it does not carry. The proxy resolves the name, so this also proves
+# the check runs on a tunneled connection, against the origin's name.
+make_tls_pem "$work"
+socks="$work/socks"
+mkdir "$socks"
+"$python" "$(nativepath "$testdir/socks5-server.py")" "$(nativepath "$work/both.pem")" \
+    "$(nativepath "$socks")" ok >"$socks/ports.txt" 2>"$socks/server.err" &
+cleanup_push stop_server "$!"
+# shellcheck disable=SC2016 # wait_until evals it
+wait_until 'grep -q "^ready" "$socks/ports.txt" 2>/dev/null' "socks5-server.py did not start"
+tls_port=$(awk '/^TLS/ { print $2 }' "$socks/ports.txt")
+socks_port=$(awk '/^SOCKS/ { print $2 }' "$socks/ports.txt")
+
+test_crawl --log "$socks/crawl.log" -- \
+    "https://socks-origin.invalid:${tls_port}/" \
+    --proxy "socks5://127.0.0.1:${socks_port}" -O "$socks/out" -r1 -s0 -R0 || true
+assert_refused "$socks/out" ORIGIN-PAGE-563 '[Hh]ostname mismatch'
+# The tunnel was up: the refusal is the certificate's, not the proxy's.
+grep -q "^ATYP domain socks-origin.invalid\$" "$socks/socks.log" ||
+    fail_dump "the proxy never saw the CONNECT" "$socks/socks.log"
+# The handshake failed before any request reached the origin.
+if test -s "$socks/origin-headers.log"; then
+    fail_dump "a request reached the origin past a refused certificate" \
+        "$socks/origin-headers.log"
+fi
+ok "a trusted certificate for another name is refused over SOCKS"
+
+# --- trusted chain, wrong address ---------------------------------------------
+# The test certificate names 127.0.0.1, and Linux routes all of 127/8 to the
+# loopback: the suite's own server bound to 127.0.0.2 serves a trusted chain
+# for an address it does not name. Hosts that only configure 127.0.0.1 (macOS)
+# skip this case.
+addr_cases=0
+if "$python" -c 'import socket; socket.socket().bind(("127.0.0.2", 0))' 2>/dev/null; then
+    addr="$work/addr"
+    mkdir "$addr"
+    local_server_start --tls --log "$addr/server.log" -- --bind 127.0.0.2
+    # Control: the server answers on 127.0.0.2, so a refusal below is the check.
+    test_crawl --log "$addr/ok.log" -- "https://127.0.0.2:${SRV_PORT}/simple/basic.html" \
+        -O "$addr/ok" -R0 '-%V0' || true
+    grep -rqa --exclude-dir=hts-cache 'Sample test' "$addr/ok" ||
+        fail_dump "-%V0 did not mirror 127.0.0.2" "$addr/ok/hts-log.txt" "$addr/ok.log"
+
+    test_crawl --log "$addr/no.log" -- "https://127.0.0.2:${SRV_PORT}/simple/basic.html" \
+        -O "$addr/no" -R0 || true
+    assert_refused "$addr/no" 'Sample test' 'IP address mismatch'
+    ok "a trusted certificate that does not name the IPv4 address is refused"
+    addr_cases=$((addr_cases + 1))
+fi
+
+# The same over IPv6: the certificate does not name ::1. local-server.py binds
+# IPv4 only, hence this small server.
+cat >"$work/v6-server.py" <<'PY'
+import http.server
+import socket
+import socketserver
+import ssl
+import sys
+
+
+class Server(http.server.ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+    daemon_threads = True
+
+    # no getfqdn() reverse lookup (#870)
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+
+
+class Page(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"<html><body>FORK-V6-PAGE</body></html>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+try:
+    srv = Server(("::1", 0), Page)
+except OSError as e:
+    print("NOV6", e, flush=True)
+    sys.exit(0)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain(certfile=sys.argv[1], keyfile=sys.argv[2])
+srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+print("PORT", srv.socket.getsockname()[1], flush=True)
+srv.serve_forever()
+PY
+v6="$work/v6"
+mkdir "$v6"
+"$python" "$(nativepath "$work/v6-server.py")" "$(nativepath "$testdir/server.crt")" \
+    "$(nativepath "$testdir/server.key")" >"$v6/server.log" 2>&1 </dev/null &
+v6pid=$!
+cleanup_push stop_server "$v6pid"
+if v6port=$(discover_server_port "$v6/server.log" "$v6pid" 2>/dev/null); then
+    test_crawl --log "$v6/ok.log" -- "https://[::1]:${v6port}/" -O "$v6/ok" -s0 -R0 '-%V0' || true
+    grep -rqa --exclude-dir=hts-cache FORK-V6-PAGE "$v6/ok" ||
+        fail_dump "-%V0 did not mirror the IPv6 server" "$v6/ok/hts-log.txt" "$v6/ok.log"
+
+    test_crawl --log "$v6/no.log" -- "https://[::1]:${v6port}/" -O "$v6/no" -s0 -R0 || true
+    assert_refused "$v6/no" FORK-V6-PAGE 'IP address mismatch'
+    ok "a trusted certificate that does not name the IPv6 address is refused"
+    addr_cases=$((addr_cases + 1))
+elif grep -q '^NOV6' "$v6/server.log"; then
+    echo "no IPv6 loopback, IPv6 address case not run: $(<"$v6/server.log")"
+else
+    fail_dump "IPv6 test server did not start" "$v6/server.log"
+fi
+
+# Neither address case could run: the address check went untested.
+test "$addr_cases" -gt 0 || skip "neither 127.0.0.2 nor ::1 is usable here"
