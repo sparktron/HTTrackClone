@@ -3171,6 +3171,18 @@ int htsparse(htsmoduleStruct * str, htsmoduleStructExtended * stre) {
 
                       if (lienrelatif(tempo, sizeof(tempo), afs.save,
                                       relativesavename()) == 0) {
+                        /* Fork-only: lienrelatif() spells a sibling "chunk.js",
+                           which a module specifier reads as a bare package
+                           name, not a path: a browser refuses to load it.
+                           Give it the "./" a module path needs. */
+                        if (module_base && tempo[0] != '\0' &&
+                            tempo[0] != '/' && strncmp(tempo, "./", 2) != 0 &&
+                            strncmp(tempo, "../", 3) != 0 &&
+                            strlen(tempo) < sizeof(tempo) - 2) {
+                          memmove(tempo + 2, tempo, strlen(tempo) + 1);
+                          tempo[0] = '.';
+                          tempo[1] = '/';
+                        }
                         if (!in_media) {        // In media (such as real audio): don't patch
                           /* Never escape high-chars (we don't know the encoding!!) */
                           inplace_escape_uri_utf(tempo, sizeof(tempo));

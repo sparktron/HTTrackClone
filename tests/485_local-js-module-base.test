@@ -17,7 +17,7 @@ work=$(mktemp -d)
 trap 'set +e; rm -rf "$work"' EXIT
 
 root="$work/root"
-mkdir -p "$root/assets/img" "$root/img"
+mkdir -p "$root/assets/img" "$root/img" "$root/lib"
 
 cat >"$root/index.html" <<'EOF'
 <!DOCTYPE html><html><head><title>t</title></head><body>
@@ -29,6 +29,10 @@ EOF
 
 printf 'import("./chunk.js").then(function(m){document.title=m.v;});\n' >"$root/assets/app.js"
 printf 'export const v = "chunk";\n' >"$root/assets/chunk.js"
+# Fork-only: a path back into the script's own directory, and one that leaves it.
+printf 'import("../assets/other.js");\nimport("../lib/up.js");\n' >>"$root/assets/app.js"
+printf 'export const o = 1;\n' >"$root/assets/other.js"
+printf 'export const u = 1;\n' >"$root/lib/up.js"
 printf 'import "./dep.js";\n' >"$root/assets/mod.js"
 printf 'export const d = 1;\n' >"$root/assets/dep.js"
 printf 'document.write(%s<img src="img/x.png">%s);\n' "'" "'" >"$root/assets/legacy.js"
@@ -41,6 +45,8 @@ common=(
     --errors 0
     --found assets/chunk.js
     --found assets/dep.js
+    --found assets/other.js
+    --found lib/up.js
     --found img/x.png
     --not-found assets/img/x.png
 )
@@ -50,14 +56,22 @@ common=(
 # fetch but not the rewrite writes "assets/chunk.js" here and lands nowhere.
 # The legacy.js line is the other half: an ordinary reference in a script keeps
 # the page base when it is rewritten, not only when it is fetched.
+# Fork-only: a module specifier must start with ./ or ../, or a browser reads
+# "chunk.js" as a bare package name and refuses it, so the rewrite keeps the
+# ./ that lienrelatif() leaves off a sibling. "../lib/up.js" already has its
+# prefix and must not gain a second, and legacy.js, not a module, must stay
+# as it was.
 bash "$top_srcdir/tests/local-crawl.sh" --root "$root" "${common[@]}" \
-    --file-matches 'assets/app.js' 'import\("chunk\.js"\)' \
-    --file-matches 'assets/mod.js' 'import "dep\.js"' \
+    --file-matches 'assets/app.js' 'import\("\./chunk\.js"\)' \
+    --file-matches 'assets/app.js' 'import\("\./other\.js"\)' \
+    --file-matches 'assets/app.js' 'import\("\.\./lib/up\.js"\)' \
+    --file-matches 'assets/mod.js' 'import "\./dep\.js"' \
     --file-matches 'assets/legacy.js' 'src="img/x\.png"' \
     httrack BASEURL/index.html -q -%v0 -r4
 
 # -K4 keeps the original URLs, so the specifiers must come back untouched.
 bash "$top_srcdir/tests/local-crawl.sh" --root "$root" "${common[@]}" \
     --file-matches 'assets/app.js' 'import\("\./chunk\.js"\)' \
+    --file-matches 'assets/app.js' 'import\("\.\./assets/other\.js"\)' \
     --file-matches 'assets/mod.js' 'import "\./dep\.js"' \
     httrack BASEURL/index.html -q -%v0 -r4 -K4
