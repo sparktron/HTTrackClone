@@ -8,7 +8,10 @@ HelpHtmlfontsdir = $(HelpHtmldir)/fonts
 # The served UI is runtime, not documentation, so it installs under $(datadir):
 # every packaging system treats $(docdir) as strippable.
 WebHtmldir = $(datadir)/httrack/html/server
+# The UI loads ../palette.css, so a second copy installs beside server/.
+WebHtmlrootdir = $(datadir)/httrack/html
 WebHtmlimagesdir = $(WebHtmldir)/images
+WebHtmlModernThemedir = $(WebHtmldir)/themes/modern
 WebPixmapdir = $(datadir)/pixmaps
 WebIcon16x16dir = $(datadir)/icons/hicolor/16x16/apps
 WebIcon32x32dir = $(datadir)/icons/hicolor/32x32/apps
@@ -25,15 +28,17 @@ MetaInfodir = $(datadir)/metainfo
 # Explicit filenames (e.g. ../history.txt, div/search.sh) resolve via VPATH and
 # need no prefix.
 # They install into $(docdir), one level above the pages that link to them.
-HelpHtmlroot_DATA = ../httrack-doc.html ../history.txt ../greetings.txt ../license.txt
+HelpHtmlroot_DATA = ../httrack-doc.html ../history.txt ../greetings.txt ../license.txt ../license-psl.txt
 HelpHtml_DATA = $(srcdir)/*.html $(srcdir)/*.js $(srcdir)/*.css
 HelpHtmldiv_DATA = div/search.sh
 HelpHtmlimg_DATA  = $(srcdir)/img/*
 HelpHtmlimages_DATA = $(srcdir)/images/*
 # doc.css reaches the woff2 by a relative URL, so it installs beside the pages.
 HelpHtmlfonts_DATA = $(srcdir)/fonts/*
+WebHtmlroot_DATA = $(srcdir)/palette.css
 WebHtml_DATA = $(srcdir)/server/*.html $(srcdir)/server/*.js $(srcdir)/server/*.css
 WebHtmlimages_DATA = $(srcdir)/server/images/*
+WebHtmlModernTheme_DATA = $(srcdir)/server/themes/modern/theme.css
 # Generated from the brand master by gen/export.py. Asserted by tests/160.
 # httrack.xpm duplicates the 32x32 one under the bare basename the .desktop
 # Icon= key falls back to here when no icon theme is installed (#932).
@@ -50,7 +55,7 @@ MetaInfo_DATA = $(srcdir)/server/div/*.metainfo.xml
 
 EXTRA_DIST = $(HelpHtml_DATA) $(HelpHtmlimg_DATA) $(HelpHtmlimages_DATA) \
 	$(HelpHtmlfonts_DATA) \
-	$(HelpHtmldiv_DATA) $(WebHtml_DATA) $(WebHtmlimages_DATA) \
+	$(HelpHtmldiv_DATA) $(WebHtml_DATA) $(WebHtmlimages_DATA) $(WebHtmlModernTheme_DATA) \
 	$(WebPixmap_DATA) $(WebIcon16x16_DATA) $(WebIcon32x32_DATA) $(WebIcon48x48_DATA) \
 	$(WebIcon64x64_DATA) $(WebIcon128x128_DATA) $(WebIcon256x256_DATA) \
 	$(WebIconScalable_DATA) $(VFolderEntry_DATA) $(MetaInfo_DATA)

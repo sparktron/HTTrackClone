@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Proxyprotocol. HTTP: standaardproxy. HTTP (CONNECT-tunnel): stuurt elke aanvraag via een CONNECT-tunnel, voor proxy's die alleen CONNECT ondersteunen zoals Tors HTTPTunnelPort. SOCKS5: standaardpoort 1080.
 Load cookies from file:
 Cookies uit bestand laden:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Cookies vooraf laden uit een Netscape cookies.txt-bestand voordat het crawlen begint.
 Pause between files:
 Pauze tussen bestanden:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 %s en alle onderliggende hosts uitsluiten
 Manual
 Handleiding
+Max Retry-After(s)
+Max. Retry-After (s)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Langste wachttijd die wordt opgevolgd wanneer een server een Retry-After-header stuurt. Gebruik 0 om opnieuw te proberen zonder te wachten.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+De regels die u hier instelt, gelden voor de spiegeling die nu loopt. Het verwijderen van een regel laat nieuwe links weer door, maar een link die de regel al heeft geweigerd, komt in deze spiegeling niet terug.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Dit filter kan niet worden gebruikt. Een filter begint met + of -, gevolgd door een patroon, en moet op één korte regel passen.
+Theme:
+Thema:
+Classic
+Klassiek
+Accept headers
+Accept-headers
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+De Accept-header die voor elk soort link wordt verstuurd. Automatisch verstuurt wat de gekozen browser verstuurt.
+Automatic
+Automatisch
+Old HTTrack value
+Oude HTTrack-waarde
+Default
+Standaard
+Pages
+Pagina's
+Inline frames
+Inline-frames
+Frames
+Frames
+Images
+Afbeeldingen
+Style sheets
+Stijlbladen
+Scripts
+Scripts
+Fonts
+Lettertypen
+Audio
+Audio
+Video
+Video
+Objects
+Objecten
+Embedded content
+Ingesloten inhoud
+Log in with a browser...
+Aanmelden met een browser...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Meld u in een browser aan bij de site en crawl met de cookies en de browser identiteit die hij heeft gekregen
+No Microsoft Edge WebView2 runtime is installed on this computer
+Er is geen Microsoft Edge WebView2-runtime op deze computer geïnstalleerd
+Log in with a browser
+Aanmelden met een browser
+Go
+Ga
+Done
+Klaar
+Clear login
+Afmelden
+The browser did not open: %s.
+De browser is niet geopend: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+De browser heeft geen cookies teruggegeven. Het adres en de browseridentiteit worden met het project opgeslagen wanneer de wizard is voltooid.
+Cookies collected: %d. They are used when you press OK.
+Verzamelde cookies: %d. Ze worden gebruikt als u op OK klikt.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Verzamelde cookies: %d. Ze worden met het project opgeslagen wanneer de wizard is voltooid.
+The login could not be written to %s.
+De aanmelding kon niet naar %s worden geschreven.
+%d of the browser's cookies were left out, because the engine would not read them.
+%d cookies van de browser zijn weggelaten, omdat HTTrack ze niet kon lezen.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Log in op de site in een ander tabblad van deze browser. Open de ontwikkelaarshulpmiddelen (F12) en daarna het tabblad Netwerk, laad de pagina opnieuw, klik met de rechtermuisknop op het eerste verzoek en kies Copy as cURL (bash). Plak de tekst hier. Een cookies.txt-export werkt ook, voor het eerste adres in de lijst.
+Cookies for: %s. Browser identity: %s.
+Cookies voor: %s. Browseridentiteit: %s.
+A login cannot be saved for this address, so nothing was kept.
+Voor dit adres kan geen login worden opgeslagen, dus er is niets bewaard.
+Yes
+Ja

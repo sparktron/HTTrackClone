@@ -74,6 +74,11 @@ void ftp_stop_workers(void);
 /* Run a worker's tail on a finished and on a cut-short transfer, asserting what
    the crawl thread reads back. Returns the number of failed checks. */
 int ftp_worker_selftests(void);
+/* Hand a backlog slot back from a real worker thread and reap it with
+   back_wait(), asserting the payload it published, that no worker is left on
+   the live list, and that a held list blocks the handoff. Returns the number of
+   failed checks. */
+int ftp_handoff_selftests(httrackp *opt);
 #else
 void launch_ftp(FTPDownloadStruct * params, char *path, char *exec);
 int back_launch_ftp(FTPDownloadStruct * params);
@@ -118,6 +123,17 @@ hts_boolean ftp_command(char *line, size_t line_size, const char *verb,
 #define ftp_command_line(line, verb, path)                                     \
   (HTS_COMPILE_ASSERT(sizeof(line) == FTP_LINE_SIZE),                          \
    ftp_command((line), sizeof(line), (verb), (path)))
+/* Parse a PASV reply's "(h1,h2,h3,h4,p1,p2)" into ip[ip_size] as a dotted
+   address and *port. Each field must be 1 to 3 digits in 0..255. Returns
+   HTS_FALSE and leaves *port alone for any other reply, or a zero port. */
+hts_boolean ftp_parse_pasv(const char *line, char *ip, size_t ip_size,
+                           int *port);
+/* Parse an EPSV reply's "(|||port|)" into *port, which must be 1..65535.
+   Returns HTS_FALSE and leaves *port alone for any other reply. */
+hts_boolean ftp_parse_epsv(const char *line, int *port);
+/* Parse the byte count after a SIZE reply's first space into *size. A missing,
+   signed or too big count returns HTS_FALSE and leaves *size alone. */
+hts_boolean ftp_parse_size(const char *line, LLint *size);
 T_SOC get_datasocket(char *to_send, size_t to_send_size);
 int stop_ftp(lien_back * back);
 char *linejmp(char *line);

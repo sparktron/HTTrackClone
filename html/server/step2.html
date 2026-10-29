@@ -7,6 +7,8 @@
 	<title>'${html:projname}' - HTTrack Website Copier</title>
 
 	<link rel="stylesheet" type="text/css" media="screen" href="style.css">
+	<link rel="stylesheet" type="text/css" media="screen" href="/server/theme.css">
+	<link rel="stylesheet" type="text/css" media="screen" href="user.css">
 	<script type="text/javascript" src="ping.js" defer></script>
 
 <script language="javascript">
@@ -39,7 +41,7 @@ function info(str) {
 </script>
 
 </head>
-<body onLoad="do_load();" onUnload="do_unload();" onKeyPress="return key_event(event);">
+<body class="page-step2" onLoad="do_load();" onUnload="do_unload();" onKeyPress="return key_event(event);">
 
 <table width="76%" border="0" align="center" cellspacing="0" cellpadding="0" class="tableWidth">
 	<tr>
@@ -55,7 +57,6 @@ ${do:if-file-exists:html/doc/html/index.html}
 		<a href="/doc/html/index.html" target="_blank"
 			onClick="window.open('/doc/html/index.html', 'httrack-doc', 'toolbar=no, location=no, directories=no, status=yes, menubar=no, scrollbars=yes, resizable=yes, width=980, height=760'); return false"
 			title='${html:LANG_MANUAL}' onMouseOver="info('${js:LANG_MANUAL}'); return true" onMouseOut="info('&nbsp;'); return true"
-			style="color:#FFFFFF"
 		>
 		${LANG_MANUAL}
 		</a>
@@ -105,6 +106,7 @@ ${do:copy:Dos:dos}
 ${do:copy:Index:index}
 ${do:copy:WordIndex:index2}
 ${do:copy:Log:logf}
+${do:copy:DebugMode:windebug}
 ${do:copy:RemoveTimeout:remt}
 ${do:copy:RemoveRateout:rems}
 ${do:copy:KeepAlive:ka}
@@ -154,11 +156,24 @@ ${do:copy:MaxWait:pausebytes}
 ${do:copy:PauseFiles:pausefiles}
 ${do:copy:Sockets:connexion}
 ${do:copy:Retry:retry}
+${do:copy:MaxRetryAfter:maxretryafter}
 ${do:copy:MaxTime:maxtime}
 ${do:copy:TimeOut:timeout}
 ${do:copy:RateOut:rate}
 ${do:copy:UserID:user}
 ${do:copy:Footer:footer}
+${do:copy:AcceptDefault:acceptdefault}
+${do:copy:AcceptDocument:acceptdocument}
+${do:copy:AcceptIframe:acceptiframe}
+${do:copy:AcceptFrame:acceptframe}
+${do:copy:AcceptImage:acceptimage}
+${do:copy:AcceptStyle:acceptstyle}
+${do:copy:AcceptScript:acceptscript}
+${do:copy:AcceptFont:acceptfont}
+${do:copy:AcceptAudio:acceptaudio}
+${do:copy:AcceptVideo:acceptvideo}
+${do:copy:AcceptObject:acceptobject}
+${do:copy:AcceptEmbed:acceptembed}
 ${do:copy:MaxRate:maxrate}
 ${do:copy:WildCardFilters:url2}
 ${do:copy:Depth:depth}
@@ -248,7 +263,7 @@ ${do:loadhash}
 			title='${html:LANG_TIPPREV}' onMouseOver="info('${js:LANG_TIPPREV}'); return true" onMouseOut="info('&nbsp;'); return true"			
 			>
 		</td><td align="right">
-			<input name="nextBtn" type="submit" value=" ${attr:LANG_NEXT} >> " onClick="return checkname();" default
+			<input class="primary" name="nextBtn" type="submit" value=" ${attr:LANG_NEXT} >> " onClick="return checkname();" default
 			title='${html:LANG_TIPNEXT}' onMouseOver="info('${js:LANG_TIPNEXT}'); return true" onMouseOut="info('&nbsp;'); return true"
 			>
 		</td></tr></table>

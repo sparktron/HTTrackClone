@@ -5,6 +5,9 @@ HTTrack Website Copier release history:
 This file lists all changes and fixes that have been made for HTTrack
 
 fork (sparktron/HTTrackClone)
++ Merged upstream 3.51-0. Upstream now builds ProxyTrack's URL list without
+  NULL + n offsets and checks for the coucal submodule in configure, so the
+  fork's own versions of both are gone.
 + Merged upstream 3.50-3. The entries below are the fork's own changes from
   before that sync. Where upstream fixed the same bug, upstream's fix is the
   one in the tree. The -#8 and -#9 test-bench commands are gone; upstream's
@@ -73,6 +76,92 @@ fork (sparktron/HTTrackClone)
 + New: -#8 test-bench command, checks cookie domain scoping
 + New: continuous integration, with gcc/clang warning gates, an
   AddressSanitizer/UndefinedBehaviorSanitizer build, and a static analyzer run
+
+3.51-0
++ New: mirror a site behind a login. Log in with your browser, copy the request with its "Copy as cURL" command, and paste it into WebHTTrack. WinHTTrack and the Android app have a browser login too. The cookies and headers are saved as a login bundle, named after the site's registrable domain, and a later crawl of that site reads it back (#2005, #2009, #1999, #2015, #2016, #2037)
++ New: --cookies-file keeps each cookie's scope, expiry and flags, and writes the jar back at the end of the crawl, keeping a .bak copy. It also reads a pasted document.cookie string, and the HttpOnly cookies a cookies.txt export marks with #HttpOnly_ (#1982, #2012, #1986, #1980)
++ New: httrack sends the Accept header a real browser sends for each kind of link, and the front ends have an Accept box (#1976)
++ New: httrack sends the Sec-Fetch-* headers and the Chrome and Edge client hints a browser sends (#1970, #1969)
++ New: the Public Suffix List is built into httrack, which uses it for same-site and cookie scope decisions. libpsl is no longer needed (#1972, #1973)
++ New: scan rules can be added or replaced while a crawl runs (#1862, #1872)
++ New: WebHTTrack has a dark mode, a user stylesheet, themes read from a folder or from ~/.httrack/themes, and an optional Modern theme (#1961, #1964, #1966, #1968, #1965, #1971, #1984, #1993)
++ New: htsserver, proxytrack and webhttrack answer --help, -h and --version, and have man pages (#1894, #1897)
++ New: every font and image a stylesheet names is mirrored. With --near, images named only in srcset or data-srcset are saved, and img data-src is followed (#1953, #1936, #1941)
++ New: modern image, font and video types on other hosts are scanned by default (#1937)
++ New: the documentation explains how to mirror a site behind a login (#1985)
++ New: libhttrack exports more calls for front ends: filter rule checks, live scan rules, option token checks, the verdict on a custom header line or a cookies file, and the login bundle helpers (#1870, #1872, #1888, #1948, #2006, #2011, #2019, #2038)
++ Fixed: Windows: a project whose name has non-ASCII characters, such as "café", failed to save most pages, because compressed pages and large playlists could not be written to its folder (#2013, #2025)
++ Fixed: Windows: the build uses brotli 1.2.1, which fixes CVE-2026-111497, an out-of-bounds write in the brotli decoder that a hostile server could reach. It also uses OpenSSL 3.6.5. The build now refuses an older brotli (#2026, #2042, #1874)
++ Fixed: passwords in URLs and in -%H headers are hidden from the logs (#2000)
++ Fixed: doit.log, the crawl logs and the progress lock can only be read by their owner (#2001)
++ Fixed: a cache or catalog name that leaves its directory is refused (#1956)
++ Fixed: a cookie set for a public suffix no longer reaches every host under it. Cookies set for another domain are ignored, and expired ones are deleted (#1995, #1981)
++ Fixed: a proxy CONNECT status that wraps around to 200 is refused, and so is an FTP PASV or EPSV reply out of range (#1875, #1880)
++ Fixed: some hostile pages made the parser or the cache slow down badly. Found by OSS-Fuzz (#1963, #1989, #2030)
++ Fixed: every stored cookie is sent, not only the first eight. Quoted cookie values keep their quotes (#1932, #1920)
++ Fixed: -%X drops framing headers and earlier duplicate Host, Cookie and Authorization lines, and accepts a header line that begins with a dash (#1996, #2007)
++ Fixed: the parser reads quoted attribute values whole, no longer follows Vue, Angular and Alpine binding attributes, and skips data-src placeholders (#1918, #1943, #1941)
++ Fixed: CSS: a ")" inside a quoted url() is kept, and a url() quoted with &quot; in a style attribute is found. An unquoted srcset descriptor ends at whitespace (#2018, #2020, #2031)
++ Fixed: quotes are no longer stripped from command-line arguments (#1909, #1906)
++ Fixed: glued short options out of range are refused, a clustered -O path and a lone -N work, .httrackrc values keep their case, a TAB survives in doit.log, .httrackrc and the postfile request line, and over-long config lines are skipped (#1886, #1905, #1912, #1913, #1911, #1903, #1899)
++ Fixed: an update keeps the mirrored files when the cache is gone, and keeps the previous cache when the last one cannot be repaired. Cache repair no longer trusts a damaged zip header size (#1933, #1931, #1957)
++ Fixed: the update purge no longer deletes a file named by the tail of a long path. -#L keeps what was mirrored, and a link that cannot be allocated is dropped instead of aborting the crawl (#1901, #1907, #1934)
++ Fixed: httrack tries the next address of a host before the timeout. It asks for no gzip when resuming a partial download, and the Referer keeps the https scheme (#1945, #1967, #1974)
++ Fixed: a Retry-After date without a weekday is read as a date, and 32-bit builds read dates after 2038 (#1994, #2002)
++ Fixed: .mht: each part gets its own Content-ID, and the first saved page is the root (#1930, #1939)
++ Fixed: WebHTTrack accepts form posts over 32 KiB, and a race and a use-after-free on the crawl options are gone. It returns a 404 body when index.html is missing, and keeps the fields after one without "=" (#1902, #1864, #1867, #1928, #1882)
++ Fixed: the path given on the htsserver command line takes effect, and proxytrack binds its ICP socket to the given address (#1900, #1898)
++ Fixed: scan rules are decoded the way crawled links are, and the -%H log is written into a new output directory (#1914, #1975)
++ Fixed: no warning for long headers httrack ignores, and an empty MPTCP summary is hidden (#2017)
++ Changed: WebHTTrack's "Capture URL" button, which did nothing, is removed (#1929)
++ Changed: configure stops when the coucal submodule is missing, and --disable-selftests leaves the engine self-tests out of the build (#1927, #2036)
++ Changed: WinHTTrack saves its debugging checkbox in winprofile.ini (#2023)
++ Changed: the language catalogs carry the browser login texts and reworded log-out, OK and Yes labels (#1997, #1998, #2010, #2024, #1869, #1871, #1873)
++ Changed: multiple internal hardening, parser, test and CI improvements
+
+3.50-5
++ Fixed: a savename hook could put a page outside the mirror by returning a name that is absolute or carries "..". The engine keeps its own name then, and logs a warning (#1826)
++ Fixed: a save name read back from the cache could point outside the mirror. ProxyTrack then served any file the process could read to its client. Such a name is refused now (#1813)
++ Fixed: httrack still tried to send a request that a sendhead hook refused, and over HTTPS it passed a freed connection to OpenSSL. It stops now, and the log keeps the refusal (#1825)
++ Fixed: hts_getcategories() added two categories that do not exist, "Test category 1" and "Test category 2", so WinHTTrack's category menu listed them (#1824)
++ Fixed: Ctrl+C could hang httrack rather than stop it. A second Ctrl+C now quits at once (#1811, #1817)
++ Fixed: -M could let a crawl run past its size limit, because parallel FTP transfers lost some of the bytes they counted (#1812)
++ Fixed: on arm64 and other CPUs that reorder memory, a thread could see a lock or a finished FTP transfer half written (#1808, #1809)
++ Fixed: --max-time could not end httrack while a thread was stuck resolving a host name. It now stops within the limit plus 5 seconds (#1848)
++ Fixed: -E counted whole seconds, so -E1 stopped anywhere from 0 to 1 second in (#1853)
++ Fixed: a crawl stopped at the wrong moment could leave .delayed files in the mirror (#1853)
++ Fixed: a hard stop during a type check could write into memory that another download was using. The link it stopped now keeps its absolute URL, rather than pointing at a local file that was never downloaded (#1855)
++ Fixed: a reply that is never saved, such as a 404, could leave an empty directory in the mirror. Such replies go to ~hts-tmp at the mirror root now. A failed write removes its temporary file, and the next run removes those a killed run left (#1850, #1851)
++ Fixed: a relative link starting with "?", such as ?q=a+b, kept its "+" signs where a "?" anywhere else turns them into spaces (#1792)
++ Fixed: a stylesheet's image-url(x), font-url(x) or asset-url(x) was read as url(x), so x was fetched and the declaration rewritten (#1781)
++ Fixed: a clock stepped backward, by NTP for example, stretched a DNS lookup past --timeout by the size of the step (#1782)
++ Fixed: on GNU/Hurd, a program using libhttrack could be killed by SIGPIPE when a peer closed the connection. The httrack command was not affected, but 3.50.4's test suite failed there (#1783, #1775)
++ Fixed: a --max-retry-after above one hour stopped the crawl from starting. It is cut to the limit with a notice now (#1777)
++ Fixed: a very large -c with --bypass-limits overflowed the size of the connection table (#1815)
++ Fixed: the contentfilter example wrapper wrote past its keyword table when given more than 128 keywords (#1810)
++ Fixed: a local process could swap a file for a symlink just before httrack set its permissions, and so redirect the change. The permissions are set through the open file now, except after a rename (#1807)
++ New: libhttrack and the httrack command line build for Windows ARM64 (#1836, #1837)
++ Changed: every function, structure and macro in the installed headers is documented. The old comments for check_link and check_mime gave their return values backwards (#1820)
++ Changed: multiple internal hardening, test and CI improvements
+
+3.50-4
++ Fixed: a truncated string was left unterminated on Windows, because those builds aliased snprintf to _snprintf, which writes no terminator when it truncates. WinHTTrack 3.50-2 aborted on one (#1752)
++ Fixed: a JavaScript name ending in "url" had its assignment read as a link, where the value carries no file extension. On 3.50.3, var myurl = "hello world" fetched /hello%20world and the saved script was rewritten to point at it (#1743)
++ Fixed: import x from "./setup.js", the form almost all module code uses, was never followed (#1737)
++ Fixed: import("./chunk.js") inside /assets/app.js was fetched as /chunk.js, so the mirror stored the server's 404 page where the browser reads the module. Sites built with SvelteKit, Vite and umi all hit this (#1730)
++ Fixed: a WARC record described the 100 Continue headers instead of the response. It happened when a server answered 100 and then sent a reply carrying no headers of its own (#1742)
++ Fixed: a script polling for hts-in_progress.lock could read the file before the engine backdated it. A stop request written at that instant then lost the race it should win (#1749)
++ Fixed: --pause made the engine sit out the whole gap before it looked at a stop request. A stop is taken at once now (#1755)
++ Fixed: five tests failed on GNU/Hurd, so 3.50.3 did not build there (#1717)
++ New: a 429 or a 503 is retried and Retry-After is obeyed, where both used to end the link on the first answer. --max-retry-after caps what the engine waits for, 60 seconds by default, because the server picks the value. A 503 naming no usable delay stays fatal (#1755)
++ New: the WebHTTrack interface carries a Max Retry-After field on its Flow control page, translated in all 30 catalogs (#1757)
++ New: --mptcp opens every connection with Multipath TCP on Linux and macOS, so a mirror keeps running when one network path goes away. It is on by default only where the kernel escapes a blackholed SYN by itself (#1759)
++ New: the log names a site's bot protection when it refused the crawl. The status line and the rollback warning that followed it read as an httrack defect (#1734)
++ New: the end of a mirror says when links above the start directory were left out, and names -B. A start URL inside a subdirectory lost every asset at the site root and nothing said why. A single-page application does that on every crawl (#1725)
++ New: httrack --help names the WebHTTrack graphical interface installed beside it, and man httrack points at webhttrack(1) (#1722)
++ Changed: thirteen calls libhttrack already exported are declared in httrack-library.h now, so an embedder no longer writes the prototype by hand. Six that only the library itself calls left the library (#1721)
++ Changed: the Windows binaries are built with Control Flow Guard and the arm64 binaries with branch protection (#1724, #1723)
++ Changed: multiple internal hardening, test and CI improvements
 
 3.50-3
 + Fixed: -V pasted the name of each saved page into the shell command it runs. The name comes from a crawled URL, so a page saved as a;rm -rf ~;.html ran what its name said. The name is an argument now, and $0 expands only in a plain word, inside "..." and inside '...' (#1710)

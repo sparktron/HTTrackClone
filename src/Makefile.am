@@ -60,6 +60,7 @@ lib_LTLIBRARIES = libhttrack.la
 htsserver_SOURCES = htsserver.c htsserver.h htsweb.c htsweb.h htsstats.h \
 	htsrandom.c htsrandom.h \
 	htscmdline.c htscmdline.h \
+	htslines.c htslines.h \
 	htsurlport.c htsurlport.h htsescape.c htsescape.h
 proxytrack_SOURCES = proxy/main.c \
 	proxy/proxytrack.c proxy/store.c \
@@ -71,31 +72,34 @@ whttrackrundir = $(bindir)
 whttrackrun_SCRIPTS = webhttrack
 
 # $(datadir) only expands at make time, so substitute here rather than through
-# AC_CONFIG_FILES (#887).
-webhttrack: webhttrack.in Makefile
-	$(AM_V_GEN)$(SED) -e 's|@datadir[@]|$(datadir)|g' $(srcdir)/webhttrack.in >$@.tmp \
+# AC_CONFIG_FILES (#887). The version is the dashed one --version prints.
+webhttrack: webhttrack.in htsglobal.h Makefile
+	$(AM_V_GEN)v=`$(SED) -n 's/^#define HTTRACK_VERSION "\(.*\)"$$/\1/p' $(srcdir)/htsglobal.h` \
+		&& test -n "$$v" \
+		&& $(SED) -e 's|@datadir[@]|$(datadir)|g' -e "s|@HTTRACK_VERSION[@]|$$v|g" \
+		$(srcdir)/webhttrack.in >$@.tmp \
 		&& chmod +x $@.tmp && mv -f $@.tmp $@
 CLEANFILES = webhttrack
 
 libhttrack_la_SOURCES =  htscore.c htsparse.c htsback.c htscache.c \
-	htscache_selftest.c htsdns_selftest.c htsparse_selftest.c htsselftest.c \
-	htscatchurl.c htsfilters.c htsftp.c htshash.c coucal/coucal.c \
-	htscmdline.c htshelp.c htslib.c htsurlport.c htsdate.c htscoremain.c \
+	htscatchurl.c htsfetch.c htspsl.c htspsl_data.c htsfilters.c htsftp.c htshash.c coucal/coucal.c \
+	htscmdline.c htshelp.c htslib.c htslines.c htsurlport.c htsdate.c htscoremain.c \
 	htsname.c htsrobots.c htstools.c htsrandom.c htswizard.c \
-	htsalias.c htsthread.c htsindex.c htsbauth.c \
+	htsalias.c htsthread.c htsindex.c htsbauth.c htsbundle.c \
 	htscrashtest.c \
 	htsmd5.c htsnet.c htscodec.c htswarc.c htschanges.c htssinglefile.c htssitemap.c htsproxy.c htszlib.c htswrap.c htsconcat.c \
 	htsmodules.c htscharset.c punycode.c htsencoding.c htsescape.c htssniff.c \
 	md5.c \
 	minizip/ioapi.c minizip/mztools.c minizip/unzip.c minizip/zip.c \
 	hts-indextmpl.h htsalias.h htsback.h htsbase.h htssafe.h htsdate.h \
-	htsbasenet.h htsbauth.h htscache.h htscache_selftest.h htsdns_selftest.h htsparse_selftest.h htsselftest.h htscatchurl.h  \
+	htsbasenet.h htsbauth.h htsbundle.h htscache.h htscache_selftest.h htscookie_selftest.h htsdns_selftest.h htsparse_selftest.h \
+	htsselftest.h htsselftest_int.h htsselftest_util.h htscatchurl.h  \
 	htscmdline.h htsconfig.h htscore.h htsparse.h htscoremain.h htsdefines.h  \
 	htsfilters.h htsftp.h htsglobal.h htshash.h coucal/coucal.h \
-	htshelp.h htsindex.h htsio.h htslib.h htsurlport.h htsmd5.h \
+	htshelp.h htsindex.h htsio.h htslib.h htslines.h htsurlport.h htsmd5.h \
 	htsmodules.h htsname.h htsnet.h htssniff.h \
 	htsopt.h htsrobots.h htsthread.h htswin32.h  \
-	htscrashtest.h htstools.h htsrandom.h htswizard.h htswrap.h htscodec.h htswarc.h htschanges.h htssinglefile.h htssitemap.h htsproxy.h htszlib.h  \
+	htscrashtest.h htstools.h htsrandom.h htswizard.h htswrap.h htscodec.h htswarc.h htschanges.h htssinglefile.h htsfetch.h htspsl.h htssitemap.h htsproxy.h htszlib.h  \
 	htsstrings.h htsarrays.h htsarena.h httrack-library.h \
 	htscharset.h punycode.h htsencoding.h htsescape.h \
 	htsentities.h htsentities.sh htsbasiccharsets.sh htscodepages.h \
@@ -105,6 +109,22 @@ libhttrack_la_SOURCES =  htscore.c htsparse.c htsback.c htscache.c \
 libhttrack_la_LIBADD = $(THREADS_LIBS) $(ZLIB_LIBS) $(BROTLI_LIBS) $(ZSTD_LIBS) $(OPENSSL_LIBS) $(DL_LIBS) $(SOCKET_LIBS) $(ICONV_LIBS)
 libhttrack_la_CFLAGS = $(AM_CFLAGS) -DLIBHTTRACK_EXPORTS -DZLIB_CONST
 libhttrack_la_LDFLAGS = $(AM_LDFLAGS) -version-info $(VERSION_INFO)
+
+# --disable-selftests leaves these out and defines HTS_NO_SELFTEST.
+if SELFTESTS
+libhttrack_la_SOURCES += htsselftest.c htsselftest_util.c \
+	htsback_selftest.c htscache_selftest.c htscharset_selftest.c \
+	htscmdline_selftest.c \
+	htscookie_selftest.c htsdns_selftest.c htsfetch_selftest.c htspsl_selftest.c \
+	htsbundle_selftest.c \
+	htsfilters_selftest.c \
+	htsheader_selftest.c htsio_selftest.c htslib_selftest.c \
+	htslines_selftest.c \
+	htsmime_selftest.c htsname_selftest.c htsnet_selftest.c \
+	htsopt_selftest.c htsparse_selftest.c htstools_selftest.c \
+	htswarc_selftest.c \
+	htswizard_selftest.c
+endif
 
 # Fork-only: imageboard catalog (--enable-imageboard-catalog). A standalone
 # program: nothing in libhttrack calls it, so it stays out of the library, its

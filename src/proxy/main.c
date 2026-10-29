@@ -105,12 +105,56 @@ static void hts_binary_stdio(void) {
 }
 #endif
 
+/* --help prints this to stdout, a bad command line to stderr. */
+static void usage(FILE *fp, const char *argv0) {
+  fprintf(fp,
+          "usage: %s <proxy-addr:proxy-port> <ICP-addr:ICP-port> "
+          "[archive ..] [--list <file-list>]\n",
+          argv0);
+  fprintf(fp,
+          "usage: %s --convert <output> [archive ..] [--list <file-list>]\n",
+          argv0);
+  fprintf(fp, "Serves httrack archives as an HTTP proxy with ICP, or merges "
+              "them into one.\n");
+  fprintf(fp, "  archive                an httrack cache (new.zip, or new.ndx "
+              "with new.dat) or an .arc file\n");
+  fprintf(fp, "  --list <file-list>     read more archive paths from this "
+              "file, one per line\n");
+  fprintf(fp, "  --convert <output>     merge the archives into one .zip or "
+              ".arc file, then exit\n");
+  fprintf(fp, "  -h, --help             print this help and exit\n");
+  fprintf(fp, "  --version              print the version and exit\n");
+  fprintf(fp,
+          "example: %s localhost:8080 localhost:3130 "
+          "/home/archives/example.com/hts-cache/new.zip\n",
+          argv0);
+  fprintf(fp, "means: serve that mirror as a proxy on port 8080, and answer "
+              "ICP queries on port 3130\n");
+  fprintf(fp,
+          "example: %s --convert /home/archives/merged.zip "
+          "/home/archives/a/hts-cache/new.zip "
+          "/home/archives/b/hts-cache/new.zip\n",
+          argv0);
+  fprintf(fp, "means: merge two mirrors into merged.zip\n");
+}
+
 int main(int argc, char *argv[]) {
   int i;
   int ret = 0;
   int proxyPort = 0, icpPort = 0;
   char proxyAddr[256 + 1], icpAddr[256 + 1];
   PT_Indexes index;
+
+  if (argc >= 2 &&
+      (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
+    usage(stdout, argv[0]);
+    return 0;
+  }
+  if (argc >= 2 && strcmp(argv[1], "--version") == 0) {
+    printf("ProxyTrack version %s (HTTrack %s)\n", PROXYTRACK_VERSION,
+           HTTRACK_VERSION);
+    return 0;
+  }
 
 #ifdef _WIN32
   hts_binary_stdio();
@@ -163,20 +207,7 @@ int main(int argc, char *argv[]) {
           )
       )
     ) {
-    fprintf(stderr, "proxy mode:\n");
-    fprintf(stderr,
-            "usage: %s <proxy-addr:proxy-port> <ICP-addr:ICP-port> [ ( <new.zip path> | <new.ndx path> | <archive.arc path> | --list <file-list> ) ..]\n",
-            argv[0]);
-    fprintf(stderr,
-            "\texample:%s proxy:8080 localhost:3130 /home/archives/www-archive-01.zip /home/old-archives/www-archive-02.ndx\n",
-            argv[0]);
-    fprintf(stderr, "convert mode:\n");
-    fprintf(stderr,
-            "usage: %s --convert <archive-output-path> [ ( <new.zip path> | <new.ndx path> | <archive.arc path> | --list <file-list> ) ..]\n",
-            argv[0]);
-    fprintf(stderr,
-            "\texample:%s proxy:8080 localhost:3130 /home/archives/www-archive-01.zip /home/old-archives/www-archive-02.ndx\n",
-            argv[0]);
+    usage(stderr, argv[0]);
     return 1;
   }
   index = PT_New();

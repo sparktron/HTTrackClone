@@ -110,6 +110,7 @@ Remark: If no cache newer than the added one is found, all entries can be added 
 #include "htsnet.h"
 #include "htslib.h"
 #include "htsglobal.h"
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -345,7 +346,7 @@ int proxytrack_main(char *proxyAddr, int proxyPort, char *icpAddr, int icpPort,
   int returncode = 0;
   int tcpErr = 0, udpErr = 0;
   T_SOC soc = smallserver_init(proxyAddr, proxyPort, SOCK_STREAM, &tcpErr);
-  T_SOC socICP = smallserver_init(proxyAddr, icpPort, SOCK_DGRAM, &udpErr);
+  T_SOC socICP = smallserver_init(icpAddr, icpPort, SOCK_DGRAM, &udpErr);
 
   if (soc != INVALID_SOCKET && socICP != INVALID_SOCKET) {
 
@@ -384,13 +385,14 @@ int proxytrack_main(char *proxyAddr, int proxyPort, char *icpAddr, int icpPort,
     if (err == SMALLSERVER_ERR_RESOLVE) {
       fprintf(stderr,
               "Unable to initialize a temporary server : cannot resolve %s\n",
-              proxyAddr);
+              icpFailed ? icpAddr : proxyAddr);
     } else {
       fprintf(stderr,
               "Unable to initialize a temporary server : cannot bind %s port %d"
               " on %s: %s (%d)\n",
               icpFailed ? "udp" : "tcp", icpFailed ? icpPort : proxyPort,
-              proxyAddr, socket_error_string(err, errbuf, sizeof(errbuf)), err);
+              icpFailed ? icpAddr : proxyAddr,
+              socket_error_string(err, errbuf, sizeof(errbuf)), err);
     }
     returncode = 1;
   }
@@ -608,14 +610,14 @@ static void proxytrack_add_DAV_Item(String * item, String * buff,
   }
 }
 
-/* The RFC822 date of a cache entry as a time_t, or 0 if it does not parse.
-   The fields are GMT, so timegm() and never mktime() (#1491). */
+/* The RFC822 date of a cache entry as a time_t, clipped to its range, or 0 if
+   it does not parse. */
 static time_t get_time_rfc822(const char *s) {
   struct tm result;
 
   if (convert_time_rfc822(&result, s) == NULL)
     return (time_t) 0;
-  return timegm(&result);
+  return hts_time_clip(hts_utc_seconds(&result));
 }
 
 static PT_Element proxytrack_process_DAV_Request(PT_Indexes indexes,
@@ -909,7 +911,12 @@ static void proxytrack_process_HTTP(PT_Indexes indexes, T_SOC soc_c) {
         int p;
 
         if ((p = strfield(line, "Content-length:")) != 0) {
-          if (sscanf(line + p, "%d", &length) != 1) {
+          const char *a = line + p;
+          LLint value;
+
+          if (hts_scan_llint(&a, 0, INT_MAX, &value) == HTS_SCAN_OK) {
+            length = (int) value;
+          } else {
             msgCode = 500;
             msgError = "Bad HTTP Content-Length Field";
             keepAlive = 0;
@@ -1024,6 +1031,7 @@ static void proxytrack_process_HTTP(PT_Indexes indexes, T_SOC soc_c) {
         }
         StringCopy(url, surl);
       } else {
+        /* PT_ReadIndex() strips the scheme off this archive lookup key. */
         if (StringLength(host) > 0) {
           /* Direct hit */
           if (
@@ -1280,16 +1288,15 @@ static void proxytrack_process_HTTP(PT_Indexes indexes, T_SOC soc_c) {
               "Server: ProxyTrack " PROXYTRACK_VERSION " (HTTrack "
               HTTRACK_VERSIONID ")\r\n");
     StringCat(headers, "\r\n"); /* Headers separator */
-    if (send(soc_c, StringBuff(headers), (int) StringLength(headers), 0) !=
-        StringLength(headers)
-        || (!headRequest && StringLength(output) > 0
-            && send(soc_c, StringBuff(output), (int) StringLength(output),
-                    0) != StringLength(output))
-        || (!headRequest && StringLength(output) == 0 && element != NULL
-            && element->adr != NULL
-            && send(soc_c, element->adr, (int) element->size,
-                    0) != element->size)
-      ) {
+    if ((size_t) send(soc_c, StringBuff(headers), (int) StringLength(headers),
+                      0) != StringLength(headers) ||
+        (!headRequest && StringLength(output) > 0 &&
+         (size_t) send(soc_c, StringBuff(output), (int) StringLength(output),
+                       0) != StringLength(output)) ||
+        (!headRequest && StringLength(output) == 0 && element != NULL &&
+         element->adr != NULL &&
+         (size_t) send(soc_c, element->adr, (int) element->size, 0) !=
+             element->size)) {
       keepAlive = 0;            /* Error, abort connection */
     }
     PT_Element_Delete(&element);
@@ -1484,8 +1491,8 @@ static int ICP_reply(struct sockaddr *clientAddr, int clientAddrLen, T_SOC soc,
     if (Message != NULL && Message_Length > 0) {
       memcpy(buffer + 20, Message, Message_Length);
     }
-    if (sendto(soc, buffer, BufferSize, 0, clientAddr, clientAddrLen) ==
-        BufferSize) {
+    if ((unsigned long int) sendto(soc, buffer, BufferSize, 0, clientAddr,
+                                   clientAddrLen) == BufferSize) {
       ret = 1;
     }
     free(buffer);

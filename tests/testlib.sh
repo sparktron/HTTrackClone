@@ -48,6 +48,17 @@ fail_dump() { # fail_dump MSG FILE...
     exit 1
 }
 
+# Write `subshell_ok $?` after a `( ... )`, because bash 3.2 ignores a failing
+# subshell and `|| fail` turns set -e off inside it. Only bash 3.2 prints MSG,
+# because bash 5 stops at the subshell itself.
+subshell_ok() { # subshell_ok STATUS [MSG]
+    case $1 in
+    0) return 0 ;;
+    77) exit 77 ;;
+    esac
+    fail "${2:-a subshell exited with [$1]}"
+}
+
 # Cache uname -s once: every skip gate asks for it, and each call is a fork the
 # MSYS runtime emulates (#1273). Fatal when it says nothing, never guessed: the
 # guess read as not-Windows, so a test excluded there ran on a Windows runner.
@@ -69,6 +80,46 @@ skip_on_windows() { ! target_is_windows || skip "$*"; }
 # Set by tools/emulated-suite.sh, which interprets every instruction it runs.
 is_emulated() { [ -n "${EMULATED_ARCH:-}" ]; }
 skip_on_emulated() { ! is_emulated || skip "emulated ${EMULATED_ARCH}: $*"; }
+
+# GNU/Hurd, where uname -s says GNU. A tier-3 platform: a test it cannot pass
+# skips rather than reds the suite, so the hurd leg stays readable.
+is_hurd() {
+    case "$HTS_OS" in GNU | GNU/*) return 0 ;; esac
+    return 1
+}
+skip_on_hurd() { ! is_hurd || skip "GNU/Hurd: $*"; }
+# Hurd's ext2fs has wedged the VM twice right after a deliberate crash, though
+# the cause is unproven.
+skip_crash_on_hurd() { skip_on_hurd "a deliberate crash has been followed by an ext2fs wedge"; }
+
+# A --disable-shared tree builds no library and no plugin, so libhttrack being
+# absent answers for every test that looks for one. Darwin names it .dylib,
+# which HTTRACK_SHLIB does not cover.
+skip_if_static() {
+    local lib=${HTTRACK_SHLIB:-}
+    test -r "$lib" || test -r "${lib%.so}.dylib" || skip "static build: $*"
+}
+
+# Does RLIMIT_FSIZE actually stop a write here? GNU/Hurd accepts the limit and
+# writes past it anyway, so a test that needs a refused write has to ask rather
+# than assume. Measured on the file, not on the exit status: a host that
+# enforces the cap kills the writer with SIGXFSZ, and one that ignores it does
+# not, so only the bytes on disk answer for both.
+fsize_limit_binds() {
+    local probe got
+    # A failure here must not read as "the host does not enforce it", which
+    # would disable the caller's assertion on a host that does.
+    probe=$(mktemp "${TMPDIR:-/tmp}/httrack_fsz.XXXXXX") ||
+        fail "could not make a probe file to ask whether RLIMIT_FSIZE binds"
+    (
+        trap '' XFSZ
+        ulimit -f 1 || exit 1
+        dd if=/dev/zero of="$probe" bs=1024 count=64
+    ) >/dev/null 2>&1 || true
+    got=$(wc -c <"$probe" 2>/dev/null) || got=0
+    rm -f "$probe"
+    test "${got:-0}" -lt 65536
+}
 
 # Assertions, each printing what it wanted beside what arrived: a bare
 # `|| exit 1` reds a test without naming the value that differed.
@@ -728,6 +779,19 @@ target_is_windows() {
     test "$IS_WINDOWS" = yes
 }
 
+# The engine binary to inspect, empty when there is none. A shared tree puts the
+# real one under libtool's object dir and a wrapper script at the plain path, so
+# the shebang check rejects the wrapper the way 215 does (#1744).
+engine_binary() {
+    local f
+    for f in "${HTTRACK_BIN:-}" "${HTTRACK_BIN_STATIC:-}"; do
+        if [ -n "$f" ] && [ -f "$f" ] && [ "$(head -c 2 "$f")" != '#!' ]; then
+            printf '%s\n' "$f"
+            return
+        fi
+    done
+}
+
 # Is this shell MSYS/Git Bash? Ask only about the shell's own quirks, its broken
 # job control above all. A question about the binary wants target_is_windows.
 shell_is_msys() { test "$(suite_backend)" = msys; }
@@ -735,6 +799,12 @@ shell_is_msys() { test "$(suite_backend)" = msys; }
 # The binary under test is a native Linux one. The shell being Linux is not
 # enough, because the wsl2 backend drives a Windows exe from a Linux shell.
 target_is_linux() { test "$HTS_OS" = Linux && ! target_is_windows; }
+
+# Is this bash at least $1.$2?
+bash_at_least() {
+    test "${BASH_VERSINFO[0]}" -gt "$1" ||
+        { test "${BASH_VERSINFO[0]}" -eq "$1" && test "${BASH_VERSINFO[1]}" -ge "$2"; }
+}
 
 # Open the timer fd poll_wait reads from: a fifo held open read-write, so there is
 # always a writer and a read blocks to its own timeout instead of seeing EOF. fd 9
@@ -748,6 +818,8 @@ poll_open() {
     # about is no place to discover how its select() behaves. That tick is a whole
     # second anyway, so there is little to win.
     shell_is_msys && return 0
+    # Below bash 4.3, read -t can lose a child's exit (#1840), so poll_wait forks sleep.
+    bash_at_least 4 3 || return 0
     # Unique: $$ is the same in every subshell, and the loser of a race on one name
     # opens a path that is gone.
     f=$(mktemp -u "${TMPDIR:-/tmp}/.httrack-poll.XXXXXX" 2>/dev/null) || return 0
@@ -772,25 +844,12 @@ poll_open() {
 # HTTRACK_POLL_SLEEP=1 forces the forked tick back, re-read per tick so a test can
 # starve the poll mid-run.
 poll_wait() {
-    local secs=$1 rc=0
+    local rc=0
     test -n "$POLL_STATE" || poll_open
     if test "$POLL_STATE" = fifo && test -z "${HTTRACK_POLL_SLEEP:-}"; then
-        # bash 4.0 is where -t took a fraction; below it, hand a caller asking for
-        # one the sleep it asked for rather than rounding its tick up to a second.
-        if test "${BASH_VERSINFO[0]}" -ge 4; then
-            secs=0.1
-        else
-            case "$secs" in *.*)
-                sleep "$secs"
-                return 0
-                ;;
-            esac
-        fi
-        read -t "$secs" -r -u 9 _ || rc=$?
+        read -t 0.1 -r -u 9 _ || rc=$?
         test "$rc" -le 128 || return 0 # >128 is the timeout we asked for
-        # bash 4.0 is also where a timeout started reporting >128; 3.2 says 1, which is
-        # what a closed fd says everywhere. Ask the fd itself rather than the status,
-        # or macOS retires its timer on the first tick and forks for the whole run.
+        # Anything else is data, EOF or an error, so ask the fd whether it still works.
         # `true`, not `:`: a redirection error on a POSIX special builtin exits the
         # shell, which POSIXLY_CORRECT in the environment is enough to turn on.
         if { true >&9; } 2>/dev/null; then return 0; fi
@@ -1193,12 +1252,20 @@ budget_secs() {
     echo "$((10#$budget))"
 }
 
-skip_if_out_of_budget() { # skip_if_out_of_budget <steps left> <seconds the last took> [what they cover]
+# Would the next of $1 steps, at 1.5x $2 seconds, outrun the budget? It never exits.
+out_of_budget() { # out_of_budget <steps left> <seconds the last took>
     local budget need=$(($2 + $2 / 2))
 
     budget=$(budget_secs)
-    test "$1" -gt 0 && test "$budget" -gt 0 || return 0
-    test "$((SECONDS + need))" -ge "$budget" || return 0
+    test "$1" -gt 0 && test "$budget" -gt 0 || return 1
+    test "$((SECONDS + need))" -ge "$budget"
+}
+
+skip_if_out_of_budget() { # skip_if_out_of_budget <steps left> <seconds the last took> [what they cover]
+    local budget
+
+    out_of_budget "$1" "$2" || return 0
+    budget=$(budget_secs)
     # $3 names what goes unchecked, or the log says a count and the reader guesses.
     echo "$1 steps left, the last took ${2}s and the budget is ${budget}s; skipping${3:+ $3}" >&2
     exit 77
@@ -1335,6 +1402,40 @@ reap_bounded() {
     return 0
 }
 
+# assert_wedge_stack OUTPUT: the watchdog dumped the engine's stack before the
+# kill, because the kill destroys it.
+assert_wedge_stack() {
+    grep -q "===== TIMEOUT:" <<<"$1" || fail "no diagnostics before the kill: $1"
+    # WSL2 answers Linux to uname but dumps through cdb, which is opt-in.
+    ! target_is_windows || return 0
+    case $(uname -s) in
+    Linux)
+        grep -q "Caught signal 6" <<<"$1" || fail "the engine printed no stack: $1"
+        # A build without backtrace(), --disable-auto-features for one, has no frame to name.
+        ! grep -q "No stack trace available on this OS" <<<"$1" || return 0
+        ;;
+    Darwin) grep -q "Call graph" <<<"$1" || fail "sample(1) printed no stack: $1" ;;
+    *) return 0 ;;
+    esac
+    grep -q "hts_main" <<<"$1" || fail "the stack names no engine frame: $1"
+}
+
+# Print an overrun's process tree and stacks on stderr before the watchdog kills
+# it, because nothing survives the kill. It never fails the caller.
+# OVERRUN_DUMP=0 turns it off for a caller that times out on purpose.
+dump_overrun() { # dump_overrun <pid> <secs> <label>
+    local pgid
+    # Also stops the recursion when the dump's own debugger overruns.
+    test "${OVERRUN_DUMP:-1}" != 0 || return 0
+    local OVERRUN_DUMP=0
+    pgid=$(ps -o pgid= -p "$1" 2>/dev/null | tr -d ' ' || true)
+    # A Fedora build root has no ps. The fields after "comm) " are state, ppid, pgrp.
+    test -n "$pgid" || pgid=$(awk '{ sub(/.*\) /, ""); } END { print $3 }' "/proc/$1/stat" 2>/dev/null || true)
+    # shellcheck source=/dev/null # sourced lazily, and its arrays would shadow test locals
+    declare -F dump_hang_diagnostics >/dev/null || . "$testdir/proclib.sh" || return 0
+    dump_hang_diagnostics "${pgid:-$1}" "$3" "$2" >&2 || true
+}
+
 # Run "$@" under a wall-clock deadline of $1 seconds; return its exit status, or
 # 124 if it overran and was killed. timeout(1) is unusable here: it's absent on
 # macOS and its signals can't reap httrack.exe on Windows. We poll and kill_tree.
@@ -1374,6 +1475,9 @@ run_with_timeout() {
     local start=$SECONDS
     while kill -0 "$pid" 2>/dev/null; do
         if test "$((SECONDS - start))" -gt "$secs"; then
+            # Seconds from launch to the kill decision, so a test can time it apart from the reap.
+            WATCHDOG_FIRED_AT=$((SECONDS - start))
+            dump_overrun "$pid" "$secs" "$*"
             kill_tree "$pid" "$winpid"
             reap_bounded "$pid" || true
             return 124
@@ -1389,6 +1493,7 @@ wait_bounded() {
     local pid=$1 secs=$2 start=$SECONDS
     while kill -0 "$pid" 2>/dev/null; do
         if test "$((SECONDS - start))" -gt "$secs"; then
+            dump_overrun "$pid" "$secs" "pid $pid"
             kill_tree "$pid"
             reap_bounded "$pid" || true
             return 124

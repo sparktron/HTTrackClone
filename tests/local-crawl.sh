@@ -56,6 +56,7 @@
 # --plant-file/--plant-dir drop a regular file (holding $plant_poison) or a
 # directory at PATH under the host root between the passes, to hand the second
 # pass leftovers a killed run would have left (#758).
+# --no-host-root asserts the crawl created no host root directory.
 
 set -u
 
@@ -64,6 +65,7 @@ set -u
 root="${LOCAL_SERVER_ROOT:-${testdir}/server-root}"
 
 tlsargs=()
+serverargs=()
 verbose=
 warc_validate=
 wacz_validate=
@@ -72,6 +74,7 @@ outdir_intl=
 rerun=
 rerun_args=
 rerun_dead=
+no_hostroot=
 archive_kept=
 archive_replaced=
 archive_min_files=0
@@ -180,6 +183,7 @@ while test "$pos" -lt "$nargs"; do
     --debug) verbose=1 ;;
     --rerun) rerun=1 ;;           # run httrack a second time (update pass) before auditing
     --rerun-dead) rerun_dead=1 ;; # re-run with the server stopped (cache rollback)
+    --no-host-root) no_hostroot=1 ;;
     # the second pass must leave the first pass's archive files untouched
     --archive-kept-on-rerun) archive_kept=1 ;;
     --archive-replaced-on-rerun) archive_replaced=1 ;; # ...or rewrite all of them
@@ -199,6 +203,7 @@ while test "$pos" -lt "$nargs"; do
         audit+=("--cache-under-logroot")
         ;;
     --tls) tlsargs=(--tls) ;;
+    --server-mptcp) serverargs=(--mptcp) ;;
     --root)
         pos=$((pos + 1))
         root="${args[$pos]}"
@@ -253,7 +258,8 @@ done
 # --- start the server --------------------------------------------------------
 # local_server_start reaps the server and reports one that never announced its
 # port. 72 and 105 skip on that wording, which discover_server_port writes.
-local_server_start ${tlsargs[@]+"${tlsargs[@]}"} --root "$root"
+local_server_start ${tlsargs[@]+"${tlsargs[@]}"} \
+    ${serverargs[@]+"${serverargs[@]}"} --root "$root"
 port=$SRV_PORT
 baseurl=$BASEURL
 debug "server listening on $baseurl"
@@ -492,14 +498,28 @@ if test -n "$rerun_dead"; then
 fi
 
 # --- discover the single host root (127.0.0.1_<port> or 127.0.0.1) -----------
-find_hostroot
-debug "host root: $hostroot"
+if test -n "$no_hostroot"; then
+    info "checking no host root was created"
+    for cand in "${mirrorroot}/127.0.0.1_${port}" "${mirrorroot}/127.0.0.1"; do
+        test ! -e "$cand" || {
+            result "found $cand"
+            exit 1
+        }
+    done
+    result "OK"
+else
+    find_hostroot
+    debug "host root: $hostroot"
+fi
 
 # --- optional WARC validation (stdlib validator, no warcio) ------------------
 # WARC_VALIDATE_BODY="URLSUB=HEX" byte-checks a fresh-crawl response body;
 # WARC_VALIDATE_NORESP="URLSUB..." asserts those assets are revisits post-update;
 # WARC_VALIDATE_NORECORD="URLSUB..." asserts those assets have no record at all;
 # WARC_VALIDATE_IP="URLSUB=IP..." asserts the exact WARC-IP-Address on the record;
+# WARC_VALIDATE_RESPHDR="URLSUB=SUBSTR..." asserts a response header block holds
+# SUBSTR, WARC_VALIDATE_NO_RESPHDR="URLSUB=SUBSTR..." that it does not, and
+# WARC_VALIDATE_SAME_RESPHDR="URLSUBA=URLSUBB..." that two blocks are equal;
 # WARC_VALIDATE_PROFILE="URLSUB=SUBSTR..." asserts a revisit's WARC-Profile;
 # WARC_VALIDATE_NO_REVISIT=1 skips the "at least one revisit" requirement (a
 # no-OpenSSL leg where the only unchanged assets end up with no record at all);
@@ -516,6 +536,15 @@ if test -n "$warc_validate"; then
     # WARC_VALIDATE_BODY holds one or more whitespace-separated SUB=HEX specs.
     for spec in ${WARC_VALIDATE_BODY:-}; do
         bodyargs+=(--expect-body-hex "$spec")
+    done
+    for spec in ${WARC_VALIDATE_RESPHDR:-}; do
+        bodyargs+=(--expect-resp-header "$spec")
+    done
+    for spec in ${WARC_VALIDATE_NO_RESPHDR:-}; do
+        bodyargs+=(--no-resp-header "$spec")
+    done
+    for spec in ${WARC_VALIDATE_SAME_RESPHDR:-}; do
+        bodyargs+=(--same-resp-header "$spec")
     done
     # compressed asset: assert the stored (verbatim) body inflates to the served
     # body and keeps Content-Encoding, instead of expecting a decoded body.
@@ -606,6 +635,12 @@ fi
 # --- audit -------------------------------------------------------------------
 i=0
 while test "$i" -lt "${#audit[@]}"; do
+    case "${audit[$i]}" in
+    --found | --not-found | --directory | --max-mirror-bytes | --min-mirror-bytes | \
+        --file-matches | --file-not-matches | --files-identical | --file-min-bytes | --file-mode)
+        test -n "$hostroot" || find_hostroot
+        ;;
+    esac
     case "${audit[$i]}" in
     --errors)
         i=$((i + 1))

@@ -1,6 +1,6 @@
 AC_PREREQ([2.71])
 
-AC_INIT([httrack], [3.50.3], [roche+packaging@httrack.com], [httrack], [https://www.httrack.com/])
+AC_INIT([httrack], [3.51.0], [roche+packaging@httrack.com], [httrack], [https://www.httrack.com/])
 AC_COPYRIGHT([
 HTTrack Website Copier, Offline Browser for Windows and Unix
 Copyright (C) 1998-2015 Xavier Roche and other contributors
@@ -26,24 +26,38 @@ Please visit our Website: http://www.httrack.com
 ])
 
 AC_CONFIG_SRCDIR(src/httrack.c)
-
-dnl The coucal submodule is a build requirement, not an optional extra:
-dnl src/Makefile.am compiles coucal/coucal.c directly. Without it configure
-dnl succeeds and the failure only surfaces as a missing make target, which
-dnl reads like a broken build system rather than an uninitialized checkout.
+# src/coucal is a submodule, empty in a tag archive or a clone without --recurse-submodules.
 AC_MSG_CHECKING([for the coucal submodule])
-if test -f "$srcdir/src/coucal/coucal.c"; then
-	AC_MSG_RESULT([yes])
-else
-	AC_MSG_RESULT([no])
-	AC_MSG_ERROR([src/coucal is empty: run git submodule update --init --recursive and re-run configure.])
-fi
+AS_IF([test -f "$srcdir/src/coucal/coucal.c"],
+	[AC_MSG_RESULT([yes])],
+	[AC_MSG_RESULT([no])
+	 AC_MSG_ERROR([src/coucal is empty. In a git clone, run
+    git submodule update --init src/coucal
+Then run configure again. A GitHub tag archive does not include it, so use the
+httrack-<version>.tar.gz release tarball instead.])])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_HEADERS(config.h)
 # The public half of config.h: the switches the installed headers read, in a
 # header we can install without handing a consumer our PACKAGE_* and HAVE_*.
 AC_CONFIG_HEADERS([htsfeatures.h:src/htsfeatures.h.in])
 AM_INIT_AUTOMAKE([subdir-objects])
+# 3:28:0: revision-only bump for 3.51.0, measured against 3.50.5 (3:26:0; the
+# interim 3:27:0 never shipped). httrack-library.h gained 17 HTSEXT_API calls
+# and none went away or changed signature. httrackp gained ten tail fields
+# (live_filters to bundle_state) and lien_url a tail hts_fetch_meta fetch.
+# No field moved before a tail, so the soname stays.
+# 3:26:0: revision-only bump. No export came or went and no installed struct
+# moved, per nm -D and gdb ptype /o against 3.50.4. The installed headers
+# gained HTS_FALLTHROUGH and two static inline path checks in htssafe.h, and
+# SOCaddr_copyaddr lost its unreachable 16-byte raw IPv6 branch (#1790).
+# 3:25:0: revision-only bump. httrackp gained five tail fields
+# (upper_links_refused, max_retry_after, mptcp, mptcp_connections,
+# mptcp_fallbacks) and hts_stat_struct two (stat_mptcp_connections,
+# stat_mptcp_fallbacks). htsblk gained retry_after, which fits the hole after
+# warc_forced_notmodified, so lien_back embeds the same layout it did and
+# nothing after it moves. No export came or went. HTS_STAT is an exported
+# variable, so a client linked against the older struct keeps a copy two ints
+# short. HTTraQt is the only such client, and it is rebuilt.
 # 3:24:0: revision-only DESPITE an ABI break. #1713 published thirteen exports
 # in httrack-library.h, which adds no symbol. It also dropped HTSEXT_API from
 # six calls only the library itself makes, so check_hostname_dns,
@@ -103,7 +117,7 @@ AM_INIT_AUTOMAKE([subdir-objects])
 # moves nothing). Soname stays .so.3: HTTrackQt is the only consumer of the installed
 # headers, so a libhttrack4 rename isn't worth it.
 # (3:0:0 was the htsblk mime-buffer widening, the ABI break that moved .so.2 -> .so.3.)
-VERSION_INFO="3:24:0"
+VERSION_INFO="3:28:0"
 AM_MAINTAINER_MODE
 AC_USE_SYSTEM_EXTENSIONS
 
@@ -209,6 +223,32 @@ AC_SUBST(DEFAULT_CFLAGS)
 DEFAULT_LDFLAGS=""
 AC_SUBST(DEFAULT_LDFLAGS)
 
+### Treat a warning as a build break (our CI only)
+# Opt-in: a distribution toolchain we do not pin must never fail to build over a
+# warning we have never seen.
+AC_MSG_CHECKING([whether to turn warnings into errors])
+AC_ARG_ENABLE([werror],
+	[AS_HELP_STRING([--enable-werror],
+		[Fail the build on any compiler warning @<:@default=no@:>@])],
+	[
+	case "${enableval}" in
+	no|yes)
+		AC_MSG_RESULT($enableval)
+		;;
+	*)
+		AC_MSG_ERROR([bad value for werror, expected yes/no])
+		;;
+	esac
+	],
+	[
+	enable_werror=no
+	AC_MSG_RESULT(no)
+	])
+# DEFAULT_CFLAGS only, never CFLAGS: configure's probes must keep answering on a
+# warning, or every AX_CHECK_COMPILE_FLAG below changes meaning.
+AS_IF([test x"$enable_werror" = x"yes"],
+	[DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Werror"])
+
 ### Additional flags (if supported)
 # -Werror on probes: exit-status-only checks let clang's warn-on-unknown-flag through.
 AX_CHECK_COMPILE_FLAG([-Wparentheses], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Wparentheses"], [], [-Werror])
@@ -226,6 +266,19 @@ AX_CHECK_COMPILE_FLAG([-Wformat-nonliteral], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -W
 AX_CHECK_COMPILE_FLAG([-Wmissing-parameter-type], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Wmissing-parameter-type"], [], [-Werror])
 AX_CHECK_COMPILE_FLAG([-Wold-style-definition], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Wold-style-definition"], [], [-Werror])
 AX_CHECK_COMPILE_FLAG([-Wignored-qualifiers], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Wignored-qualifiers"], [], [-Werror])
+AX_CHECK_COMPILE_FLAG([-Wsign-compare], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Wsign-compare"], [], [-Werror])
+AX_CHECK_COMPILE_FLAG([-Wduplicated-cond], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Wduplicated-cond"], [], [-Werror])
+# gcc's default level accepts a comment as the marker and clang only the
+# attribute; =5 drops the comment, so HTS_FALLTHROUGH is the one both read.
+AX_CHECK_COMPILE_FLAG([-Wimplicit-fallthrough=5], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Wimplicit-fallthrough=5"],
+	[AX_CHECK_COMPILE_FLAG([-Wimplicit-fallthrough], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Wimplicit-fallthrough"], [], [-Werror])], [-Werror])
+# Implied by -Wall today; named explicitly so a truncating copy stays visible.
+AX_CHECK_COMPILE_FLAG([-Wstringop-truncation], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Wstringop-truncation"], [], [-Werror])
+# The tree has no stack allocation sized off the wire, and these keep it that way.
+AX_CHECK_COMPILE_FLAG([-Wvla], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Wvla"], [], [-Werror])
+AX_CHECK_COMPILE_FLAG([-Walloca], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Walloca"], [], [-Werror])
+# A nested function asks for an executable stack.
+AX_CHECK_COMPILE_FLAG([-Wtrampolines], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -Wtrampolines"], [], [-Werror])
 # Make htssafe.h's pointer-dest 'warning' attribute a hard error in our build
 # (migration is at zero; a new char* dest is a regression). gcc/clang each take
 # only their own spelling; downstream keeps the plain warning, not a build break.
@@ -256,6 +309,20 @@ case "$CFLAGS" in
 *) HTS_ADD_FORTIFY_SOURCE ;;
 esac
 
+# Zero an uninitialized stack variable. Skipped under a sanitizer, where it
+# would hide from MemorySanitizer exactly what MemorySanitizer looks for.
+case "$CFLAGS" in
+*-fsanitize=*) ;;
+*)
+	AX_CHECK_COMPILE_FLAG([-ftrivial-auto-var-init=zero],
+		[DEFAULT_CFLAGS="$DEFAULT_CFLAGS -ftrivial-auto-var-init=zero"], [], [-Werror])
+	;;
+esac
+
+# Only a [] member is a flexible array, so _FORTIFY_SOURCE bounds a trailing
+# char[1] as written. The tree has none, and this keeps it that way.
+AX_CHECK_COMPILE_FLAG([-fstrict-flex-arrays=3], [DEFAULT_CFLAGS="$DEFAULT_CFLAGS -fstrict-flex-arrays=3"], [], [-Werror])
+
 # Force libc back into DT_NEEDED for libraries that reach it only through
 # libhttrack (the libtest callbacks), but only with a GNU-style linker; Apple
 # ld rejects these flags and links libSystem unconditionally.
@@ -266,7 +333,8 @@ AC_SUBST([LIBC_FORCE_LINK])
 ### PIE
 CFLAGS_PIE=""
 LDFLAGS_PIE=""
-AX_CHECK_COMPILE_FLAG([-fpie], [CFLAGS_PIE="-fpie"], [], [-Werror])
+# sparc64 caps the GOT under -fpie, and htsserver outgrew it, so use -fPIE.
+AX_CHECK_COMPILE_FLAG([-fPIE], [CFLAGS_PIE="-fPIE"], [], [-Werror])
 AX_CHECK_LINK_FLAG([-pie], [LDFLAGS_PIE="-pie"])
 AC_SUBST([CFLAGS_PIE])
 AC_SUBST([LDFLAGS_PIE])
@@ -476,6 +544,12 @@ AC_CHECK_FUNCS([utimensat])
 # _GNU_SOURCE, which htsglobal.h's include order never gives the tree.
 AC_CHECK_FUNCS([strerror_r])
 
+# The DNS self-test times a cancel against a sleeping resolver. Wall-clock
+# elapsed time is steppable, so it reads CLOCK_MONOTONIC where there is one.
+# Pre-2.17 glibc keeps clock_gettime() in librt.
+AC_SEARCH_LIBS([clock_gettime], [rt])
+AC_CHECK_FUNCS([clock_gettime])
+
 ### Where an optional feature's default comes from (meson's auto_features)
 AC_MSG_CHECKING([whether to probe for optional features nobody asked for])
 AC_ARG_ENABLE([auto-features],
@@ -499,6 +573,52 @@ AC_ARG_ENABLE([auto-features],
 # What an optional feature's own flag falls back to when it is not passed.
 AS_IF([test x"$auto_features" = x"no"],
 	[hts_feature_default=no], [hts_feature_default=auto])
+
+## Multipath TCP (RFC 8684). HTS_INET_MPTCP is internal, because it moves no
+## installed struct, so it stays out of htsfeatures.h.
+AC_ARG_ENABLE([mptcp],
+	[AS_HELP_STRING([--enable-mptcp=@<:@yes/no/auto@:>@],[Open connections with Multipath TCP where the kernel offers it @<:@default=auto@:>@])],
+	[
+	case "${enableval}" in
+	no|yes|auto)
+		mptcp_want=$enableval
+		mptcp_asked=yes
+		;;
+	*)
+		AC_MSG_ERROR([bad value for mptcp, expected yes/no/auto])
+		;;
+	esac
+	],
+	[
+	mptcp_want=$hts_feature_default
+	mptcp_asked=no
+	])
+mptcp_have=no
+AS_CASE([$host_os], [linux*|darwin*], [mptcp_platform=yes], [mptcp_platform=no])
+AS_IF([test x"$mptcp_want" != x"no" && test x"$mptcp_platform" = x"yes"],
+	[AS_CASE([$host_os],
+		[darwin*],
+		[dnl macOS has no protocol for it: an AF_MULTIPATH socket, connected
+		dnl with connectx(), is the whole interface. The SDK does not declare
+		dnl AF_MULTIPATH, so connectx() is what is checked here and the domain
+		dnl number is proven at runtime, where a wrong one just fails socket().
+		AC_CHECK_FUNC([connectx], [mptcp_have=yes], [])],
+		[AC_CHECK_DECL([IPPROTO_MPTCP], [mptcp_have=yes], [],
+			[[#include <netinet/in.h>]])])
+	AS_IF([test x"$mptcp_have" = x"no" && test x"$mptcp_want" = x"yes"],
+		[AC_MSG_ERROR([mptcp requested but this platform does not offer it])])])
+AS_IF([test x"$mptcp_have" = x"yes"],
+	[AC_DEFINE([HTS_INET_MPTCP], [1], [Define to 1 to open sockets with Multipath TCP.])],
+	[AC_DEFINE([HTS_INET_MPTCP], [0], [Define to 1 to open sockets with Multipath TCP.])])
+AC_MSG_CHECKING([whether to open connections with Multipath TCP])
+dnl Name who decided, the way the backtrace switch above does.
+AS_IF([test x"$mptcp_platform" = x"no"],
+	[AC_MSG_RESULT([no (not implemented on $host_os)])],
+	[test x"$mptcp_want" = x"auto"], [AC_MSG_RESULT([$mptcp_have (auto)])],
+	[test x"$mptcp_asked" = x"no"], [AC_MSG_RESULT([$mptcp_have (auto-features off)])],
+	[AC_MSG_RESULT([$mptcp_have (requested)])])
+# MPTCP_INFO tells a negotiated connection from one that fell back to plain TCP.
+AC_CHECK_HEADERS([linux/mptcp.h])
 
 ## The header can exist while backtrace() lives in another library (Termux's
 ## libandroid-execinfo); only httrack links it, so keep it out of LIBS.
@@ -564,6 +684,29 @@ AS_IF([test x"$crash_test" = x"yes"],
 	[AC_DEFINE([HTS_CRASH_TEST], [1],
 		[Define to 1 to build the hidden -#c crash-test option.])])
 
+## On by default because the suite drives -#test.
+AC_ARG_ENABLE([selftests],
+	[AS_HELP_STRING([--disable-selftests],
+		[leave the engine self-tests (hidden -#test option) out of libhttrack; make check needs them @<:@default=enabled@:>@])],
+	[
+	case "${enableval}" in
+	no|yes)
+		selftests=$enableval
+		;;
+	*)
+		AC_MSG_ERROR([bad value for selftests, expected yes/no])
+		;;
+	esac
+	],
+	[selftests=yes])
+AC_MSG_CHECKING([whether to build the engine self-tests])
+AC_MSG_RESULT([$selftests])
+AS_IF([test x"$selftests" = x"no"],
+	[AC_DEFINE([HTS_NO_SELFTEST], [1],
+		[Define to 1 to leave the engine self-tests out of libhttrack.])])
+AM_CONDITIONAL([SELFTESTS], [test x"$selftests" = x"yes"])
+AC_SUBST([SELFTESTS], [$selftests])
+
 ## CSPRNG for the --single-file mark; /dev/urandom is the fallback
 AC_CHECK_FUNCS([getrandom])
 
@@ -573,6 +716,19 @@ CHECK_ZLIB()
 ### brotli and zstd content codings (optional)
 CHECK_BROTLI()
 CHECK_ZSTD()
+
+### Optional Public Suffix List file
+AC_ARG_WITH([psl-file],
+	[AS_HELP_STRING([--with-psl-file@<:@=PATH@:>@],[Read the Public Suffix List from PATH at startup, falling back to the built-in copy @<:@default=no, PATH=/usr/share/publicsuffix/public_suffix_list.dat@:>@])],
+	[psl_file=$withval], [psl_file=no])
+AS_CASE([$psl_file],
+	[yes], [psl_file=/usr/share/publicsuffix/public_suffix_list.dat],
+	[no|""], [psl_file=])
+AC_MSG_CHECKING([which Public Suffix List file to read])
+AS_IF([test -n "$psl_file"],
+	[AC_DEFINE_UNQUOTED([HTS_PSL_FILE], ["$psl_file"], [Public Suffix List file read at startup])
+	AC_MSG_RESULT([$psl_file])],
+	[AC_MSG_RESULT([none, built-in copy only])])
 
 ### OpenSSL is explicitly enabled/disabled ?
 AC_MSG_CHECKING(whether to enable https support)
@@ -1068,6 +1224,24 @@ done
 AC_SUBST([FUZZ_CORPUS_LIST])
 AC_MSG_RESULT([$hts_ncorpus])
 test "$hts_ncorpus" -gt 0 || AC_MSG_ERROR([no fuzz corpus file matched fuzz/corpus/*/*])
+
+# The parser differential's corpus needs the same list, two levels deep at most.
+# A whitespace-holding name is refused here, where the file can be named,
+# because make dist would otherwise split the entry and blame distdir-am.
+AC_MSG_CHECKING([for parser corpus files])
+PARSER_CORPUS_LIST=
+hts_nparser=0
+for hts_p in "$srcdir"/tools/parser-corpus/* "$srcdir"/tools/parser-corpus/*/*; do
+	test -f "$hts_p" || continue
+	case $hts_p in
+	*[[[:space:]]]*) AC_MSG_ERROR([corpus filename contains whitespace: $hts_p]) ;;
+	esac
+	PARSER_CORPUS_LIST="$PARSER_CORPUS_LIST `echo "$hts_p" | sed 's|.*/tools/parser-corpus/|tools/parser-corpus/|'`"
+	hts_nparser=`expr $hts_nparser + 1`
+done
+AC_SUBST([PARSER_CORPUS_LIST])
+AC_MSG_RESULT([$hts_nparser])
+test "$hts_nparser" -gt 0 || AC_MSG_ERROR([no file matched tools/parser-corpus/*])
 
 # The doc pages reach license.txt and its neighbours with "../", so htmldir defaults
 # one level below $(docdir), where those install. A --htmldir naming a path wins.

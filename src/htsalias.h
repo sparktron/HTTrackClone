@@ -55,6 +55,12 @@ int optalias_check(int argc, const char *const *argv, int n_arg,
 int optalias_find(const char *token);
 const char *optalias_help(const char *token);
 int optreal_find(const char *token);
+/* Steps *AT (start at 1) through the short-option cluster TOKEN (-qO1, -%vO)
+   as htscoremain.c's cluster loop splits it, copying each option's name (-O,
+   -%P for -&P) to NAME, at least 5 bytes. A glued digit comes back as an
+   option of its own (-1), which names none. Returns HTS_FALSE past the end. */
+hts_boolean optcluster_next(const char *token, size_t *at, char *name,
+                            size_t name_size);
 const char *optreal_value(int p);
 const char *optalias_value(int p);
 const char *opttype_value(int p);
@@ -66,14 +72,13 @@ void expand_home(String * str);
    and every pointer a caller kept into one, valid. */
 typedef struct {
   char **argv; /* argc slots used out of capacity allocated */
-  /* per slot: the token arrived already unquoted, so the parser must not strip
-     a quote pair off it again (doit.log tokens, unquoted by next_token) */
-  hts_boolean *unquoted;
   /* per slot: the token was put here as an option's parameter by something that
      checked the pair, so the parser takes it as a value even where it begins
      with '-' (#1425). Set by cmdl_mark_param() at the three places that know:
      optalias_check()'s callers, and the doit.log a previous run accepted. */
   hts_boolean *param;
+  /* per slot: 1 + the parameter count of an option the parser read, or 0 */
+  int *span;
   int argc;
   int capacity;
   hts_arena tokens;
@@ -94,10 +99,6 @@ hts_boolean cmdl_add(cmdl_argv *cmd, const char *token);
    HTS_FALSE if it does not fit and neither the slots nor the arena can be
    grown. */
 hts_boolean cmdl_ins(cmdl_argv *cmd, const char *token, int pos);
-
-/* cmdl_ins for a token that has already been unquoted by its reader, marking
-   it so the parser leaves its quotes alone. */
-hts_boolean cmdl_ins_unquoted(cmdl_argv *cmd, const char *token, int pos);
 
 /* Mark slot pos as an option's parameter; see cmdl_argv::param. */
 void cmdl_mark_param(cmdl_argv *cmd, int pos);

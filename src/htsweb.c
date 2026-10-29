@@ -94,6 +94,7 @@ static int help_server(char *dest_path, int defaultPort, const char *bindAddr);
 extern int commandRunning;
 extern int commandEnd;
 extern int commandReturn;
+extern int commandReturnSet;
 extern int commandEndRequested;
 extern char *commandReturnMsg;
 extern char *commandReturnCmdl;
@@ -200,7 +201,7 @@ static void client_ping(void *pP) {
     Sleep(1000);
     /* A mirror in flight outranks every rule below: it may have hours of
        crawling behind it, and the user can always come back to its page. */
-    if (commandRunning) {
+    if (hts_load_acquire_int(&commandRunning)) {
       continue;
     }
     hts_mutexlock(&pingMutex);
@@ -225,13 +226,39 @@ static void client_ping(void *pP) {
     hts_mutexrelease(&pingMutex);
     /* Re-read after the decision: a mirror may have started while it was made,
        and exiting now would lose it. */
-    if (commandRunning) {
+    if (hts_load_acquire_int(&commandRunning)) {
       why = NULL;
     }
   }
 
   fprintf(stderr, "Exiting: %s\n", why);
   exit(EXIT_SUCCESS);
+}
+
+/* --help prints this to stdout, a bad command line to stderr. */
+static void usage(FILE *fp, const char *argv0) {
+  fprintf(fp,
+          "usage: %s <path-to-html-root-dir> [option value ..] "
+          "[key value ..]\n",
+          argv0);
+  fprintf(fp, "Serves the WebHTTrack interface. Most users start it through "
+              "webhttrack.\n");
+  fprintf(fp, "  --port <port>          listen on this port (default: the "
+              "first free port from 8080)\n");
+  fprintf(fp, "  --bind <address>       listen on this address (default: "
+              "127.0.0.1)\n");
+  fprintf(fp, "  --ppid <pid>           exit when the interface started by "
+              "this launcher process is closed\n");
+  fprintf(fp, "  --ping-timeout <secs>  with --ppid, how long a browser window "
+              "that stops answering counts as open (default: 120)\n");
+  fprintf(fp, "  key value              any other pair sets a value the "
+              "interface reads, such as path or lang\n");
+  fprintf(fp, "  -h, --help             print this help and exit\n");
+  fprintf(fp, "  --version              print the version and exit\n");
+  fprintf(fp, "example: %s /usr/share/httrack/ lang 1\n", argv0);
+  fprintf(fp, "means: serve the interface in English\n");
+  fprintf(fp, "example: %s /usr/share/httrack/ path /tmp/mirrors\n", argv0);
+  fprintf(fp, "means: keep the projects in /tmp/mirrors\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -241,6 +268,16 @@ int main(int argc, char *argv[]) {
   int parentPid = 0;
   /* NULL leaves smallserver_init on its loopback default; --bind widens it */
   const char *bindAddr = NULL;
+
+  if (argc >= 2 &&
+      (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
+    usage(stdout, argv[0]);
+    return 0;
+  }
+  if (argc >= 2 && strcmp(argv[1], "--version") == 0) {
+    printf("HTSServer version %s\n", HTTRACK_VERSION);
+    return 0;
+  }
 
   printf("Initializing the server..\n");
 
@@ -266,13 +303,7 @@ int main(int argc, char *argv[]) {
 
   if (argc < 2 || (argc % 2) != 0) {
     fprintf(stderr, "** Warning: use the webhttrack frontend if available\n");
-    fprintf(stderr,
-            "usage: %s [--port <port>] [--bind <address>: default 127.0.0.1] "
-            "[--ppid parent-pid] "
-            "[--ping-timeout <seconds>] "
-            "<path-to-html-root-dir> [key value [key value]..]\n",
-            argv[0]);
-    fprintf(stderr, "example: %s /usr/share/httrack/\n", argv[0]);
+    usage(stderr, argv[0]);
     return 1;
   }
 
@@ -425,38 +456,50 @@ int main(int argc, char *argv[]) {
 }
 
 static int webhttrack_runmain(httrackp * opt, int argc, char **argv);
+
+/* The server thread reads global_opt under this lock (#1863). */
+static void back_launch_end(httrackp *opt) {
+  webhttrack_lock();
+  global_opt = NULL;
+  webhttrack_release();
+  hts_free_opt(opt);
+  hts_uninit();
+}
+
+/* The server thread reads both flags under the lock, and the watchdog reads
+   commandRunning without it. */
+static void back_launch_finished(void) {
+  webhttrack_lock();
+  hts_store_release_int(&commandRunning, 0);
+  commandEnd = 1;
+  webhttrack_release();
+}
+
 static void back_launch_cmd(void *pP) {
   char *cmd = (char *) pP;
   char **argv;
   int argc = 0;
-
-  //
-  httrackp *opt;
+  /* webhttrack_main() sets it before starting this thread. */
+  httrackp *const opt = global_opt;
 
   /* copy commandline */
   if (commandReturnCmdl)
     free(commandReturnCmdl);
   commandReturnCmdl = strdup(cmd);
 
-  /* split */
-  argv = hts_split_cmdline(cmd, &argc);
+  argv = hts_split_webcmd(cmd, &argc);
   if (argv == NULL) {
     if (commandReturnMsg)
       free(commandReturnMsg);
     commandReturnMsg = strdup("could not parse the command line");
     commandReturn = -1;
-    commandRunning = 0;
-    commandEnd = 1;
+    back_launch_end(opt);
+    back_launch_finished();
     free(cmd);
     return;
   }
   /* drop the program name the posted command line carries */
   argv[0] = strdupt("webhttrack");
-
-  /* init */
-  hts_init();
-  global_opt = opt = hts_create_opt();
-  assert(opt->size_httrackp >= sizeof(httrackp));
 
   /* run */
   commandReturn = webhttrack_runmain(opt, argc, argv);
@@ -466,16 +509,8 @@ static void back_launch_cmd(void *pP) {
     commandReturnMsg = strdup(hts_errmsg(opt));
   }
 
-  /* free */
-  global_opt = NULL;
-  hts_free_opt(opt);
-  hts_uninit();
-
-  /* okay */
-  commandRunning = 0;
-
-  /* finished */
-  commandEnd = 1;
+  back_launch_end(opt);
+  back_launch_finished();
   DEBUG(fprintf(stderr, "commandEnd=1\n"));
 
   /* free */
@@ -486,12 +521,24 @@ static void back_launch_cmd(void *pP) {
 }
 
 void webhttrack_main(char *cmd) {
-  commandRunning = 1;
+  hts_init();
+  /* The caller holds webhttrack_lock(). */
+  global_opt = hts_create_opt();
+  assert(global_opt->size_httrackp >= sizeof(httrackp));
+  /* a previous run's flags would stop this one, or show its result */
+  commandEnd = commandReturn = commandReturnSet = commandEndRequested = 0;
+  hts_store_release_int(&commandRunning, 1);
   DEBUG(fprintf(stderr, "commandRunning=1\n"));
   if (hts_newthread(back_launch_cmd, (void *) strdup(cmd)) != 0) {
+    httrackp *const opt = global_opt;
+
+    /* back_launch_end() would retake the lock the caller holds */
+    global_opt = NULL;
+    hts_free_opt(opt);
+    hts_uninit();
     /* Nothing else clears the flag, and while it is set the watchdog holds the
        server open for a mirror that never started. */
-    commandRunning = 0;
+    hts_store_release_int(&commandRunning, 0);
     commandEnd = 1;
     commandReturn = -1;
   }
@@ -545,7 +592,8 @@ static int help_server(char *dest_path, int defaultPort, const char *bindAddr) {
   int returncode = 0;
   char adr_prox[HTS_URLMAXSIZE * 2];
   int port_prox;
-  T_SOC soc = smallserver_init_std(&port_prox, adr_prox, defaultPort, bindAddr);
+  T_SOC soc = smallserver_init_std(&port_prox, adr_prox, sizeof(adr_prox),
+                                   defaultPort, bindAddr);
 
   if (soc != INVALID_SOCKET) {
     char url[HTS_URLMAXSIZE * 2];
@@ -649,12 +697,14 @@ int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_back * b
   //
   char st[256];
 
-  /* Exit now */
-  if (commandEndRequested == 2)
-    return 0;
-
   /* Lock */
   webhttrack_lock();
+
+  /* Exit now. The server thread sets this under the lock. */
+  if (commandEndRequested == 2) {
+    webhttrack_release();
+    return 0;
+  }
 
   if (stats) {
     stat_written = stats->stat_files;
@@ -756,27 +806,28 @@ int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_back * b
 
           for(_i = 0 + k; (_i < max(back_max * k, 1)) && (index < NStatsBuffer); _i++) {        // no lien
             int i = (back_index + _i) % back_max;       // commencer par le "premier" (l'actuel)
+            const int slot_status = hts_load_acquire_int(&back[i].status);
 
-            if (back[i].status >= 0) { // signifie "lien actif"
+            if (slot_status >= 0) { // an active slot
               ok = 0;
               switch (j) {
               case 0:          // prioritaire
-                if ((back[i].status > 0) && (back[i].status < 99)) {
+                if ((slot_status > 0) && (slot_status < 99)) {
                   strcpybuff(StatsBuffer[index].state, "receive");
                   ok = 1;
                 }
                 break;
               case 1:
-                if (back[i].status == STATUS_WAIT_HEADERS) {
+                if (slot_status == STATUS_WAIT_HEADERS) {
                   strcpybuff(StatsBuffer[index].state, "request");
                   ok = 1;
-                } else if (back[i].status == STATUS_CONNECTING) {
+                } else if (slot_status == STATUS_CONNECTING) {
                   strcpybuff(StatsBuffer[index].state, "connect");
                   ok = 1;
-                } else if (back[i].status == STATUS_WAIT_DNS) {
+                } else if (slot_status == STATUS_WAIT_DNS) {
                   strcpybuff(StatsBuffer[index].state, "search");
                   ok = 1;
-                } else if (back[i].status == STATUS_FTP_TRANSFER) {     // ohh le beau ftp
+                } else if (slot_status == STATUS_FTP_TRANSFER) { // ftp
                   char proto[8] = "ftp";
 
                   if (back[i].url_adr[0]) {
@@ -796,7 +847,7 @@ int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_back * b
                 }
                 break;
               default:
-                if (back[i].status == STATUS_READY) {   // prêt
+                if (slot_status == STATUS_READY) { // ready
                   if (back[i].r.statuscode == HTTP_OK) {
                     strcpybuff(StatsBuffer[index].state, "ready");
                     ok = 1;
@@ -824,9 +875,14 @@ int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_back * b
                 //
                 s[0] = '\0';
                 strcpybuff(StatsBuffer[index].url_sav, back[i].url_sav);        // pour cancel
-                if (strcmp(back[i].url_adr, "file://"))
-                  strcatbuff(s, back[i].url_adr);
-                else
+                if (strcmp(back[i].url_adr, "file://")) {
+                  size_t keep;
+                  const char *const host =
+                      stats_skip_login(back[i].url_adr, &keep);
+
+                  strncatbuff(s, back[i].url_adr, keep);
+                  strcatbuff(s, host);
+                } else
                   strcatbuff(s, "localhost");
                 /* url_adr and url_fil are each as wide as s, and this is
                    the progress display: clip rather than abort */
@@ -834,6 +890,7 @@ int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_back * b
                   strlncatbuff(s, "/", sizeof(s), sizeof(s) - 1 - strlen(s));
                 strlncatbuff(s, back[i].url_fil, sizeof(s),
                              sizeof(s) - 1 - strlen(s));
+                hts_hide_secrets(opt, s, sizeof(s));
 
                 StatsBuffer[index].file[0] = '\0';
                 {
@@ -857,16 +914,21 @@ int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_back * b
                              s + l - MAX_LEN_INPROGRESS / 2 + 2);
                 }
 
-                if (back[i].r.totalsize > 0) {  // taille prédéfinie
-                  StatsBuffer[index].sizetot = back[i].r.totalsize;
-                  StatsBuffer[index].size = back[i].r.size;
-                } else {        // pas de taille prédéfinie
-                  if (back[i].status == STATUS_READY) { // prêt
-                    StatsBuffer[index].sizetot = back[i].r.size;
-                    StatsBuffer[index].size = back[i].r.size;
+                /* An FTP worker may be writing the sizes right now. */
+                const LLint size = hts_load_relaxed_llint(&back[i].r.size);
+                const LLint totalsize =
+                    hts_load_relaxed_llint(&back[i].r.totalsize);
+
+                if (totalsize > 0) { // known size
+                  StatsBuffer[index].sizetot = totalsize;
+                  StatsBuffer[index].size = size;
+                } else {                             // unknown size
+                  if (slot_status == STATUS_READY) { // ready
+                    StatsBuffer[index].sizetot = size;
+                    StatsBuffer[index].size = size;
                   } else {
                     StatsBuffer[index].sizetot = 8192;
-                    StatsBuffer[index].size = (back[i].r.size % 8192);
+                    StatsBuffer[index].size = (size % 8192);
                   }
                 }
                 index++;

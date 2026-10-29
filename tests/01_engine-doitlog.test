@@ -94,8 +94,8 @@ grep -q ' -%F "" -r2' "$out2/hts-cache/doit.log" || {
 }
 
 # --- 4. a value whose first character is a quote survives the round-trip -----
-# Two leading quotes, because the -O pass strips one pair: the footer keeps a
-# leading quote, which reopens on reprise and swallows -r2 unless escaped.
+# The footer keeps its leading quote, which reopens on reprise and swallows -r2
+# unless escaped.
 out3="$tmp/out3"
 site3="$tmp/site3"
 footer='"<!-- MARK -->'
@@ -105,7 +105,7 @@ printf '<html><body><a href="a.html">a</a></body></html>' >"$site3/index.html"
 echo '<html><body>aaa</body></html>' >"$site3/a.html"
 rc=0
 "$bin" "file://$site3/index.html" -O "$out3" --quiet -n -%v0 \
-    -%F "\"$footer\"" -r2 >/dev/null 2>&1 || rc=$?
+    -%F "$footer" -r2 >/dev/null 2>&1 || rc=$?
 test "$rc" -eq 0 || fail "initial mirror with a leading-quote footer exited $rc"
 page=$(find "$out3" -path '*/site3/index.html' -print -quit)
 test -n "$page" || fail "mirrored page missing after the leading-quote mirror"
@@ -127,15 +127,14 @@ grep -qF -- '-%F "\"<!-- MARK -->" -r2' "$out3/hts-cache/doit.log" || {
 }
 
 # --- 5. a plain argument keeps its leading quote too (#1263) -----------------
-# A filter, not an option value, so it meets the second strip pass too. Three
-# leading quotes: that pass and the -O one each eat one.
+# A plain argument, not an option value.
 out4="$tmp/out4"
 site4="$tmp/site4"
 mkdir -p "$site4"
 printf '<html><body><a href="foo.html">f</a></body></html>' >"$site4/index.html"
 echo '<html><body>foo</body></html>' >"$site4/foo.html"
 rc=0
-"$bin" "file://$site4/index.html" -O "$out4" --quiet -n -%v0 '"""+*foo*""' \
+"$bin" "file://$site4/index.html" -O "$out4" --quiet -n -%v0 '"+*foo*' \
     >/dev/null 2>&1 || rc=$?
 test "$rc" -eq 0 || fail "initial mirror with a leading-quote filter exited $rc"
 grep -qF -- '"\"+*foo*"' "$out4/hts-cache/doit.log" || {
@@ -157,5 +156,24 @@ cmp -s "$tmp/doit4.before" "$tmp/doit4.after" || {
     diff "$tmp/doit4.before" "$tmp/doit4.after" | head -4
     exit 1
 }
+
+# --- 6. the reader's split: extra spaces add no token, quotes go ----------
+# A crafted line over a real cache. The TAB is argument data, not a separator.
+out5="$tmp/out5"
+rc=0
+"$bin" "$url" -O "$out5" --quiet -n -%v0 -r2 >/dev/null 2>&1 || rc=$?
+test "$rc" -eq 0 || fail "initial mirror for the crafted line exited $rc"
+{
+    printf '%s -O %s -q -n  -%%v0 -%%F "x\ty z" -r2 \n' "$url" "$out5"
+    tail -n +2 "$out5/hts-cache/doit.log"
+} >"$tmp/doit5"
+mv "$tmp/doit5" "$out5/hts-cache/doit.log"
+rc=0
+(cd "$out5" && "$bin" >/dev/null 2>&1) || rc=$?
+test "$rc" -eq 0 || fail "crafted-line reprise exited $rc"
+want="$url -O $out5 -q -n -%v0 -%F \"x"$'\t'"y z\" -r2"
+got=$(head -1 "$out5/hts-cache/doit.log")
+got=${got%"$SELFTEST_CR"} # LF is CR LF on Windows
+test "$got" = "$want" || fail "crafted line read back as [$got], want [$want]"
 
 exit 0

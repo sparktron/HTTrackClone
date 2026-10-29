@@ -6,17 +6,17 @@ TESTS = @TESTS_LIST@
 # Committed binary fixture read by 01_zlib-cache-golden.test. List it
 # explicitly: automake does not expand wildcards in EXTRA_DIST, so a glob would
 # silently drop it from the dist tarball and break "make distcheck".
-EXTRA_DIST = $(TESTS) renamefail.c unlinkfail.c threadattrfail.c nobacktrace.c altstackprobe.c nopieprobe.c printnumprobe.c closetrack.c ftpcancel.c stopresume.c seekfail.c pubheaderlayout.c chainplug.c mirrorverdict.c crawl-test.sh run-all-tests.sh check-network.sh check-test-names.sh \
+EXTRA_DIST = $(TESTS) renamefail.c unlinkfail.c threadattrfail.c gaistall.c nobacktrace.c altstackprobe.c nopieprobe.c printnumprobe.c closetrack.c ftpcancel.c stopresume.c seekfail.c pubheaderlayout.c chainplug.c sendheadrefuse.c mirrorverdict.c crawl-test.sh run-all-tests.sh check-network.sh check-test-names.sh \
 	proxy-https-server.py socks5-server.py proxy-connect-server.py \
 	proxytestlib.py tls-stall-server.py warc-validate.py wacz-validate.py \
 	header-injection-server.py header-injection-check.py \
-	postfile-server.py \
-	status-line-server.py \
+	postfile-server.py bundle-server.py \
+	status-line-server.py retry-after-server.py \
 	pty-resize.py ttyrun.py test-timeout.sh png-colors.py \
 	local-crawl.sh local-server.py ftp-server.py testlib.sh proclib.sh \
 	webhttracklib.sh httpclient.py webtestlib.py crawllib.sh arclib.sh \
-	guide-image-check.py \
-	ci-windows-suite.sh ci-windows-watchdog.ps1 install-headers-sweep.sh \
+	guide-image-check.py check-subshell-errexit.py check-log-logins.py \
+	ci-windows-suite.sh ci-suite-stage.sh ci-windows-watchdog.ps1 install-headers-sweep.sh \
 	wsl2-exe-shim.sh \
 	server.crt server.key \
 	server-root/simple/basic.html server-root/simple/link.html \
@@ -56,6 +56,7 @@ TESTS_ENVIRONMENT += CONFIGURED_HTMLDIR=$(htmldir)
 TESTS_ENVIRONMENT += ORIGIN_RPATH=$(ORIGIN_RPATH)
 # 225 and 376 both read what --disable-example-libs did to the install.
 TESTS_ENVIRONMENT += EXAMPLE_LIBS=$(EXAMPLE_LIBS)
+TESTS_ENVIRONMENT += SELFTESTS=$(SELFTESTS)
 # 222_pkgconfig-consumer.test asserts the staged .pc against these, and both
 # sides of the gate deciding whether it hands a consumer an rpath.
 TESTS_ENVIRONMENT += CONFIGURED_PREFIX=$(prefix)
@@ -82,12 +83,20 @@ TESTS_ENVIRONMENT += HTTRACK_SHLIB=$(abs_top_builddir)/src/$(LT_CV_OBJDIR)/libht
 # 449_plugin-postprocess-example.test dlopen()s this shipped example, suffix
 # included by the test since libtool names it .dylib on macOS.
 TESTS_ENVIRONMENT += CHANGECONTENT_LIB=$(abs_top_builddir)/libtest/$(LT_CV_OBJDIR)/libchangecontent
+# 506_example-libs-bounds.test plugs these two to check they refuse arguments
+# that used to overflow their fields.
+TESTS_ENVIRONMENT += FILENAME2_LIB=$(abs_top_builddir)/libtest/$(LT_CV_OBJDIR)/libfilename2
+TESTS_ENVIRONMENT += CONTENTFILTER_LIB=$(abs_top_builddir)/libtest/$(LT_CV_OBJDIR)/libcontentfilter
+TESTS_ENVIRONMENT += BASELINKS_LIB=$(abs_top_builddir)/libtest/$(LT_CV_OBJDIR)/libbaselinks
+TESTS_ENVIRONMENT += LISTLINKS_LIB=$(abs_top_builddir)/libtest/$(LT_CV_OBJDIR)/liblistlinks
 TESTS_ENVIRONMENT += RENAMEFAIL_LA=$(abs_builddir)/librenamefail.la
 TESTS_ENVIRONMENT += RENAMEFAIL_LIB=$(abs_builddir)/$(LT_CV_OBJDIR)/librenamefail.so
 TESTS_ENVIRONMENT += UNLINKFAIL_LA=$(abs_builddir)/libunlinkfail.la
 TESTS_ENVIRONMENT += UNLINKFAIL_LIB=$(abs_builddir)/$(LT_CV_OBJDIR)/libunlinkfail.so
 TESTS_ENVIRONMENT += THREADATTRFAIL_LA=$(abs_builddir)/libthreadattrfail.la
 TESTS_ENVIRONMENT += THREADATTRFAIL_LIB=$(abs_builddir)/$(LT_CV_OBJDIR)/libthreadattrfail.so
+TESTS_ENVIRONMENT += GAISTALL_LA=$(abs_builddir)/libgaistall.la
+TESTS_ENVIRONMENT += GAISTALL_LIB=$(abs_builddir)/$(LT_CV_OBJDIR)/libgaistall.so
 TESTS_ENVIRONMENT += NOBACKTRACE_LA=$(abs_builddir)/libnobacktrace.la
 TESTS_ENVIRONMENT += NOBACKTRACE_LIB=$(abs_builddir)/$(LT_CV_OBJDIR)/libnobacktrace.so
 TESTS_ENVIRONMENT += ALTSTACKPROBE_LA=$(abs_builddir)/libaltstackprobe.la
@@ -96,6 +105,8 @@ TESTS_ENVIRONMENT += CLOSETRACK_LA=$(abs_builddir)/libclosetrack.la
 TESTS_ENVIRONMENT += CLOSETRACK_LIB=$(abs_builddir)/$(LT_CV_OBJDIR)/libclosetrack.so
 TESTS_ENVIRONMENT += FTPCANCEL_LIB=$(abs_builddir)/$(LT_CV_OBJDIR)/libftpcancel.so
 TESTS_ENVIRONMENT += STOPRESUME_LIB=$(abs_builddir)/$(LT_CV_OBJDIR)/libstopresume.so
+# 522_plugin-sendhead-refused.test loads this through --wrapper.
+TESTS_ENVIRONMENT += SENDHEADREFUSE_LIB=$(abs_builddir)/$(LT_CV_OBJDIR)/libsendheadrefuse.so
 TESTS_ENVIRONMENT += SEEKFAIL_LA=$(abs_builddir)/libseekfail.la
 TESTS_ENVIRONMENT += SEEKFAIL_LIB=$(abs_builddir)/$(LT_CV_OBJDIR)/libseekfail.so
 TESTS_ENVIRONMENT += STRINGOOM_BIN=$(abs_builddir)/stringoom$(EXEEXT)
@@ -106,6 +117,10 @@ TESTS_ENVIRONMENT += MIRRORVERDICT_BIN=$(abs_builddir)/mirrorverdict$(EXEEXT)
 # real binary rather than the libtool wrapper script, plus the loader variable
 # libtool picked for this platform.
 TESTS_ENVIRONMENT += HTTRACK_BIN=$(abs_top_builddir)/src/$(LT_CV_OBJDIR)/httrack$(EXEEXT)
+# Where libtool puts the real binary when no shared library is built, since a
+# --disable-shared tree has no $(LT_CV_OBJDIR) at all (#1744). In a shared tree
+# this path is the wrapper script, so engine_binary() prefers the one above.
+TESTS_ENVIRONMENT += HTTRACK_BIN_STATIC=$(abs_top_builddir)/src/httrack$(EXEEXT)
 TESTS_ENVIRONMENT += HTTRACK_LIBDIR=$(abs_top_builddir)/src/$(LT_CV_OBJDIR)
 TESTS_ENVIRONMENT += SHLIBPATH_VAR=$(SHLIBPATH_VAR)
 # The shim directory test-timeout.sh puts on PATH under a sanitizer.
@@ -117,7 +132,7 @@ TESTS_ENVIRONMENT += HTTRACK_STDERR_WRAP_EXE=$(abs_builddir)/stderrwrap$(EXEEXT)
 check_LTLIBRARIES = librenamefail.la libunlinkfail.la libthreadattrfail.la \
 	libnobacktrace.la libaltstackprobe.la libclosetrack.la libftpcancel.la \
 	libstopresume.la \
-	libseekfail.la
+	libseekfail.la libsendheadrefuse.la libgaistall.la
 librenamefail_la_SOURCES = renamefail.c
 librenamefail_la_LDFLAGS = -module -avoid-version -rpath $(abs_builddir)
 librenamefail_la_LIBADD = $(DL_LIBS)
@@ -131,6 +146,11 @@ libunlinkfail_la_LIBADD = $(DL_LIBS)
 libthreadattrfail_la_SOURCES = threadattrfail.c
 libthreadattrfail_la_LDFLAGS = -module -avoid-version -rpath $(abs_builddir)
 libthreadattrfail_la_LIBADD = $(DL_LIBS)
+
+# getaddrinfo() staller for 527_local-maxtime-dns-stall.test
+libgaistall_la_SOURCES = gaistall.c
+libgaistall_la_LDFLAGS = -module -avoid-version -rpath $(abs_builddir)
+libgaistall_la_LIBADD = $(DL_LIBS)
 
 # backtrace() interposer for 143_engine-backtrace-empty.test
 libnobacktrace_la_SOURCES = nobacktrace.c
@@ -160,6 +180,16 @@ libstopresume_la_LIBADD = $(DL_LIBS) -lpthread
 libseekfail_la_SOURCES = seekfail.c
 libseekfail_la_LDFLAGS = -module -avoid-version -rpath $(abs_builddir)
 libseekfail_la_LIBADD = $(DL_LIBS)
+
+# sendhead hook that refuses the request, for
+# 522_plugin-sendhead-refused.test. A plugin, not an interposer, so it needs
+# the engine headers and hts_malloc() out of libhttrack.
+libsendheadrefuse_la_SOURCES = sendheadrefuse.c
+libsendheadrefuse_la_CPPFLAGS = -I$(top_srcdir)/src @DEFAULT_CFLAGS@ \
+	@THREADS_CFLAGS@ @V6_FLAG@ @LFS_FLAG@
+libsendheadrefuse_la_LDFLAGS = -module -avoid-version -rpath $(abs_builddir)
+libsendheadrefuse_la_LIBADD = $(top_builddir)/src/libhttrack.la \
+	$(THREADS_LIBS) $(SOCKET_LIBS)
 
 # realloc stub for 152_engine-string-oom.test; links nothing, so it stays a
 # plain binary rather than a libtool wrapper script.

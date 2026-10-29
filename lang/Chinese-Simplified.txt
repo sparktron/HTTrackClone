@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 代理协议。HTTP：标准代理。HTTP（CONNECT 隧道）：通过 CONNECT 隧道发送每个请求，用于仅支持 CONNECT 的代理，例如 Tor 的 HTTPTunnelPort。SOCKS5：默认端口 1080。
 Load cookies from file:
 从文件加载 cookies:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 在抓取前从 Netscape 格式的 cookies.txt 文件预加载 cookies。
 Pause between files:
 文件间暂停:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 忽略 %s 及其下所有主机
 Manual
 手册
+Max Retry-After(s)
+最长 Retry-After(秒)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+服务器发送 Retry-After 标头时，最长愿意等待的秒数。填 0 表示不等待就重试。
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+在此设置的规则会应用到当前正在运行的镜像。删除规则后，新的链接会再次通过，但已被该规则拒绝的链接在本次镜像中不会再回来。
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+无法使用此扫描规则。规则以 + 或 - 开头，后接匹配模式，且必须是一行简短文字。
+Theme:
+主题:
+Classic
+经典
+Accept headers
+Accept 标头
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+为每种链接发送的 Accept 标头。“自动”发送所选浏览器发送的值。
+Automatic
+自动
+Old HTTrack value
+旧版 HTTrack 值
+Default
+默认
+Pages
+网页
+Inline frames
+内嵌框架
+Frames
+框架
+Images
+图片
+Style sheets
+样式表
+Scripts
+脚本
+Fonts
+字体
+Audio
+音频
+Video
+视频
+Objects
+对象
+Embedded content
+嵌入内容
+Log in with a browser...
+使用浏览器登录...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+在浏览器中登录网站，然后使用它获得的 cookies 和浏览器身份进行抓取
+No Microsoft Edge WebView2 runtime is installed on this computer
+此计算机上未安装 Microsoft Edge WebView2 运行时
+Log in with a browser
+使用浏览器登录
+Go
+转到
+Done
+完成
+Clear login
+退出登录
+The browser did not open: %s.
+浏览器未能打开：%s。
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+浏览器没有返回任何 cookies。向导完成后，地址和浏览器身份将随工程一起保存。
+Cookies collected: %d. They are used when you press OK.
+已收集的 cookies：%d。按“确定”后将使用它们。
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+已收集的 cookies：%d。向导完成后将随工程一起保存。
+The login could not be written to %s.
+无法将登录信息写入 %s。
+%d of the browser's cookies were left out, because the engine would not read them.
+浏览器的 cookies 中有 %d 个被忽略，因为 HTTrack 无法读取它们。
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+在此浏览器的另一个标签页中登录网站。打开开发者工具（F12），再打开“网络”标签页，刷新页面，在第一个请求上点击右键，选择 Copy as cURL (bash)。将文本粘贴到这里。也可以使用 cookies.txt 导出文件，它会用于列表中的第一个地址。
+Cookies for: %s. Browser identity: %s.
+Cookies 适用于：%s。浏览器身份：%s。
+A login cannot be saved for this address, so nothing was kept.
+无法为此地址保存登录信息，因此未保留任何内容。
+Yes
+是
