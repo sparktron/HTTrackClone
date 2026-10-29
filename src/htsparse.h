@@ -32,6 +32,9 @@ Please visit our Website: http://www.httrack.com
 /* Author: Xavier Roche                                         */
 /* ------------------------------------------------------------ */
 
+#ifndef HTSPARSE_DEFH
+#define HTSPARSE_DEFH
+
 #include "htsglobal.h"
 
 /* Forward definitions */
@@ -125,12 +128,17 @@ hts_boolean hts_dirty_link_is_url(httrackp *opt, const char *str, size_t len,
    it was given. "unquoted_end" is the byte an unquoted CSS url() operand stops
    at, and '\0' when the operand was quoted. "is_module" marks a JavaScript
    module specifier, which resolves against the script rather than the page.
-   All four fields are zero when the scanner found nothing. */
+   "escape_parens" marks a CSS url(), whose rewrite keeps ( and ) encoded.
+   "entity_quote" is the quote a style attribute wrote as an entity, as in
+   url(&quot;a.png&quot;), so the link ends at the matching entity. All fields
+   are zero when the scanner found nothing. */
 typedef struct hts_js_link {
   int offset;
   int length;
   char unquoted_end;
   hts_boolean is_module;
+  hts_boolean escape_parens;
+  char entity_quote;
 } hts_js_link;
 
 /*
@@ -146,11 +154,12 @@ hts_boolean hts_js_quote_is_import_arg(const char *quote, const char *buffer);
 
 /*
   Does the script or CSS at "cursor" hand a URL to .src, .location, .href,
-  .open, .replace, .link, url() or import? "buffer" is the first byte of the
-  document, which the keyword tests read backwards from. "in_tag" says the
-  script is an attribute value such as onclick="...", and "tag_lastc" the quote
-  that attribute is written with. "in_css" lets url() take an unquoted operand.
-  Fills "link" and answers true when a URL was found.
+  .open, .replace, .link, url(), import or a module specifier after "from"?
+  "buffer" is the first byte of the document, which the keyword tests read
+  backwards from. "in_tag" says the script is an attribute value such as
+  onclick="...", and "tag_lastc" the quote that attribute is written with.
+  "in_css" lets url() take an unquoted operand. Fills "link" and answers true
+  when a URL was found.
 */
 hts_boolean hts_js_scan_link(httrackp *opt, const char *cursor,
                              const char *buffer, hts_boolean in_tag,
@@ -245,9 +254,10 @@ int hts_mirror_wait_for_next_file(htsmoduleStruct * str,
   to be ready for naming, having its header MIME type
   If the final URL is to be forbidden, sets 'forbidden_url' to the corresponding value
 */
-int hts_wait_delayed(htsmoduleStruct * str, lien_adrfilsave *afs,
+/* When fetch is not NULL, each redirect hop followed is merged into it. */
+int hts_wait_delayed(htsmoduleStruct *str, lien_adrfilsave *afs,
                      char *parent_adr, char *parent_fil, lien_adrfil *former,
-                     int *forbidden_url);
+                     int *forbidden_url, hts_fetch_meta *fetch);
 
 /* Context state */
 
@@ -271,5 +281,7 @@ int hts_wait_delayed(htsmoduleStruct * str, lien_adrfilsave *afs,
 #define ENGINE_SAVE_CONTEXT_BASE() \
   /* Apply changes */ \
   * str->ptr_ = ptr
+
+#endif
 
 #endif

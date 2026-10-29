@@ -31,11 +31,16 @@ Please visit our Website: http://www.httrack.com
 /* ------------------------------------------------------------ */
 
 /** @file htsarrays.h
- *  Header-only generic dynamic array (a typed growable vector). All operations
- *  are macros parameterized by the array lvalue A; the element type T is fixed
- *  by the struct TypedArray(T) declares. Counts and capacities are in
- *  elements, not bytes. The array owns its backing store: grow it via the Add/
- *  Append/EnsureRoom macros and release it with TypedArrayFree. */
+ *  Header-only typed dynamic array. Every operation is a macro taking the
+ *  array lvalue A, and the element type is fixed by the struct TypedArray(T)
+ *  declares. Counts and capacities are in elements, not bytes. The array owns
+ *  its store, so grow it with the Add, Append and EnsureRoom macros and release
+ *  it with TypedArrayFree.
+ *
+ *  A is evaluated once only by TypedArraySize, TypedArrayCapa, TypedArrayElts,
+ *  TypedArrayPtr and TypedArrayNth, and not at all by TypedArrayWidth. Every
+ *  other macro evaluates it several times, so A must be a plain lvalue with no
+ *  side effect. The other arguments are evaluated once. */
 #ifndef HTS_ARRAYS_DEFSTATIC
 #define HTS_ARRAYS_DEFSTATIC
 
@@ -45,8 +50,9 @@ Please visit our Website: http://www.httrack.com
 
 #include "htssafe.h"
 
-/* Abort on a NULL the caller has no way to fail gracefully. Not what the array
-   macros do: they leave the array as it was and let the caller notice. */
+/** Report a failed allocation of @p size bytes and abort. Call it where the
+    caller has no way to fail gracefully. The array macros below never call it,
+    because they leave the array as it was and let the caller notice. */
 static HTS_UNUSED void hts_record_assert_memory_failed(const size_t size) {
   fprintf(stderr, "memory allocation failed (%lu bytes)", (long int) size);
   assertf(!"memory allocation failed");
@@ -62,9 +68,9 @@ static HTS_UNUSED void hts_record_assert_memory_failed(const size_t size) {
       /** Opaque. **/                                                          \
       void *ptr;                                                               \
     } data;                                                                    \
-    /** Count. **/                                                             \
+    /** Element count. **/                                                     \
     size_t size;                                                               \
-    /** Capacity. **/                                                          \
+    /** Capacity, in elements. **/                                             \
     size_t capa;                                                               \
   }
 
@@ -77,46 +83,41 @@ static HTS_UNUSED void hts_record_assert_memory_failed(const size_t size) {
 /** Array capacity, in elements. **/
 #define TypedArrayCapa(A) ((A).capa)
 
-/**
- * Remaining free space, in elements.
- * Macro, first element evaluated multiple times.
- **/
+/** Remaining free space, in elements. **/
 #define TypedArrayRoom(A) (TypedArrayCapa(A) - TypedArraySize(A))
 
-/** Array elements, of type T*. **/
+/** Array elements, of type T*. A grow can move the store, so do not keep this
+    pointer across an Add, Append or EnsureRoom. **/
 #define TypedArrayElts(A) ((A).data.elts)
 
 /** Array pointer, of type void*. **/
 #define TypedArrayPtr(A) ((A).data.ptr)
 
-/** Size of T. **/
+/** Size of one element, in bytes. **/
 #define TypedArrayWidth(A) (sizeof(*TypedArrayElts(A)))
 
 /** Nth element of the array, as an lvalue. No bounds check; N must be
     < TypedArraySize(A). **/
 #define TypedArrayNth(A, N) (TypedArrayElts(A)[N])
 
-/**
- * Tail of the array (outside the array).
- * The returned pointer points to the beginning of TypedArrayRoom(A)
- * free elements.
- **/
+/** First free slot past the end, as an lvalue of the element type. It starts a
+    run of TypedArrayRoom(A) free elements, so it is unusable when that room is
+    0. **/
 #define TypedArrayTail(A) (TypedArrayNth(A, TypedArraySize(A)))
 
 /**
  * Can 'ROOM' more elements be put in the array?
  * This is how a growth failure is reported: TypedArrayEnsureRoom(A, ROOM)
- * leaves the array untouched when it cannot allocate, so the caller asks
- * again. Macro, first element evaluated multiple times.
+ * leaves the array untouched when it cannot allocate, so the caller asks again.
  **/
 #define TypedArrayHasRoom(A, ROOM) (TypedArrayRoom(A) >= (ROOM))
 
 /**
- * Ensure at least 'ROOM' elements can be put in the remaining space.
- * On success TypedArrayRoom(A) is at least 'ROOM'. An allocation failure
- * leaves contents, size and capacity as they were, for the caller to notice
- * with TypedArrayHasRoom(). Aborts only if the total would not fit a size_t,
- * which is a caller bug.
+ * Ensure at least 'ROOM' more elements can be put in the array.
+ * On success TypedArrayRoom(A) is at least 'ROOM'. An allocation failure leaves
+ * contents, size and capacity as they were, for the caller to notice with
+ * TypedArrayHasRoom(). It aborts when 'ROOM' more elements could not be
+ * addressed in bytes at all, which is a caller bug, not a memory shortage.
  **/
 #define TypedArrayEnsureRoom(A, ROOM)                                          \
   do {                                                                         \
@@ -127,6 +128,10 @@ static HTS_UNUSED void hts_record_assert_memory_failed(const size_t size) {
     size_t capa_ = TypedArrayCapa(A);                                          \
     void *newPtr_;                                                             \
     assertf(room_ <= maxCapa_ - TypedArraySize(A));                            \
+    /* Leaves the enclosing do/while: a realloc to the capacity the block      \
+       already has copies the whole store under ASan. */                       \
+    if (TypedArrayHasRoom(A, room_))                                           \
+      break;                                                                   \
     /* Saturating: a plain capa_*2 wraps to 0 and the loop never ends. */      \
     while (capa_ - TypedArraySize(A) < room_) {                                \
       capa_ = capa_ < minCapa_       ? minCapa_                                \
@@ -141,8 +146,8 @@ static HTS_UNUSED void hts_record_assert_memory_failed(const size_t size) {
     }                                                                          \
   } while (0)
 
-/** Add an element, if the array can be grown to hold it. Macro, first element
-    evaluated multiple times. **/
+/** Add element 'E' at the end. The array is left untouched when the store
+    cannot grow. **/
 #define TypedArrayAdd(A, E)                                                    \
   do {                                                                         \
     TypedArrayEnsureRoom(A, 1);                                                \
@@ -153,12 +158,20 @@ static HTS_UNUSED void hts_record_assert_memory_failed(const size_t size) {
   } while (0)
 
 /**
- * Add 'COUNT' elements from 'PTR', if the array can be grown to hold them.
- * Macro, first element evaluated multiple times.
+ * Add 'COUNT' elements, not bytes, read from 'PTR'.
+ * A 'COUNT' of 0 does nothing. The array is left untouched when the store
+ * cannot grow. 'PTR' must not point into the array, because a grow frees the
+ * old store. A 'COUNT' the array could never address aborts, see
+ * TypedArrayEnsureRoom().
  **/
 #define TypedArrayAppend(A, PTR, COUNT)                                        \
   do {                                                                         \
     const size_t count_ = (COUNT);                                             \
+    /* An array that never grew has no store, and a zero offset off a NULL     \
+       pointer is undefined even where nothing is copied. */                   \
+    if (count_ == 0) {                                                         \
+      break;                                                                   \
+    }                                                                          \
     /* This 1-case is to benefit from type safety. */                          \
     if (count_ == 1) {                                                         \
       TypedArrayAdd(A, *(PTR));                                                \
@@ -172,7 +185,7 @@ static HTS_UNUSED void hts_record_assert_memory_failed(const size_t size) {
     }                                                                          \
   } while (0)
 
-/** Clear an array, freeing memory and clearing size and capacity. **/
+/** Free the store and set size and capacity back to 0. **/
 #define TypedArrayFree(A)                                                      \
   do {                                                                         \
     if (TypedArrayPtr(A) != NULL) {                                            \

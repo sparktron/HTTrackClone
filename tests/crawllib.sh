@@ -116,13 +116,13 @@ local_server_start() {
 # sets its own) and a watchdog above it, so a wedge outliving the engine limit
 # reds the test instead of the 45-minute CI timeout.
 # Options, ahead of any httrack argument; -- ends them:
-#   --log FILE     crawl output (default: discarded)
+#   --log FILE     crawl output (default: a temp file, shown only on a wedge)
 #   --stdin FILE   what the engine reads on stdin, for a test answering an
 #                  interactive prompt; the word "closed" hands it no descriptor
 #                  at all. Redirecting the local_crawl call instead does not
 #                  reach the engine (#1258).
 local_crawl() {
-    local deadline log=/dev/null stdin=() arg rc=0
+    local deadline log='' stdin=() arg rc=0
     deadline=$(crawl_deadline)
     while test $# -gt 0; do
         case $1 in
@@ -148,8 +148,16 @@ local_crawl() {
     done
     args+=("$@")
 
+    # Keep a log even without --log, because a wedge's stack lands there.
+    local own=''
+    if test -z "$log"; then
+        log=/dev/null
+        own=$(mktemp "${TMPDIR:-/tmp}/httrack_crawl.XXXXXX") && log=$own || own=
+    fi
     run_with_timeout ${stdin[@]+"${stdin[@]}"} "$deadline" httrack "${args[@]}" \
         >"$log" 2>&1 || rc=$?
+    test "$rc" -ne 124 || dump_file "$log"
+    test -z "$own" || rm -f "$log"
     test "$rc" -ne 124 || fail "crawl watchdog fired after ${deadline}s"
     return "$rc"
 }
@@ -217,32 +225,36 @@ assert_lockrule_selftest() {
     echo "OK (${coverage#*: }, ${subsecond#*request: })"
 }
 
-# Did a request the engine will take reach DIR? It takes one stamped after its
-# own hts-in_progress.lock.
-lock_request_landed() { # lock_request_landed DIR NAME
-    local request="${1}/${2}" progress="${1}/hts-in_progress.lock"
-    test -f "$request" && test -f "$progress" &&
-        test "$(mtime "$request")" -gt "$(mtime "$progress")"
-}
-
 # Ask a running engine for something by dropping NAME in its output directory.
 # A bare redirect there reports ENOENT for three reasons a caller cannot separate.
 write_lock_request() { # write_lock_request DIR NAME PID
     local dir=$1 name=$2 pid=$3 gone='' up=$1
-    local try max_tries=30 went=''
+    local try max_tries=30 went='' staged="${1}/${2}.staged"
     # drvfs refuses a write into a directory it still holds (#1639), so the first
     # attempt gets 29 retries. A removal that went and came back inside the
     # window would be waited out instead of named, so each failure re-reads the
     # path.
+    #
+    # drvfs can also refuse a write that landed, and a second request asks the
+    # engine twice (#1712). The staging file going away says the move happened.
+    # Asking for the request cannot say it, because the engine may already have
+    # taken it.
     for try in $(seq 1 "$max_tries"); do
         test "$try" -eq 1 || sleep 0.1
         # The shell reports a failing redirect before it applies the 2>/dev/null
         # beside it (#1637).
-        if { : >"${dir}/${name}"; } 2>/dev/null; then
-            # Loud, so a retried write stays countable in the uploaded test log.
-            test "$try" -eq 1 ||
-                echo "write_lock_request: ${dir} took ${try} tries to accept ${name} (#1639)" >&2
-            return 0
+        if { : >"$staged"; } 2>/dev/null || test -f "$staged"; then
+            # mv puts the staged file INSIDE a directory sitting where the
+            # request goes, so that refusal is left to the retry.
+            if test ! -d "${dir}/${name}"; then
+                mv -f "$staged" "${dir}/${name}" 2>/dev/null || true
+            fi
+            if test ! -e "$staged"; then
+                # Loud, so a retried write stays countable in the uploaded test log.
+                test "$try" -eq 1 ||
+                    echo "write_lock_request: ${dir} took ${try} tries to accept ${name} (#1639)" >&2
+                return 0
+            fi
         fi
         if test "$try" -eq 1; then
             kill -0 "$pid" 2>/dev/null ||
@@ -255,9 +267,6 @@ write_lock_request() { # write_lock_request DIR NAME PID
                 break
             }
         fi
-        # drvfs can refuse a write that landed all the same, and writing again
-        # asks the engine twice (#1680).
-        if lock_request_landed "$dir" "$name"; then return 0; fi
     done
     # It walks up because the path crosses the driver's TMPDIR, the test's
     # mktemp directory and the crawl output (#1639). The last two arms only
@@ -275,7 +284,7 @@ write_lock_request() { # write_lock_request DIR NAME PID
         test -n "$up" || up=/
     done
     test -z "$gone" ||
-        fail "${gone} is gone (${up} survives): something removed it under a running test"
+        fail "${gone} is gone (${up} survives) after ${try} tries: something removed it under a running test"
     test -z "$went" ||
         fail "${dir} went missing under a running test, and was back before the walk"
     fail "${name} could not be written into ${dir}, which is still there, after ${max_tries} tries"

@@ -53,6 +53,39 @@
   <content_rating type="oars-1.1"/>
   <!-- Newest first; tests/01_engine-version-macros.test enforces it. -->
   <releases>
+    <release version="3.51.0" date="2026-10-28">
+      <description>
+        <ul>
+          <li>Mirror a site that needs a login: log in with your browser, use its "Copy as cURL", and paste the result into WebHTTrack. The login is saved and used again for the same site</li>
+          <li>The cookies file keeps each cookie's scope and expiry, and is written back at the end of the crawl</li>
+          <li>Requests look more like a real browser's, with the Accept and Sec-Fetch headers a browser sends</li>
+          <li>WebHTTrack has a dark mode, themes and a user stylesheet</li>
+          <li>Passwords in addresses and headers are hidden from the logs, and the logs can only be read by their owner</li>
+        </ul>
+      </description>
+    </release>
+    <release version="3.50.5" date="2026-10-02">
+      <description>
+        <ul>
+          <li>Pages are no longer saved outside the mirror folder, whatever name a plugin or a cache file gives them</li>
+          <li>Stopping a mirror is more reliable: Ctrl+C no longer hangs, and the time limit is kept even when a host name lookup is stuck</li>
+          <li>A mirror no longer gains empty folders for pages that failed, and the next run removes temporary files that a stopped run left</li>
+          <li>The size limit holds when several FTP downloads run at once</li>
+          <li>Stylesheets that use image-url() no longer make httrack download files the browser never loads</li>
+        </ul>
+      </description>
+    </release>
+    <release version="3.50.4" date="2026-09-24">
+      <description>
+        <ul>
+          <li>Mirrors of sites built on a JavaScript framework keep their modules, where the wrong address was fetched and its error page was stored instead</li>
+          <li>A server asking the crawler to wait and come back is obeyed now, where the page used to be given up at once. The Flow control page caps how long that wait may be</li>
+          <li>The log says when a site's bot protection refused the crawl, and when links above the starting page were left out of the mirror</li>
+          <li>A Windows build no longer leaves a shortened message unfinished, which could stop the program</li>
+          <li>Connections can use Multipath TCP on Linux and macOS, so a mirror carries on when one network path goes away</li>
+        </ul>
+      </description>
+    </release>
     <release version="3.50.3" date="2026-09-18">
       <description>
         <ul>

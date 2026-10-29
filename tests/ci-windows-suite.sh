@@ -106,6 +106,13 @@ ci_report_lost_workers() {
     fi
 }
 
+# Did test $1's own log catch WSL2 losing its interop channel (#1672)? Matched past
+# the line's prefix, "init:" on the imported rootfs and "WSL (pid)" on a store
+# build. Each test's own log, since the console carries other failures' tails.
+ci_test_lost_interop() { # ci_test_lost_interop TEST
+    test -f "$1.log" && grep -q 'ERROR: UtilAcceptVsock' "$1.log"
+}
+
 # The verdict on the failing tests named in $@, printed as annotations. Returns 3
 # where every one of their logs carries WSL2's interop error, because the exe never
 # launched under those, and 1 otherwise (#1672). The failures are named either way,
@@ -113,11 +120,7 @@ ci_report_lost_workers() {
 ci_failure_verdict() { # ci_failure_verdict TEST...
     local t real='' interop=''
     for t in "$@"; do
-        # WSL writes this when it cannot reach the Windows side. Matched past the
-        # line's prefix, which is "init:" on the imported rootfs and "WSL (pid)"
-        # on a store build. Each test's own log, since the console carries the
-        # tails of unrelated failures.
-        if test -f "$t.log" && grep -q 'ERROR: UtilAcceptVsock' "$t.log"; then
+        if ci_test_lost_interop "$t"; then
             interop="$interop $t"
         else
             real="$real $t"
@@ -173,6 +176,10 @@ ci_start_native_watchdog() {
         -ProgressLog "$(nativepath "$progress")" \
         >>watchdog.log 2>&1 &
     ci_watchdog_pid=$!
+    # Beside the log it holds open: a caller in another subshell has no other way
+    # to reap this process, and one that outlives its parent writes forever into
+    # a log the teardown has already unlinked.
+    echo "$ci_watchdog_pid" >watchdog.pid
     # $! comes from the fork, not the exec: wait for it to actually speak.
     while test "$waited" -lt "$ci_watchdog_wait"; do
         ci_watchdog_spoke && return 0
@@ -182,9 +189,23 @@ ci_start_native_watchdog() {
     done
     # A child that spoke and exited mid-poll still launched (#1321).
     ci_watchdog_spoke && return 0
-    kill_pid "$ci_watchdog_pid"
+    ci_reap_recorded_watchdog "$PWD"
     ci_watchdog_pid=''
     return 1
+}
+
+# Kill the watchdog recorded under $1 (default: here) and forget it. The only
+# killer, so that a record left behind cannot name a pid the host has since
+# handed to a stranger.
+ci_reap_recorded_watchdog() {
+    local dir=${1:-.} pid=''
+    test -r "$dir/watchdog.pid" || return 0
+    read -r pid <"$dir/watchdog.pid" || pid=''
+    rm -f "$dir/watchdog.pid"
+    # 0 and 1 rejected too: kill -9 0 signals the caller's own process group,
+    # and a torn write can leave a digit prefix of the real pid.
+    case $pid in '' | 0 | 1 | *[!0-9]*) return 0 ;; esac
+    kill_pid "$pid"
 }
 
 # End the step, announcing $2 first: the kill runs no EXIT trap, so an unexplained
@@ -194,7 +215,7 @@ ci_heartbeat_kill() {
     ci_annotate error "suite watchdog" "$2"
     # Ahead of the kill, which runs no EXIT trap: an orphan would outlive the
     # step and overwrite its last status with a frozen tail.
-    test -z "${watchdog:-}" || kill_pid "$watchdog"
+    ci_reap_recorded_watchdog "$PWD"
     # Read before the two kills below, which would leave the winpid naming
     # whoever Windows hands the number to next (#1228).
     win_capture "$main"
@@ -253,7 +274,8 @@ ci_suite_heartbeat() {
 # One name per line, so two branches each appending one don't collide on the
 # same line; compared as a sorted set below, so glob discovery order can't
 # cause a false mismatch either.
-# footer-overflow and purge-longpath skip on Windows (need a path past MAX_PATH);
+# footer-overflow, purge-longpath and purge-split-tail skip on Windows (need a
+# path past MAX_PATH);
 # webdav-default and proxytrack-quiet read proxytrack's console through a pty,
 # which Windows Python does not build;
 # badmtime needs a filesystem that stores an mtime past gmtime's range;
@@ -275,8 +297,8 @@ ci_suite_heartbeat() {
 # ftp-deadhost-interrupt, ftp-sigterm, abort-purge, signal-receive and
 # ftp-stop-window need that same signal (deadhost's --timeout half runs as 245,
 # abort-purge's --max-time half as 268);
-# close-once and threadattr-leak interpose through LD_PRELOAD, which MSYS has no
-# equivalent for, and this job sets neither interposer's path;
+# close-once, threadattr-leak and maxtime-dns-stall interpose through LD_PRELOAD,
+# which MSYS has no equivalent for, and this job sets no interposer's path;
 # engine-install-paths reads the compiled-in POSIX install paths, which this job
 # has no equivalent of;
 # build-features compares the feature reporter against the automake config.h,
@@ -294,14 +316,23 @@ ci_suite_heartbeat() {
 # so MIRRORVERDICT_BIN is unset here and the test skips itself.
 # chunked-oom starves the receive buffer with RLIMIT_AS, which Windows does not
 # enforce, so the test skips itself.
+# local-mptcp asks for Multipath TCP, which Windows has no protocol for, so
+# have_feature answers 0 and the test skips itself.
 # engine-usercommand replays each -V expansion through a POSIX shell, and a
 # native engine quotes for cmd.exe instead, where a backtick inside "..." is
 # inert but the replaying bash runs it.
+# signal-handlers raises SIGCHLD, SIGPIPE, SIGTERM and SIGINT at the engine,
+# and Windows has a disposition for none of that set.
+# engine-sigterm-noatexit forks a child per case and raises SIGINT at it, and
+# Windows has neither fork() nor that disposition.
+# private-run-files checks POSIX file modes, which Windows does not have.
 expected_skips_msys="01_engine-usercommand.test
 01_engine-footer-overflow.test
 253_local-ftp-close-once.test
 113_engine-threadattr-leak.test
+527_local-maxtime-dns-stall.test
 100_local-purge-longpath.test
+553_local-purge-split-tail.test
 158_local-link-control-bytes.test
 114_local-update-304-leak.test
 283_engine-cmdline-leak.test
@@ -321,6 +352,8 @@ expected_skips_msys="01_engine-usercommand.test
 80_engine-crash-symbolize.test
 468_engine-crash-live-worker.test
 471_engine-sigpipe.test
+504_engine-signal-handlers.test
+517_engine-sigterm-noatexit.test
 472_local-isalive-openfail.test
 01_engine-crash-announce.test
 88_local-proxytrack-badmtime.test
@@ -335,7 +368,10 @@ expected_skips_msys="01_engine-usercommand.test
 444_local-stop-keeps-resume.test
 451_local-sigint-keeps-resume.test
 465_local-mirror-completed.test
-481_local-chunked-oom.test"
+481_local-chunked-oom.test
+494_local-mptcp.test
+01_engine-mptcp.test
+658_local-private-run-files.test"
 
 # Measured, not predicted: windows-build run 33927128153, both platforms alike.
 # Written out rather than derived from the msys list above: the two lists are
@@ -353,14 +389,21 @@ expected_skips_msys="01_engine-usercommand.test
 # so MIRRORVERDICT_BIN is unset here and the test skips itself.
 # chunked-oom starves the receive buffer with RLIMIT_AS, which Windows does not
 # enforce, so the test skips itself.
+# local-mptcp asks for Multipath TCP, which Windows has no protocol for, so
+# have_feature answers 0 and the test skips itself.
 # engine-usercommand replays each -V expansion through a POSIX shell, and a
 # native engine quotes for cmd.exe instead, where a backtick inside "..." is
 # inert but the replaying bash runs it.
+# engine-sigterm-noatexit forks a child per case and raises SIGINT at it, and
+# Windows has neither fork() nor that disposition.
+# private-run-files checks POSIX file modes, which Windows does not have.
 expected_skips_wsl2="01_engine-usercommand.test
 01_engine-footer-overflow.test
 253_local-ftp-close-once.test
 113_engine-threadattr-leak.test
+527_local-maxtime-dns-stall.test
 100_local-purge-longpath.test
+553_local-purge-split-tail.test
 158_local-link-control-bytes.test
 114_local-update-304-leak.test
 283_engine-cmdline-leak.test
@@ -380,6 +423,8 @@ expected_skips_wsl2="01_engine-usercommand.test
 80_engine-crash-symbolize.test
 468_engine-crash-live-worker.test
 471_engine-sigpipe.test
+504_engine-signal-handlers.test
+517_engine-sigterm-noatexit.test
 472_local-isalive-openfail.test
 01_engine-crash-announce.test
 88_local-proxytrack-badmtime.test
@@ -395,7 +440,10 @@ expected_skips_wsl2="01_engine-usercommand.test
 451_local-sigint-keeps-resume.test
 465_local-mirror-completed.test
 294_local-wizard-eof.test
-481_local-chunked-oom.test"
+481_local-chunked-oom.test
+494_local-mptcp.test
+01_engine-mptcp.test
+658_local-private-run-files.test"
 
 # Sets ci_skip_list to the pinned skip set for backend $1, failing loudly if
 # there is none: an unknown backend must never fall back to an empty list,
@@ -565,7 +613,7 @@ ci_start_native_watchdog "$PWD/$progress" && watchdog=$ci_watchdog_pid
 test -n "$watchdog" || echo "no off-box watchdog: no usable PowerShell"
 ci_suite_heartbeat 960 360 "$progress" "$stuck" $$ "$hard_deadline" &
 heartbeat=$!
-trap 'set +e; kill "$heartbeat" 2>/dev/null; test -z "$watchdog" || kill_pid "$watchdog"' EXIT
+trap 'set +e; kill "$heartbeat" 2>/dev/null; ci_reap_recorded_watchdog "$PWD"' EXIT
 
 pass=0 fail=0 skip=0 lost=0 failed="" skipped="" vanished="" deadline=0
 # Tests in flight at once, min(2*nproc, 16), unless the caller pins it
@@ -584,10 +632,7 @@ esac
 # wait -n is bash 4.3, and macOS drives this script under 3.2
 # (172_ci-windows-driver.test): with no way to wait for a free slot, run serially.
 pool=
-if test "${BASH_VERSINFO[0]}" -gt 4 ||
-    { test "${BASH_VERSINFO[0]}" -eq 4 && test "${BASH_VERSINFO[1]}" -ge 3; }; then
-    pool=1
-fi
+! bash_at_least 4 3 || pool=1
 test -n "$pool" || jobs=1
 # kill_tree's last-resort sweep (testlib.sh) kills every engine and every python
 # on the host, so it is sound only while one test is in flight.
@@ -603,10 +648,20 @@ results=suite-results
 rm -rf "$results"
 mkdir -p "$results"
 
-# Run test $1 to completion: its verdict on stdout, a failure's 25-line tail into
-# $results/$1.tail, and its status last into $results/$1.rc, which says it got there.
+# Seconds a rerun of one test may take: what is left of the suite deadline, capped
+# at one test's budget, and 0 once that deadline has passed (#1126).
+ci_rerun_budget() {
+    local left=$((suite_deadline - (SECONDS - started)))
+    test "$left" -le "$per_test" || left=$per_test
+    test "$left" -ge 0 || left=0
+    echo "$left"
+}
+
+# Run test $1 to completion, within $2 seconds or $per_test: its verdict on stdout,
+# a failure's 25-line tail into $results/$1.tail, and its status last into
+# $results/$1.rc, which says it got there.
 run_one_test() (
-    local t=$1 rc=0 left ttmp
+    local t=$1 budget=${2:-$per_test} rc=0 left ttmp
     # Its own TMPDIR, since dump_crawl_logs (testlib.sh) globs the whole of it.
     # Windows-shaped like the export above: the tests hand it to a native exe.
     ttmp="$TMPDIR/suite.$t"
@@ -616,7 +671,7 @@ run_one_test() (
     # same way on every platform. It dumps before it kills, which a bare
     # run_with_timeout cannot: by the time that returns, the tree whose
     # stack we wanted is already gone.
-    HTTRACK_TEST_TIMEOUT=$per_test TMPDIR="$ttmp" \
+    HTTRACK_TEST_TIMEOUT=$budget TMPDIR="$ttmp" \
         bash ./test-timeout.sh "$t" >"$t.log" 2>&1 || rc=$?
     case "$rc" in
     0) echo "PASS $t" ;;
@@ -634,11 +689,7 @@ run_one_test() (
         tail -n 25 "$t.log" | sed 's/^/      /' >"$results/$t.tail"
         # These assert with `test "$(...)" == "..." || exit 1`, which
         # says nothing at all on failure. Re-run traced, still bounded.
-        # Charged to the suite deadline rather than given a budget of its
-        # own: a failure just under that deadline would else spend
-        # $per_test twice and land on the workflow's own timeout (#1126).
-        left=$((suite_deadline - (SECONDS - started)))
-        test "$left" -le "$per_test" || left=$per_test
+        left=$(ci_rerun_budget)
         if [ "$left" -gt 0 ]; then
             # Noted first, or a slow trace reads as a wedge to the watchdog,
             # which would then kill the step in the middle of writing it.
@@ -720,6 +771,32 @@ done
 for p in ${pids[@]+"${pids[@]}"}; do
     wait "$p" 2>/dev/null || true
 done
+# An outage can fail several tests and leave WSL2's error line in only one of their
+# logs (#1672), so a run that saw one re-runs every test that failed. That costs
+# those tests, where repeating the leg costs twenty minutes.
+retried="" caught="" fails=""
+for t in ${ran_tests[@]+"${ran_tests[@]}"}; do
+    ci_read_outcome "$t" "$results"
+    test "$ci_outcome" = fail || continue
+    fails="$fails $t"
+    ci_test_lost_interop "$t" && caught="$caught $t"
+done
+if test -n "$caught"; then
+    for t in $fails; do
+        left=$(ci_rerun_budget)
+        test "$left" -gt 0 || break
+        # The first run's log kept under its own name, and uploaded with the
+        # rest, because the retry writes a fresh one and a second failure must
+        # be read on its own output.
+        test ! -f "$t.log" || mv -f "$t.log" "$t.first.log"
+        # Or the first failure's tail is printed under a green tally.
+        rm -f "$results/$t.tail"
+        echo "RETRY $t" >>"$progress"
+        run_one_test "$t" "$left" | sed 's/^/retry: /'
+        retried="$retried $t"
+    done
+fi
+
 # In test order, once nothing is still writing: eight workers interleaving their
 # failure tails is noise.
 for t in ${ran_tests[@]+"${ran_tests[@]}"}; do
@@ -743,6 +820,13 @@ done
 reap_leftover_processes "the suite" | tee -a "$progress"
 echo "ran=$((pass + fail + skip + lost)) pass=$pass fail=$fail skip=$skip lost=$lost" |
     tee -a "$GITHUB_STEP_SUMMARY"
+# A rescued leg is green, so the annotation is what tells a reader an outage
+# happened at all, and which failures were excused by it.
+test -z "$retried" || {
+    echo "interop-retried:$retried" | tee -a "$GITHUB_STEP_SUMMARY"
+    ci_annotate warning "WSL2 lost its interop channel" \
+        "$(printf 'caught by:%s\nretried once:%s\n' "$caught" "$retried")"
+}
 
 # Every gate here exits 77, so an all-skipped suite would report green having
 # tested nothing: pin the skips, and floor the passes in case the glob empties.

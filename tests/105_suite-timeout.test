@@ -125,6 +125,7 @@ sleep 1
     test "$fired" -lt 25 ||
         fail "budget counted polls, not seconds: ${fired}s for a 1s budget"
 )
+subshell_ok $?
 
 # --- exit status and output of a healthy test pass straight through ----------
 # 77 is automake's SKIP and 99 its hard error, so both have to survive the wrapper.
@@ -154,7 +155,8 @@ saw_budget() { # saw_budget <want> <label>
 }
 # shellcheck disable=SC2016 # the fixture has to read the variable, not us
 printf 'echo "budget=${HTTRACK_TEST_TIMEOUT-unset}"\n' >"$tmp/95_budget.test"
-(unset HTTRACK_TEST_TIMEOUT && bash "$driver" "$tmp/95_budget.test") >"$out" 2>&1
+(unset HTTRACK_TEST_TIMEOUT && bash "$driver" "$tmp/95_budget.test") >"$out" 2>&1 ||
+    fail_dump "the driver failed on an unset budget" "$out"
 saw_budget 600 "an unset budget"
 HTTRACK_TEST_TIMEOUT=garbage bash "$driver" "$tmp/95_budget.test" >"$out" 2>&1
 saw_budget 600 "a non-numeric budget"
@@ -264,10 +266,11 @@ test "$rc" -eq 0 || fail "a 60s step under a 600s budget reported $rc, want 0"
 grep -q 'the pacer let it through' "$out" || fail "the pacer skipped a test that fits"
 
 # The reserve is half a step over the last one, and only a budget between the two
-# sizes proves it: 100s alone would fit under 140, 150s does not.
+# sizes proves it: 100s alone would fit under 140, 150s does not. A budget of 0
+# is the guard off, which never skips.
 printf '. "%s"\nskip_if_out_of_budget 5 100\n' "${testdir}/testlib.sh" \
     >"$tmp/96_margin.test"
-for want in 140:77 200:0; do
+for want in 140:77 200:0 0:0; do
     rc=0
     HTTRACK_TEST_TIMEOUT=${want%%:*} bash "$driver" "$tmp/96_margin.test" >"$out" 2>&1 || rc=$?
     test "$rc" -eq "${want##*:}" ||
@@ -287,20 +290,23 @@ if ! target_is_windows && test -r /proc/self/stat; then
     # Read-write, so the open does not block and the timeout can bound it: the
     # fakes then fork nothing for the SIGABRT to orphan, and a test killed
     # outright leaks no process named httrack onto the runner.
+    # The trap records delivery, because an untrapped SIGABRT dumps core slowly (#1841).
     mkfifo "$tmp/hold"
-    hold="read -t 60 _ <>'$tmp/hold'"
+    hold="trap ': >\"$tmp/abrt.\$\$\"; exit' ABRT; read -t 60 _ <>'$tmp/hold'"
     # Started from a subshell so ppid and pgid differ: swapping those two columns
     # is invisible whenever the test shell happens to lead its own group.
     (
         "$tmp/httrack" -c "$hold" &
         echo $! >"$tmp/fake.pid"
     )
+    subshell_ok $? "could not start the fake engine"
     # Its own group, to prove the filter keeps an outsider out.
     (
         set -m
         "$tmp/httrack" -c "$hold" &
         echo $! >"$tmp/outside.pid"
     )
+    subshell_ok $? "could not start the outsider"
     # A third, as binfmt_misc's P flag hands it over: the interpreter in argv[0]
     # and the engine one place right. "exec -a" stands in for the qemu no runner
     # here has.
@@ -311,6 +317,7 @@ if ! target_is_windows && test -r /proc/self/stat; then
             "$tmp/httrack" "$tmp/emul/httrack" &
         echo $! >"$tmp/emul.pid"
     )
+    subshell_ok $? "could not start the emulated engine"
     fake=$(cat "$tmp/fake.pid")
     outside=$(cat "$tmp/outside.pid")
     emul=$(cat "$tmp/emul.pid")
@@ -334,7 +341,6 @@ if ! target_is_windows && test -r /proc/self/stat; then
     running "$emul" || fail "an engine behind its binfmt interpreter never started"
     # ppid and pgid of $1: the oracle the listing is checked against.
     procfields() { awk '{ sub(/.*\) /, ""); print $2, $3 }' "/proc/$1/stat"; }
-    procstate() { awk '{ sub(/.*\) /, ""); print $1 }' "/proc/$1/stat" 2>/dev/null || echo gone; }
     read -r fppid pgid _ <<<"$(procfields "$fake")"
     read -r _ opgid _ <<<"$(procfields "$outside")"
     test "$fppid" != "$pgid" || fail "the fake shares ppid and pgid ($pgid)"
@@ -367,9 +373,8 @@ if ! target_is_windows && test -r /proc/self/stat; then
         chmod +x "$tmp/nops/uname"
         grep -q "no stack mechanism known for GNU" <<<"$(request_engine_backtraces "$pgid")" ||
             fail "a platform with no stack mechanism reported nothing"
-        case "$(procstate "$fake")" in
-        Z | gone) fail "the no-mechanism branch signalled pid $fake" ;;
-        esac
+        sleep 0.5 # a trap runs in milliseconds, so a stray signal has left its marker
+        ! test -e "$tmp/abrt.$fake" || fail "the no-mechanism branch signalled pid $fake"
         rm -f "$tmp/nops/uname"
 
         # The chain, not just its input: this is what reported nothing on Fedora.
@@ -379,12 +384,10 @@ if ! target_is_windows && test -r /proc/self/stat; then
         # Only Linux signals; elsewhere (Hurd's uname reports "GNU") the chain
         # owes the reader its no-mechanism report instead of silence.
         if test "$(uname -s)" = Linux; then
-            # Gone, or a zombie: the fake is reparented, and a container's pid 1
-            # does not always reap. kill -0 succeeds on a zombie, proving nothing.
-            case "$(procstate "$fake")" in
-            Z | gone) ;;
-            *) fail "the SIGABRT never reached pid $fake" ;;
-            esac
+            wait_until "test -e '$tmp/abrt.$fake'" "the SIGABRT never reached pid $fake"
+            wait_until "test -e '$tmp/abrt.$emul'" "the SIGABRT never reached emulated pid $emul"
+            ! test -e "$tmp/abrt.$outside" ||
+                fail "the SIGABRT reached pid $outside, outside the group"
         else
             grep -q 'no stack mechanism known' <<<"$stacks" ||
                 fail "no stack mechanism was reported on $(uname -s): $stacks"
@@ -395,6 +398,7 @@ if ! target_is_windows && test -r /proc/self/stat; then
         grep -q 'no process list' <<<"$(list_stray_processes "$pgid" group)" ||
             fail "a host with no ps and no /proc produced no notice"
     )
+    subshell_ok $?
     kill "$fake" "$outside" "$emul" 2>/dev/null || true
 fi
 
@@ -425,6 +429,7 @@ EOF
         test "$named" = $'11\n12\n13' ||
             fail "emulated stray list is '$named', want pids 11, 12 and 13"
     )
+    subshell_ok $?
 fi
 
 # --- a wedged crawl yields a symbolized engine stack ------------------------

@@ -52,7 +52,7 @@ fileurl() { printf 'file://%s' "$(nativepath "$1")"; }
 # rewritten, descriptors preserved, following attributes left intact.
 site="$tmp/srcset"
 mkdir -p "$site"
-for f in a b c d e f g h i j v dz; do gif "$site/$f.gif"; done
+for f in a b c d e f g h i j k u v dz; do gif "$site/$f.gif"; done
 # unquoted heredoc: the absolute-URL candidate below is expanded here
 cat >"$site/index.html" <<EOF
 <html><body>
@@ -65,6 +65,7 @@ cat >"$site/index.html" <<EOF
 <img srcset="$(fileurl "$site")/j.gif 2x">
 <img srcset="data:image/gif;base64,R0lGODlhAQABAAAAACw= 1x, dz.gif 2x">
 <img srcset="">
+<img srcset=k.gif 2x,u.gif>
 <a href="a.gif">plain link still works</a>
 </body></html>
 EOF
@@ -73,7 +74,9 @@ crawl "$site/index.html" "$out"
 
 # every candidate downloads, incl. unique tails (catches first-only parsing),
 # whitespace-padded (h,i), <source src> (v), absolute (j), post-data: URI (dz)
-for f in a b c d e f g h i j v dz; do found "$f.gif" "$out"; done
+for f in a b c d e f g h i j k v dz; do found "$f.gif" "$out"; done
+# whitespace ends an unquoted srcset, so "2x,u.gif" is another attribute
+notfound "u.gif" "$out"
 
 # the width/density descriptors are not URLs and must not be fetched
 notfound "480w" "$out"
@@ -356,6 +359,62 @@ found "v.webm" "$out10"
 found "subs.vtt" "$out10"
 notfound "plain.gif" "$out10"
 
+# <img srcset>, data-srcset and data-src follow the same way (#136), but a
+# data-src placeholder such as {{url}} is still not fetched.
+sitess="$tmp/imgsrcset"
+mkdir -p "$sitess"
+for f in s1 s2 d ds1 ds2 div divss; do gif "$sitess/$f.gif"; done
+gif "$sitess/{{url}}" # a placeholder that resolves, so refusing it is observable
+cat >"$sitess/index.html" <<EOF
+<html><body><a href="leaf.html">leaf</a></body></html>
+EOF
+cat >"$sitess/leaf.html" <<EOF
+<html><body>
+<img srcset="s1.gif 1x, s2.gif 2x">
+<img data-src="d.gif">
+<img data-src="{{url}}">
+<img data-srcset="ds1.gif 480w, ds2.gif 800w">
+<div data-src="div.gif" srcset="divss.gif 1x"></div>
+</body></html>
+EOF
+outss="$tmp/imgsrcset-out"
+rm -rf "$outss"
+mkdir -p "$outss"
+httrack "file://$sitess/index.html" -O "$outss" --quiet --near -r2 >"$outss/.log" 2>&1 || true
+for f in s1 s2 ds1 ds2 d; do found "$f.gif" "$outss"; done
+for f in '*url*' div.gif divss.gif; do notfound "$f" "$outss"; done
+leafss=$(find "$outss" -name leaf.html | head -1)
+grep -Fq 'srcset="s1.gif 1x, s2.gif 2x"' "$leafss" ||
+    fail "#136: img srcset not rewritten to the local candidates"
+grep -Fq 'data-srcset="ds1.gif 480w, ds2.gif 800w"' "$leafss" ||
+    fail "#136: img data-srcset not rewritten to the local candidates"
+
+# A data-src placeholder is no URL, with or without --near: it is not fetched
+# and stays byte for byte, while a bare word that is a real file still is.
+siteph="$tmp/placeholder"
+mkdir -p "$siteph"
+gif "$siteph/photo"
+gif "$siteph/lazy" # real, but on the placeholder list: refused on purpose
+gif "$siteph/{{url}}"
+cat >"$siteph/index.html" <<EOF
+<html><body>
+<img data-src="{{url}}">
+<img data-src='{"src":"a.jpg"}'>
+<img data-src="lazy">
+<img data-src="photo">
+</body></html>
+EOF
+outph="$tmp/placeholder-out"
+rm -rf "$outph"
+mkdir -p "$outph"
+httrack "file://$siteph/index.html" -O "$outph" --quiet -r2 >"$outph/.log" 2>&1 || true
+found "photo" "$outph"
+for f in '*url*' 'lazy*' '*src*'; do notfound "$f" "$outph"; done
+pageph=$(find "$outph" -path '*placeholder/index.html' | head -1)
+for v in 'data-src="{{url}}"' "data-src='{\"src\":\"a.jpg\"}'" 'data-src="lazy"'; do
+    grep -Fq "$v" "$pageph" || fail "placeholder rewritten, want $v kept"
+done
+
 # Unknown-attr (data-*) URLs (#201/#203): the script automaton state must reset at
 # </script>, or detection dies for the rest of the page after the first script.
 site11="$tmp/dataattr"
@@ -415,5 +474,26 @@ notfound "textdecoy.gif" "$out11"
 notfound "tagdecoy.gif" "$out11" # a '=' glued to the tag name is not an attr
 # a </script> inside a JS string must not cause phantom fetches later
 notfound "phantom.gif" "$out11"
+
+# A framework binding (Vue :x, v-x, @x, Angular [x]) holds JavaScript, never a
+# URL: its value is not fetched even when a file of that name exists.
+sitebind="$tmp/binding"
+mkdir -p "$sitebind"
+for f in item.src onload.js hero.png plain.gif; do gif "$sitebind/$f"; done
+cat >"$sitebind/index.html" <<EOF
+<html><body>
+<img :data-src="item.src">
+<img v-lazy="item.src">
+<img @load="onload.js">
+<img [src]="hero.png">
+<img data-x="plain.gif">
+</body></html>
+EOF
+outbind="$tmp/binding-out"
+rm -rf "$outbind"
+mkdir -p "$outbind"
+httrack "file://$sitebind/index.html" -O "$outbind" --quiet -r2 >"$outbind/.log" 2>&1 || true
+found "plain.gif" "$outbind"
+for f in 'item*' 'onload*' 'hero*'; do notfound "$f" "$outbind"; done
 
 exit 0

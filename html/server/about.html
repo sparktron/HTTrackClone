@@ -8,6 +8,8 @@
 
 
 	<link rel="stylesheet" type="text/css" media="screen" href="style.css">
+	<link rel="stylesheet" type="text/css" media="screen" href="/server/theme.css">
+	<link rel="stylesheet" type="text/css" media="screen" href="user.css">
 	<script type="text/javascript" src="ping.js" defer></script>
 
 <script language="javascript">
@@ -24,7 +26,7 @@ function info(str) {
 </script>
 
 </head>
-<body onLoad="do_load();" onUnload="do_unload();">
+<body class="page-about" onLoad="do_load();" onUnload="do_unload();">
 
 <table width="76%" border="0" align="center" cellspacing="0" cellpadding="0" class="tableWidth">
 	<tr>
@@ -69,7 +71,7 @@ ${do:output-mode:}</pre>
 <br>
 
 <form>
-<input type="button" value="OK" onClick="window.close();"
+<input class="primary" type="button" value="OK" onClick="window.close();"
 			title='${html:LANG_TIPOK}' onMouseOver="info('${js:LANG_TIPOK}'); return true" onMouseOut="info('&nbsp;'); return true"
 >
 </form>

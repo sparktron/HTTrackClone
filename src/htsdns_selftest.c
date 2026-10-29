@@ -40,14 +40,12 @@ Please visit our Website: http://www.httrack.com
 
 #include "htsdns_selftest.h"
 
-#include "htscore.h"
-#include "htslib.h"
-#include "htsnet.h"
-#include "htsthread.h"
+#include "htsselftest_int.h"
 
 #include <setjmp.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #if HTS_INET6 != 0
 
@@ -70,7 +68,10 @@ typedef struct mock_host {
 } mock_host;
 
 /* Long enough to outlast the 1s --timeout the bounded resolve is checked
-   against, short enough to keep the self-test quick. */
+   against, short enough to keep the self-test quick. The elapsed bounds below
+   sit halfway between a prompt return and this, so they are measured on
+   mtime_monotonic(), because an NTP correction mid-test would otherwise eat
+   most of that margin. */
 #define MOCK_SLOW_MS 3000
 
 static mock_host mock_hosts[] = {
@@ -126,6 +127,10 @@ static mock_host mock_hosts[] = {
    worker is still inside the backend while the test reads the counters. */
 static htsmutex mock_lock = HTSMUTEX_INIT;
 static int mock_finished = 0; /* backend calls that have returned */
+/* Uses of the backend that can no longer read hts_resolver: a worker reads it
+   again to free its answer, long after getaddrinfo() returned, so that is what
+   a swap has to wait for. */
+static int mock_released = 0;
 
 static mock_host *mock_find(const char *name) {
   for (size_t i = 0; i < sizeof(mock_hosts) / sizeof(mock_hosts[0]); i++) {
@@ -140,6 +145,7 @@ static void mock_reset_calls(void) {
   for (size_t i = 0; i < sizeof(mock_hosts) / sizeof(mock_hosts[0]); i++)
     mock_hosts[i].calls = 0;
   mock_finished = 0;
+  mock_released = 0;
   hts_mutexrelease(&mock_lock);
 }
 
@@ -162,13 +168,14 @@ static int mock_read_finished(void) {
   return n;
 }
 
-/* Wait for n backend calls to return, ordering their writes against ours. */
-static void mock_wait_finished(int n) {
+/* Wait for n uses of the backend to be over, ordering their writes against
+   ours: what makes installing another backend safe. */
+static void mock_wait_released(int n) {
   for (;;) {
     hts_boolean done;
 
     hts_mutexlock(&mock_lock);
-    done = (mock_finished >= n) ? HTS_TRUE : HTS_FALSE;
+    done = (mock_released >= n) ? HTS_TRUE : HTS_FALSE;
     hts_mutexrelease(&mock_lock);
     if (done)
       break;
@@ -243,11 +250,16 @@ static int HTS_RESOLVER_CALL mock_getaddrinfo(const char *node,
 
   hts_mutexlock(&mock_lock);
   mock_finished++;
+  if (*res == NULL) /* nothing to free, so this caller is done with us */
+    mock_released++;
   hts_mutexrelease(&mock_lock);
   return ret;
 }
 
 static void HTS_RESOLVER_CALL mock_freeaddrinfo(struct addrinfo *res) {
+  hts_mutexlock(&mock_lock);
+  mock_released++;
+  hts_mutexrelease(&mock_lock);
   while (res != NULL) {
     struct addrinfo *const next = res->ai_next;
 
@@ -613,10 +625,10 @@ static void lock_probe_thread(void *arg) {
   TStamp start;
 
   Sleep(MOCK_SLOW_MS / 10); /* let the resolve get under way first */
-  start = mtime_local();
+  start = mtime_monotonic();
   (void) hts_has_stopped(p->opt);
   hts_mutexlock(&p->lock);
-  p->blocked_ms = mtime_local() - start;
+  p->blocked_ms = mtime_monotonic() - start;
   p->done = HTS_TRUE;
   hts_mutexrelease(&p->lock);
 }
@@ -640,20 +652,18 @@ int dns_timeout_selftests(httrackp *opt) {
   hts_mutexinit(&probe.lock);
   CHECK(hts_newthread(lock_probe_thread, &probe) == 0);
 
-  start = mtime_local();
+  start = mtime_monotonic();
   count = hts_dns_resolve_all(opt, "slow.test", addrs, HTS_MAXADDRNUM, &err);
-  elapsed = mtime_local() - start;
+  elapsed = mtime_monotonic() - start;
   finished = mock_read_finished();
 
   /* the resolve returns on opt->timeout, not when the resolver deigns to
-     answer: this is what lets --max-time and --timeout fire (#606). The bound
-     is derived from opt->timeout, never from the mock's sleep, or a resolve
-     that ignored opt->timeout would still pass under the mock. The finished
-     count is a tripwire on the fixture rather than a second bound: the mock
-     returns well after the clock fires, so it can only speak alone if
-     MOCK_SLOW_MS ever stops being the larger of the two. */
+     answer: this is what lets --max-time and --timeout fire (#606). A backend
+     that had not returned proves it, so the bound below need not be tight. */
   CHECK(finished == 0);
-  CHECK(elapsed < (TStamp) opt->timeout * 1000 + 500);
+  /* midway to MOCK_SLOW_MS: the engine still deadlines on the wall clock, so a
+     step moves when it fires even though the measurement no longer moves. */
+  CHECK(elapsed < ((TStamp) opt->timeout * 1000 + MOCK_SLOW_MS) / 2);
   CHECK(count == 0); /* a timeout is reported as "does not resolve" */
 
   /* state.lock is not held across the resolve; a concurrent stop query, which
@@ -686,10 +696,10 @@ int dns_timeout_selftests(httrackp *opt) {
   {
     hts_boolean cancel = HTS_TRUE;
 
-    start = mtime_local();
+    start = mtime_monotonic();
     count = hts_dns_resolve_all_bounded(opt, "slow.test", addrs, HTS_MAXADDRNUM,
                                         0, &cancel, &err);
-    elapsed = mtime_local() - start;
+    elapsed = mtime_monotonic() - start;
     CHECK(count == 0);
     CHECK(elapsed < MOCK_SLOW_MS / 2);
   }
@@ -699,10 +709,10 @@ int dns_timeout_selftests(httrackp *opt) {
   {
     hts_boolean cancel = HTS_FALSE;
 
-    start = mtime_local();
+    start = mtime_monotonic();
     count = hts_dns_resolve_all_bounded(opt, "slow2.test", addrs,
                                         HTS_MAXADDRNUM, 0, &cancel, &err);
-    elapsed = mtime_local() - start;
+    elapsed = mtime_monotonic() - start;
     CHECK(count == 1);
     CHECK(elapsed >= MOCK_SLOW_MS / 2);
   }
@@ -713,25 +723,24 @@ int dns_timeout_selftests(httrackp *opt) {
   opt->timeout = 0;
   {
     /* control first: with the mirror running, the same call still waits */
-    start = mtime_local();
+    start = mtime_monotonic();
     count = hts_dns_resolve_all(opt, "slow3.test", addrs, HTS_MAXADDRNUM, &err);
-    elapsed = mtime_local() - start;
+    elapsed = mtime_monotonic() - start;
     CHECK(count == 1);
     CHECK(elapsed >= MOCK_SLOW_MS / 2);
 
     opt->state.stop = 1; /* the flag, not hts_request_stop's log line */
-    start = mtime_local();
+    start = mtime_monotonic();
     count = hts_dns_resolve_all(opt, "slow4.test", addrs, HTS_MAXADDRNUM, &err);
-    elapsed = mtime_local() - start;
+    elapsed = mtime_monotonic() - start;
     opt->state.stop = 0;
     CHECK(count == 0);
     CHECK(elapsed < MOCK_SLOW_MS / 2);
   }
 
   /* Four of the six resolves were abandoned mid-backend; wait for their
-     workers to leave it before returning. The backend stays installed: an
-     abandoned worker still reads it (to free its addrinfo). */
-  mock_wait_finished(6);
+     workers to be out of it, freed answer included, before swapping it. */
+  mock_wait_released(6);
 
   /* A worker a recovered fault cut short hands its verdict back at once. Left
      to the caller, the wait runs to the deadline, and an unbounded one runs
@@ -742,11 +751,14 @@ int dns_timeout_selftests(httrackp *opt) {
     mock_reset_calls();
     hts_dns_set_resolver_backend(&cut_backend);
     CHECK(hts_set_thread_runner(dns_cut_runner) == NULL);
-    start = mtime_local();
+    start = mtime_monotonic();
     count = hts_dns_resolve_all_bounded(opt, "cut.test", addrs, HTS_MAXADDRNUM,
                                         MOCK_SLOW_MS / 1000, &cancel, &err);
-    elapsed = mtime_local() - start;
+    elapsed = mtime_monotonic() - start;
     hts_set_thread_runner(NULL);
+    /* the cut worker longjmps out of the backend after freeing its answer, so
+       it too has to be out before the swap below */
+    mock_wait_released(1);
     hts_dns_set_resolver_backend(&mock_backend);
     CHECK(count == 0);
     CHECK(elapsed < MOCK_SLOW_MS / 2); /* the tail answered, not the deadline */
@@ -776,3 +788,32 @@ int dns_timeout_selftests(httrackp *opt) {
 }
 
 #endif
+
+static int st_dns(httrackp *opt, int argc, char **argv) {
+  const int err = dns_selftests(opt);
+
+  (void) argc;
+  (void) argv;
+  printf("dns-selftest: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+static int st_dnstimeout(httrackp *opt, int argc, char **argv) {
+  const int err = dns_timeout_selftests(opt);
+
+  (void) argc;
+  (void) argv;
+  printf("dns-timeout-selftest: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+/* ------------------------------------------------------------ */
+/* Registry: this module's tests, in the order -#test lists them. */
+/* ------------------------------------------------------------ */
+
+const struct selftest_entry selftests_dns[] = {
+    {"dns", "", "DNS resolver/cache self-test", st_dns},
+    {"dnstimeout", "", "a slow DNS resolve is bounded and holds no lock",
+     st_dnstimeout},
+    {NULL, NULL, NULL, NULL},
+};

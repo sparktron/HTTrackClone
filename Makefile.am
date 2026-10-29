@@ -4,7 +4,7 @@ SUBDIRS = src man m4 libtest templates lang html tests fuzz
 ACLOCAL_AMFLAGS = -I m4
 
 EXTRA_DIST = INSTALL.Linux \
-		gpl-fr.txt license.txt greetings.txt history.txt \
+		gpl-fr.txt license.txt license-psl.txt greetings.txt history.txt \
 		httrack-doc.html lang.def README.md PACKAGING.md tools/mkdeb.sh \
 		tools/macos-app.sh tools/macos-bundle.sh tools/macos-release.sh \
 		tools/httrack-launcher.c \
@@ -12,11 +12,17 @@ EXTRA_DIST = INSTALL.Linux \
 		bootstrap build.sh doc/winprofile-ini.md \
 		winprofile-keys.tsv winprofile-escapes.tsv \
 		tools/gen-winprofile-keys.py \
+		lang-symbols.tsv tools/gen-lang-def.py \
+		tools/psl-gen.py \
 		tools/doc-chrome.py \
 		tools/check-includes.py \
 		tools/ci-sanitizer-report.sh \
+		tools/tsan-suppressions.txt \
 		tools/downstream-drift.sh \
 		tools/windows-kill-grade.sh \
+		tools/hurd-vm.sh \
+		tools/parser-diff.sh \
+		$(PARSER_CORPUS_LIST) \
 		docs/adr/0001-imageboard-catalog-foundation.md \
 		docs/adr/0002-adapter-metadata-transport.md \
 		docs/adr/0003-yotsuba-read-only-adapter.md \

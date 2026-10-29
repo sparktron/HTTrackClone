@@ -7,6 +7,8 @@
 	<title>'${html:projname}' - HTTrack Website Copier</title>
 
 	<link rel="stylesheet" type="text/css" media="screen" href="style.css">
+	<link rel="stylesheet" type="text/css" media="screen" href="/server/theme.css">
+	<link rel="stylesheet" type="text/css" media="screen" href="user.css">
 	<script type="text/javascript" src="ping.js" defer></script>
 
 <script language="javascript">
@@ -34,6 +36,10 @@ function doOpenWindow() {
   childWn=window.open('addurl.html', 'addurl', 'toolbar=no, location=no, directories=no, status=yes, menubar=no, scrollbars=yes, resizable=yes, width=640, height=480');
   setTimeout("do_check_child()", 100);
 }
+function doOpenLogin() {
+  childWn=window.open('browserlogin.html', 'browserlogin', 'toolbar=no, location=no, directories=no, status=yes, menubar=no, scrollbars=yes, resizable=yes, width=760, height=640');
+  setTimeout("do_check_child()", 100);
+}
 function do_check_child() {
   if (childWn && childWn.document) {
     if ((typeof childWn.wparent) == "undefined") {
@@ -48,7 +54,7 @@ function do_check_child() {
 </script>
 
 </head>
-<body onLoad="do_load();" onUnload="do_unload();" onKeyPress="return key_event(event);">
+<body class="page-step3" onLoad="do_load();" onUnload="do_unload();" onKeyPress="return key_event(event);">
 
 <table width="76%" border="0" align="center" cellspacing="0" cellpadding="0" class="tableWidth">
 	<tr>
@@ -64,7 +70,6 @@ ${do:if-file-exists:html/doc/html/index.html}
 		<a href="/doc/html/index.html" target="_blank"
 			onClick="window.open('/doc/html/index.html', 'httrack-doc', 'toolbar=no, location=no, directories=no, status=yes, menubar=no, scrollbars=yes, resizable=yes, width=980, height=760'); return false"
 			title='${html:LANG_MANUAL}' onMouseOver="info('${js:LANG_MANUAL}'); return true" onMouseOut="info('&nbsp;'); return true"
-			style="color:#FFFFFF"
 		>
 		${LANG_MANUAL}
 		</a>
@@ -123,6 +128,10 @@ ${do:end-if}
 		       onClick="doOpenWindow()"
 			title='${html:LANG_G24b}' onMouseOver="info('${js:LANG_G24b}'); return true" onMouseOut="info('&nbsp;'); return true"
 			   >
+		<input type="button" value="${attr:LANG_BROWSERLOGIN}"
+		       onClick="doOpenLogin()"
+			title='${html:LANG_BROWSERLOGINTIP}' onMouseOver="info('${js:LANG_BROWSERLOGINTIP}'); return true" onMouseOut="info('&nbsp;'); return true"
+			   >
 		</td></tr></table>
 		<br>
 		<textarea name="urls" cols="50" rows="8"
@@ -163,7 +172,7 @@ ${do:output-mode:}
 			title='${html:LANG_TIPPREV}' onMouseOver="info('${js:LANG_TIPPREV}'); return true" onMouseOut="info('&nbsp;'); return true"			
 			>
 		</td><td align="right">
-			<input name="nextBtn" type="submit" value=" ${attr:LANG_NEXT} >> "
+			<input class="primary" name="nextBtn" type="submit" value=" ${attr:LANG_NEXT} >> "
 			title='${html:LANG_TIPNEXT}' onMouseOver="info('${js:LANG_TIPNEXT}'); return true" onMouseOut="info('&nbsp;'); return true"
 			>
 		</td></tr></table>

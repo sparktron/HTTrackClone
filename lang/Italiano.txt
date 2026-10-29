@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Protocollo del proxy. HTTP: proxy standard. HTTP (tunnel CONNECT): invia ogni richiesta attraverso un tunnel CONNECT, per proxy che supportano solo CONNECT come l'HTTPTunnelPort di Tor. SOCKS5: porta predefinita 1080.
 Load cookies from file:
 Carica i cookie da un file:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Precarica i cookie da un file Netscape cookies.txt prima della copia.
 Pause between files:
 Pausa tra i file:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 Ignora %s e tutti gli host sottostanti
 Manual
 Manuale
+Max Retry-After(s)
+Max Retry-After (s)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Attesa massima rispettata quando un server invia un'intestazione Retry-After. Usare 0 per riprovare senza attendere.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+Le regole impostate qui valgono per la copia in corso. Rimuovere una regola lascia di nuovo passare i nuovi link, ma un link che la regola ha già rifiutato non tornerà in questa copia.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Questo filtro non può essere usato. Un filtro inizia con + o -, seguito da un modello, e deve stare su una sola riga breve.
+Theme:
+Tema:
+Classic
+Classico
+Accept headers
+Intestazioni Accept
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+L'intestazione Accept inviata per ogni tipo di collegamento. Automatico invia ciò che invia il browser scelto.
+Automatic
+Automatico
+Old HTTrack value
+Vecchio valore di HTTrack
+Default
+Predefinito
+Pages
+Pagine
+Inline frames
+Frame in linea
+Frames
+Frame
+Images
+Immagini
+Style sheets
+Fogli di stile
+Scripts
+Script
+Fonts
+Caratteri
+Audio
+Audio
+Video
+Video
+Objects
+Oggetti
+Embedded content
+Contenuto incorporato
+Log in with a browser...
+Accedi con un browser...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Accedi al sito con un browser e avvia la copia con i cookie e l'identità del browser che ha ricevuto
+No Microsoft Edge WebView2 runtime is installed on this computer
+Nessun runtime Microsoft Edge WebView2 è installato su questo computer
+Log in with a browser
+Accedi con un browser
+Go
+Vai
+Done
+Fatto
+Clear login
+Disconnetti
+The browser did not open: %s.
+Il browser non si è aperto: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+Il browser non ha restituito alcun cookie. L'indirizzo e l'identità del browser verranno salvati con il progetto al termine del wizard.
+Cookies collected: %d. They are used when you press OK.
+Cookie raccolti: %d. Verranno usati quando premi Ok.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Cookie raccolti: %d. Verranno salvati con il progetto al termine del wizard.
+The login could not be written to %s.
+Non è stato possibile scrivere i dati di accesso in %s.
+%d of the browser's cookies were left out, because the engine would not read them.
+%d cookie del browser sono stati esclusi, perché il motore non poteva leggerli.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Accedi al sito in un'altra scheda di questo browser. Apri gli strumenti per sviluppatori (F12) e poi la scheda Rete, ricarica la pagina, fai clic destro sulla prima richiesta e scegli Copy as cURL (bash). Incolla qui il testo. Funziona anche un'esportazione cookies.txt, per il primo indirizzo dell'elenco.
+Cookies for: %s. Browser identity: %s.
+Cookie per: %s. Identità del browser: %s.
+A login cannot be saved for this address, so nothing was kept.
+Non è possibile salvare un accesso per questo indirizzo, quindi non è stato conservato nulla.
+Yes
+Sì

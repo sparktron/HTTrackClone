@@ -441,12 +441,12 @@ char **PT_Enumerate(PT_Indexes indexes, const char *url, int subtree) {
     unsigned int listCount = 0;
     struct_coucal_enum en = coucal_enum_new(indexes->cil);
     coucal_item *chain;
-    coucal hdupes = NULL;
+    void *blk = NULL;
+    /* Always built, because coucal does not check for a NULL table. The
+       dedup below is skipped under subtree, where keys can reduce to one. */
+    coucal hdupes = coucal_new(0);
 
-    if (!subtree) {
-      hdupes = coucal_new(0);
-      coucal_set_name(hdupes, "hdupes");
-    }
+    coucal_set_name(hdupes, "hdupes");
     StringClear(list);
     StringClear(listindexes);
     StringClear(subitem);
@@ -472,17 +472,13 @@ char **PT_Enumerate(PT_Indexes indexes, const char *url, int subtree) {
               StringClear(subitem);
               if (len > 0)
                 StringMemcat(subitem, item, len);
-              if (len == 0 || !coucal_exists(hdupes, StringBuff(subitem))) {
-                /* an offset into list, turned into a pointer further down;
-                   NULL + n would be undefined (fork: clang UBSan) */
-                char *ptr = (char *) (uintptr_t) StringLength(list);
-
+              if (len == 0 || subtree ||
+                  !coucal_exists(hdupes, StringBuff(subitem))) {
                 if (len > 0)
                   StringCat(list, StringBuff(subitem));
                 if (isFolder)
                   StringCat(list, "/");
-                StringMemcat(list, "\0", 1);    /* NULL terminated strings */
-                StringMemcat(listindexes, (char*) &ptr, sizeof(ptr));
+                StringMemcat(list, "\0", 1); /* NULL terminated strings */
                 listCount++;
                 coucal_write(hdupes, StringBuff(subitem), 0);
               }
@@ -497,38 +493,32 @@ char **PT_Enumerate(PT_Indexes indexes, const char *url, int subtree) {
     StringFree(subitem);
     coucal_delete(&hdupes);
     if (listCount > 0) {
-      unsigned int i;
-      void *blk;
+      /* One slot per URL plus the NULL that ends the array. */
+      const size_t slots = (size_t) listCount + 1;
       char *nullPointer = NULL;
-      char *startStrings;
-      size_t startOffset;
+      char *str;
+      size_t i;
 
-      /* NULL terminated index */
-      StringMemcat(listindexes, (char*) &nullPointer, sizeof(nullPointer));
-      /* start of all strings (index) */
-      startOffset = StringLength(listindexes);
-      /* copy list of URLs after indexes */
+      /* The array of references first, then the strings it points into. */
+      for (i = 0; i < slots; i++)
+        StringMemcat(listindexes, (char *) &nullPointer, sizeof(nullPointer));
       StringMemcat(listindexes, StringBuff(list), StringLength(list));
       /* ---- no reallocation beyond this point (fixed addresses) ---- */
-      /* start of all strings (pointer) */
-      startStrings = StringBuffRW(listindexes) + startOffset;
-      /* transform indexes into references */
+      /* The enumeration loop appended one NUL-terminated name per count,
+         in this order, so walking them fills the slots. The last stays NULL. */
+      str = StringBuffRW(listindexes) + slots * sizeof(char *);
       for(i = 0; i < listCount; i++) {
-        char *ptr = NULL;
-        unsigned int ndx;
-
-        memcpy(&ptr, &StringBuff(listindexes)[i * sizeof(char *)],
-               sizeof(char *));
-        ndx = (unsigned int) (uintptr_t) ptr;
-        ptr = startStrings + ndx;
-        memcpy(&StringBuffRW(listindexes)[i * sizeof(char *)], &ptr,
-               sizeof(char *));
+        /* memcpy, because a char* buffer is not aligned for a char** store. */
+        memcpy(&StringBuffRW(listindexes)[i * sizeof(char *)], &str,
+               sizeof(str));
+        str += strlen(str) + 1;
       }
       blk = StringAcquire(&listindexes);
-      StringFree(list);
-      StringFree(listindexes);
-      return (char **) blk;
     }
+    /* The no-match return used to leak both, so free them on every path. */
+    StringFree(list);
+    StringFree(listindexes);
+    return (char **) blk;
   }
   return NULL;
 }
@@ -955,6 +945,54 @@ static void index_base_path(char *path, size_t size, const char *filename) {
   }
 }
 
+/* First place in a legacy save name where the URL's host occurs, or NULL.
+   Case-insensitive, because htsname.c lowercases the host directory it writes
+   while the key keeps the case the href had. strstrcase() lives in the library
+   proxytrack does not link, so this walks strfield() instead. */
+static const char *save_find_host(const char *save, const char *host) {
+  const char *p;
+
+  for (p = save; *p != '\0'; p++) {
+    if (strfield(p, host)) {
+      return p;
+    }
+  }
+  return NULL;
+}
+
+/* Join a save name read back out of a cache onto the store root. That root is
+   empty whenever the store was named with no parent directory, so an absolute
+   name would be opened verbatim. A clipped join names a different file, so it
+   is refused too, as htscache.c's own reader refuses one. dst comes back empty
+   on a refusal, so it can never hold the join before it. */
+static HTS_CHECK_RESULT hts_boolean index_join_root(char *dst, size_t size,
+                                                    const char *root,
+                                                    const char *name) {
+  dst[0] = '\0';
+  if (!hts_path_is_relative_contained(name)) {
+    proxytrack_print_log(WARNING,
+                         "cache filename is not a contained relative name, "
+                         "not serving it: %s",
+                         name);
+    return HTS_FALSE;
+  }
+  if (!slprintfbuff(dst, size, "%s%s", root, name)) {
+    proxytrack_print_log(WARNING,
+                         "cache filename does not fit under the store root, "
+                         "not serving it: %s",
+                         name);
+    return HTS_FALSE;
+  }
+  return HTS_TRUE;
+}
+
+/* Refuse the record whose save name is this. The generic handler further down
+   overwrites the element's own message, so each caller logs why it refused. */
+static void PT_Element_refuse_save(PT_Element r, const char *save) {
+  PT_Element_failf(r, "Cache filename leaving the store: %s", save);
+  r->statuscode = STATUSCODE_INVALID;
+}
+
 int PT_LoadCache__New(PT_Index index_, const char *filename) {
   if (index_ != NULL && filename != NULL) {
     PT_Index__New index = &index_->slots.formatNew;
@@ -990,7 +1028,7 @@ int PT_LoadCache__New(PT_Index index_, const char *filename) {
                                          0) == Z_OK) {
               long int pos = (long int) unzGetOffset(zFile);
 
-              assertf(readSizeHeader < sizeof(comment));
+              assertf((size_t) readSizeHeader < sizeof(comment));
               comment[readSizeHeader] = '\0';
               entries++;
               if (pos > 0) {
@@ -1062,6 +1100,30 @@ int PT_LoadCache__New(PT_Index index_, const char *filename) {
   return 0;
 }
 
+/* Append "name: value\r\n" to *headers, doubling its *cap-byte block.
+   Unlike StringCat, it drops the line on allocation failure. */
+static void PT_AppendHeader(char **headers, size_t *len, size_t *cap,
+                            const char *name, const char *value) {
+  const size_t nameLen = strlen(name);
+  const size_t valueLen = strlen(value);
+  const size_t need = nameLen + valueLen + sizeof(": \r\n"); /* NUL included */
+
+  if (need > *cap - *len) {
+    const size_t want = (*cap > SIZE_MAX / 2 - need) ? 0 : *cap * 2 + need;
+    char *const grown = want != 0 ? realloct(*headers, want) : NULL;
+
+    if (grown == NULL)
+      return;
+    *headers = grown;
+    *cap = want;
+  }
+  memcpy(*headers + *len, name, nameLen);
+  memcpy(*headers + *len + nameLen, ": ", 2);
+  memcpy(*headers + *len + nameLen + 2, value, valueLen);
+  memcpy(*headers + *len + nameLen + 2 + valueLen, "\r\n", 3);
+  *len += nameLen + 2 + valueLen + 2;
+}
+
 static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
                                       int flags) {
   PT_Index__New index = (PT_Index__New) & index_->slots.formatNew;
@@ -1071,6 +1133,7 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
   char catbuff[CATBUFF_SIZE];
   intptr_t hash_pos;
   int hash_pos_return;
+  size_t headersLen = 0, headersCap = 0;
   PT_Element r = NULL;
 
   if (index == NULL || index->hash == NULL || index->zFile == NULL
@@ -1156,26 +1219,24 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
               ZIP_READFIELD_STRING(line, value, "X-Save", previous_save_,
                                    sizeof(previous_save_));
               if (line[0] != '\0') {
-                const int len = r->headers ? ((int) strlen(r->headers)) : 0;
-                /* one byte more than the four appends below write */
-                const int nlen = (int) (strlen(line) + 2 + strlen(value) +
-                                        sizeof("\r\n") + 1);
-                char *const grown = realloct(r->headers, len + nlen);
-
-                /* keep the headers read so far rather than losing them */
-                if (grown != NULL) {
-                  r->headers = grown;
-                  r->headers[len] = '\0';
-                  strcat(r->headers, line);
-                  strcat(r->headers, ": ");
-                  strcat(r->headers, value);
-                  strcat(r->headers, "\r\n");
-                }
+                PT_AppendHeader(&r->headers, &headersLen, &headersCap, line,
+                                value);
               }
             }
           } while (offset < readSizeHeader && !lineEof);
 
           /* Previous entry */
+          if (previous_save_[0] != '\0' &&
+              !hts_path_is_contained(previous_save_)) {
+            /* the archive is someone else's file, and previous_save is opened
+               at :1982 and served to the client */
+            proxytrack_print_log(WARNING,
+                                 "cache filename holds a \"..\" component, "
+                                 "not serving it: %s",
+                                 previous_save_);
+            PT_Element_refuse_save(r, previous_save_);
+            previous_save_[0] = '\0';
+          }
           if (previous_save_[0] != '\0') {
             int pathLen = (int) strlen(index->path);
 
@@ -1183,12 +1244,17 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
               strcpybuff(previous_save, previous_save_);
             }
             // relative ? (hack)
-            else if (index->safeCache || (previous_save_[0] != '/'      // /home/foo/bar.gif
-                                          && (!isalpha(previous_save_[0]) || previous_save_[1] != ':')) // c:/home/foo/bar.gif
-              ) {
-              index->safeCache = 1;
-              snprintf(previous_save, sizeof(previous_save), "%s%s",
-                       index->path, previous_save_);
+            else if (index->safeCache ||
+                     (previous_save_[0] != '/' // /home/foo/bar.gif
+                      && (!isalpha((unsigned char) previous_save_[0]) ||
+                          previous_save_[1] != ':')) // c:/home/foo/bar.gif
+            ) {
+              if (!index_join_root(previous_save, sizeof(previous_save),
+                                   index->path, previous_save_)) {
+                PT_Element_refuse_save(r, previous_save_);
+              } else {
+                index->safeCache = 1;
+              }
             }
             // bogus format (includes buggy absolute path)
             else {
@@ -1204,26 +1270,34 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
 
                   piece[0] = '\0';
                   strncat(piece, start, len);
-                  if ((where = strstr(previous_save_, piece)) != NULL) {
-                    index->fixedPath = (int) (where - previous_save_);  // offset to relative path
+                  if ((where = save_find_host(previous_save_, piece)) != NULL) {
+                    index->fixedPath = (int) (where - previous_save_);
                   }
                 }
               }
               if (index->fixedPath > 0) {
                 int saveLen = (int) strlen(previous_save_);
 
-                if (index->fixedPath < saveLen) {
-                  snprintf(previous_save, sizeof(previous_save), "%s%s",
-                           index->path, previous_save_ + index->fixedPath);
-                } else {
+                if (index->fixedPath >= saveLen) {
                   PT_Element_failf(
                       r, "Bogus fixePath prefix for %s (prefixLen=%d)",
                       previous_save_, (int) index->fixedPath);
                   r->statuscode = STATUSCODE_INVALID;
+                } else if (!index_join_root(previous_save,
+                                            sizeof(previous_save), index->path,
+                                            previous_save_ +
+                                                index->fixedPath)) {
+                  PT_Element_refuse_save(r, previous_save_);
                 }
               } else {
-                snprintf(previous_save, sizeof(previous_save), "%s%s",
-                         index->path, previous_save_);
+                /* an absolute name the host guess could not reduce, so no
+                   relative part is left to join onto the root */
+                proxytrack_print_log(
+                    WARNING,
+                    "cache filename is absolute and holds no path to reduce, "
+                    "not serving it: %s",
+                    previous_save_);
+                PT_Element_refuse_save(r, previous_save_);
               }
             }
           }
@@ -1302,7 +1376,9 @@ static PT_Element PT_ReadCache__New_u(PT_Index index_, const char *url,
                 if (flags & FETCH_BODY) {
                   r->adr = (char *) malloc(r->size + 1);
                   if (r->adr != NULL) {
-                    if (unzReadCurrentFile(index->zFile, r->adr, (unsigned int) r->size) != r->size) {  // erreur
+                    if ((size_t) unzReadCurrentFile(index->zFile, r->adr,
+                                                    (unsigned int) r->size) !=
+                        r->size) {
                       PT_Element_DropBody(r);
                       r->statuscode = STATUSCODE_INVALID;
                       strcpybuff(r->msg, "Cache Read Error : Read Data");
@@ -1918,6 +1994,17 @@ static PT_Element PT_ReadCache__Old_u(PT_Index index_, const char *url,
         PT_Index__Old index = cache;
 
         /* -------------------- COPY OF THE __New() CODE -------------------- */
+        if (previous_save_[0] != '\0' &&
+            !hts_path_is_contained(previous_save_)) {
+          /* same reason as the __New() reader: previous_save is opened and its
+             bytes go to the client */
+          proxytrack_print_log(WARNING,
+                               "cache filename holds a \"..\" component, "
+                               "not serving it: %s",
+                               previous_save_);
+          PT_Element_refuse_save(r, previous_save_);
+          previous_save_[0] = '\0';
+        }
         if (previous_save_[0] != '\0') {
           int pathLen = (int) strlen(index->path);
 
@@ -1925,12 +2012,17 @@ static PT_Element PT_ReadCache__Old_u(PT_Index index_, const char *url,
             strcpybuff(previous_save, previous_save_);
           }
           // relative ? (hack)
-          else if (index->safeCache || (previous_save_[0] != '/'        // /home/foo/bar.gif
-                                        && (!isalpha(previous_save_[0]) || previous_save_[1] != ':'))   // c:/home/foo/bar.gif
-            ) {
-            index->safeCache = 1;
-            snprintf(previous_save, sizeof(previous_save), "%s%s", index->path,
-                     previous_save_);
+          else if (index->safeCache ||
+                   (previous_save_[0] != '/' // /home/foo/bar.gif
+                    && (!isalpha((unsigned char) previous_save_[0]) ||
+                        previous_save_[1] != ':')) // c:/home/foo/bar.gif
+          ) {
+            if (!index_join_root(previous_save, sizeof(previous_save),
+                                 index->path, previous_save_)) {
+              PT_Element_refuse_save(r, previous_save_);
+            } else {
+              index->safeCache = 1;
+            }
           }
           // bogus format (includes buggy absolute path)
           else {
@@ -1946,26 +2038,33 @@ static PT_Element PT_ReadCache__Old_u(PT_Index index_, const char *url,
 
                 piece[0] = '\0';
                 strncat(piece, start, len);
-                if ((where = strstr(previous_save_, piece)) != NULL) {
-                  index->fixedPath = (int) (where - previous_save_);    // offset to relative path
+                if ((where = save_find_host(previous_save_, piece)) != NULL) {
+                  index->fixedPath = (int) (where - previous_save_);
                 }
               }
             }
             if (index->fixedPath > 0) {
               int saveLen = (int) strlen(previous_save_);
 
-              if (index->fixedPath < saveLen) {
-                snprintf(previous_save, sizeof(previous_save), "%s%s",
-                         index->path, previous_save_ + index->fixedPath);
-              } else {
+              if (index->fixedPath >= saveLen) {
                 PT_Element_failf(r,
                                  "Bogus fixePath prefix for %s (prefixLen=%d)",
                                  previous_save_, (int) index->fixedPath);
                 r->statuscode = STATUSCODE_INVALID;
+              } else if (!index_join_root(previous_save, sizeof(previous_save),
+                                          index->path,
+                                          previous_save_ + index->fixedPath)) {
+                PT_Element_refuse_save(r, previous_save_);
               }
             } else {
-              snprintf(previous_save, sizeof(previous_save), "%s%s",
-                       index->path, previous_save_);
+              /* an absolute name the host guess could not reduce, so no
+                 relative part is left to join onto the root */
+              proxytrack_print_log(
+                  WARNING,
+                  "cache filename is absolute and holds no path to reduce, "
+                  "not serving it: %s",
+                  previous_save_);
+              PT_Element_refuse_save(r, previous_save_);
             }
           }
         }
@@ -2177,12 +2276,9 @@ static int getDigit4(const char *const pos) {
 }
 
 static time_t getGMT(struct tm *tm) {
-  time_t t = timegm(tm);
+  time_t t;
 
-  if (t != (time_t) - 1 && t != (time_t) 0) {
-    return t;
-  }
-  return (time_t) - 1;
+  return hts_tm_filetime(tm, &t) ? t : (time_t) -1;
 }
 
 static time_t getArcTimestamp(const char *const line) {
@@ -2538,6 +2634,7 @@ static PT_Element PT_ReadCache__Arc_u(PT_Index index_, const char *url,
   char location_default[HTS_URLMAXSIZE * 2];
   intptr_t hash_pos;
   int hash_pos_return;
+  size_t headersLen = 0, headersCap = 0;
   PT_Element r = NULL;
 
   if (index == NULL || index->hash == NULL || url == NULL || *url == 0)
@@ -2596,21 +2693,8 @@ static PT_Element PT_ReadCache__Arc_u(PT_Index index_, const char *url,
               HTTP_READFIELD_STRING(line, value, "Content-Disposition",
                                     r->cdispo, sizeof(r->cdispo));
               if (line[0] != '\0') {
-                const int len = r->headers ? ((int) strlen(r->headers)) : 0;
-                /* one byte more than the four appends below write */
-                const int nlen = (int) (strlen(line) + 2 + strlen(value) +
-                                        sizeof("\r\n") + 1);
-                char *const grown = realloct(r->headers, len + nlen);
-
-                /* keep the headers read so far rather than losing them */
-                if (grown != NULL) {
-                  r->headers = grown;
-                  r->headers[len] = '\0';
-                  strcat(r->headers, line);
-                  strcat(r->headers, ": ");
-                  strcat(r->headers, value);
-                  strcat(r->headers, "\r\n");
-                }
+                PT_AppendHeader(&r->headers, &headersLen, &headersCap, line,
+                                value);
               }
             }
           }
@@ -2649,10 +2733,9 @@ static PT_Element PT_ReadCache__Arc_u(PT_Index index_, const char *url,
               if (r->statuscode != STATUSCODE_INVALID) {
                 r->adr = (char *) malloc(fetchSize);
                 if (r->adr != NULL) {
-                  if (fetchSize > 0
-                      && (r->size =
-                          (int) fread(r->adr, 1, fetchSize,
-                                      index->file)) != fetchSize) {
+                  if (fetchSize > 0 &&
+                      (r->size = fread(r->adr, 1, fetchSize, index->file)) !=
+                          (size_t) fetchSize) {
                     int last_errno = errno;
 
                     r->statuscode = STATUSCODE_INVALID;

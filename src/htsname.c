@@ -41,6 +41,7 @@ Please visit our Website: http://www.httrack.com
 #include "htstools.h"
 #include "htscharset.h"
 #include "htsencoding.h"
+#include "htsescape.h"
 #include "htssniff.h"
 #include "htscodec.h"
 #include "htszlib.h"
@@ -155,6 +156,17 @@ static void cleanDoubleSlash(char *s) {
   if (i != j) {
     s[j] = s[i];
   }
+}
+
+/* Drop every leading '/': the name is joined to the output directory, so one
+   left behind makes it absolute. */
+static void stripLeadingSlashes(char *s) {
+  const char *start = s;
+
+  while (*start == '/')
+    start++;
+  if (start != s)
+    memmove(s, start, strlen(start) + 1);
 }
 
 /* Strip all ending . or ' ' (windows-forbidden) */
@@ -397,6 +409,82 @@ static void tmpl_catc(char *d, size_t dsize, char c) {
   tmpl_catn(tmpltail, sizeof(tmpltail), (S), (size_t) (N))
 #define TMPL_TAIL(S) TMPL_TAILN((S), (size_t) -1)
 #define TMPL_TAILC(C) tmpl_catc(tmpltail, sizeof(tmpltail), (C))
+
+hts_boolean url_query_value(const char *url, const char *name, char *dst,
+                            size_t size) {
+  const char *const query = strchr(url, '?');
+  hts_query_field f;
+  size_t len;
+
+  dst[0] = '\0';
+  if (query == NULL || !hts_query_find(query + 1, name, &f)) {
+    return HTS_FALSE;
+  }
+  /* crawled query text: clip it */
+  len = f.vallen < size - 1 ? f.vallen : size - 1;
+  memcpy(dst, f.val, len);
+  dst[len] = '\0';
+  return HTS_TRUE;
+}
+
+/* The last dot of the name part, or NULL when the name carries no extension. */
+static char *name_last_dot(char *path) {
+  char *lastDot = NULL;
+
+  for (; *path != '\0'; path++) {
+    if (*path == '.') {
+      lastDot = path;
+    } else if (*path == '/' || *path == '\\') {
+      lastDot = NULL;
+    }
+  }
+  return lastDot;
+}
+
+/* Drop the delayed-type placeholder tail when the mirror already holds the file
+   the shortened name points at (#1926). HTS_TRUE when the tail was dropped. */
+static hts_boolean url_savename_undelay(httrackp *opt, char *save,
+                                        const size_t size,
+                                        /* "<id>.delayed", no leading dot */
+                                        const char *delayed_tail) {
+  char BIGSTK candidate[HTS_URLMAXSIZE * 2];
+  char catbuff[CATBUFF_SIZE];
+  const size_t len = strlen(save);
+  size_t cut = 0; /* prefix to keep, 0 until a tail matches */
+
+  /* the exact tail, so a link whose own name ends in ".<hex>" keeps it */
+  if (delayed_tail != NULL && strnotempty(delayed_tail)) {
+    const size_t n = strlen(delayed_tail) + 1;
+
+    if (len > n && save[len - n] == '.' &&
+        strcmp(save + len - n + 1, delayed_tail) == 0)
+      cut = len - n;
+  }
+  if (cut == 0) {
+    if (!IS_DELAYED_EXT(save) || len <= strlen("." DELAYED_EXT))
+      return HTS_FALSE;
+    cut = len - strlen("." DELAYED_EXT);
+  }
+  /* the copy below trusts this size, so refuse rather than clip */
+  if (cut + 1 > sizeof(candidate))
+    return HTS_FALSE;
+  strclipbuff(candidate, cut + 1, save);
+  /* an undelayed run gives an extensionless link ".html" or probes its type, so
+     the mirror's copy of one says nothing about the name this link would get */
+  if (name_last_dot(candidate) == NULL)
+    return HTS_FALSE;
+  /* back_add()'s on-disk resume skips HTML, its links having moved */
+  if (ishtml(opt, candidate) == 1)
+    return HTS_FALSE;
+  if (fsize_utf8(fconv(catbuff, sizeof(catbuff), candidate)) <= 0)
+    return HTS_FALSE;
+  hts_log_print(opt, LOG_DEBUG,
+                "engine: save-name: keeping the previous mirror's name %s "
+                "instead of the placeholder %s",
+                candidate, save);
+  strlcpybuff(save, candidate, size);
+  return HTS_TRUE;
+}
 
 // Build the local save name (save) from adr/fil; renames on collision
 // (e.g. INDEX.HTML vs index.html).
@@ -659,7 +747,7 @@ int url_savename(lien_adrfilsave *const afs,
 
           if (r.statuscode != -1) { // cache entry read OK
             hts_log_print(opt, LOG_DEBUG, "Testing link type (from cache) %s%s",
-                          adr_complete, fil_complete);
+                          adr_nologin(opt, adr_complete), fil_complete);
             if (!HTTP_IS_REDIRECT(r.statuscode)) {
               const sniff_src src = {sback, NULL, adr, fil, previous_save};
 
@@ -688,16 +776,15 @@ int url_savename(lien_adrfilsave *const afs,
           // note: if we are about to stop (opt->state.stop), back_add() will
           // fail later
           else if (opt->savename_delayed != HTS_SAVENAME_DELAYED_NONE &&
-                   !opt->state.stop) {
+                   !hts_load_acquire_int(&opt->state.stop)) {
             // Check if the file is ready in backing.
-            if (headers != NULL && headers->status >= 0 && !is_redirect) {
+            if (headers != NULL && back_status(headers) >= 0 && !is_redirect) {
               const sniff_src src = {sback, headers, adr, fil, NULL};
 
               ext_chg = resolve_extension(opt, &src, headers->r.cdispo,
                                           headers->r.contenttype,
                                           headers->url_fil, ext, sizeof(ext));
-            }
-            else if (mime_type != NULL) {
+            } else if (mime_type != NULL) {
               ext[0] = '\0';
               if (*mime_type) {
                 give_mimext(ext, sizeof(ext), mime_type);
@@ -741,14 +828,14 @@ int url_savename(lien_adrfilsave *const afs,
             current.adr[0] = current.fil[0] = '\0';
             opt->state._hts_in_html_parsing = 2;        // test
             hts_log_print(opt, LOG_DEBUG, "Testing link type %s%s",
-                          adr_complete, fil_complete);
+                          adr_nologin(opt, adr_complete), fil_complete);
             strcpybuff(current.adr, adr_complete);
             strcpybuff(current.fil, fil_complete);
             // ajouter dans le backing le fichier en mode test
             // savename: rien car en mode test
             if (back_add(sback, opt, cache, current.adr, current.fil,
-                         BACK_ADD_TEST, referer_adr, referer_fil, 1,
-                         HTS_FALSE) != -1) {
+                         BACK_ADD_TEST, referer_adr, referer_fil, 1, HTS_FALSE,
+                         NULL) != -1) {
               int b;
 
               b = back_index(opt, sback, current.adr, current.fil, BACK_ADD_TEST);
@@ -760,7 +847,7 @@ int url_savename(lien_adrfilsave *const afs,
 
                 do {
                   // temps à attendre, et remplir autant que l'on peut le cache (backing)
-                  if (back[b].status > 0) {
+                  if (back_status(&back[b]) > 0) {
                     back_wait(sback, opt, cache, 0);
                   }
                   if (ptr >= 0) {
@@ -775,7 +862,7 @@ int url_savename(lien_adrfilsave *const afs,
                     stop_looping = 1;
                   }
                   // traitement des 304,303..
-                  if (back[b].status <= 0) {
+                  if (back_status(&back[b]) <= 0) {
                     if (HTTP_IS_REDIRECT(back[b].r.statuscode)) {       // agh moved.. un tit tour de plus
                       if ((petits_tours < 5) && former != NULL) { // on va pas tourner en rond non plus!
                         if (strnotempty(back[b].r.location)) {    // location existe!
@@ -806,7 +893,10 @@ int url_savename(lien_adrfilsave *const afs,
                               {
                                 int set_prio_to = 0;
 
-                                if (hts_acceptlink(opt, ptr, moved.adr, moved.fil, NULL, NULL, &set_prio_to, NULL) == 1) { /* forbidden */
+                                if (hts_acceptlink(opt, ptr, moved.adr,
+                                                   moved.fil, NULL, NULL,
+                                                   HTS_FALSE, &set_prio_to,
+                                                   NULL) == 1) { /* forbidden */
                                   has_been_moved = 1;
                                   back_maydelete(opt, cache, sback, b); // ok
                                   strcpybuff(current.adr, moved.adr);
@@ -832,22 +922,26 @@ int url_savename(lien_adrfilsave *const afs,
                                 else {
                                   methode = BACK_ADD_TEST2;     // tester avec GET
                                   hts_log_print(opt, LOG_WARNING,
-                                                "Loop with HEAD request (during prefetch) at %s%s",
-                                                current.adr, current.fil);
+                                                "Loop with HEAD request "
+                                                "(during prefetch) at %s%s",
+                                                adr_nologin(opt, current.adr),
+                                                current.fil);
                                 }
                                 if (!hts_wait_available_socket(sback, opt,
                                                                cache, ptr))
                                   return -1;
                                 if (back_add(sback, opt, cache, moved.adr,
                                              moved.fil, methode, referer_adr,
-                                             referer_fil, 1,
-                                             HTS_FALSE) != -1) { // OK
-                                  hts_log_print(opt, LOG_DEBUG,
-                                                "(during prefetch) %s (%d) to link %s at %s%s",
-                                                back[b].r.msg,
-                                                back[b].r.statuscode,
-                                                back[b].r.location, current.adr,
-                                                current.fil);
+                                             referer_fil, 1, HTS_FALSE,
+                                             NULL) != -1) { // OK
+                                  hts_log_print(
+                                      opt, LOG_DEBUG,
+                                      "(during prefetch) %s (%d) to link %s at "
+                                      "%s%s",
+                                      back[b].r.msg, back[b].r.statuscode,
+                                      url_nologin(opt, back[b].r.location),
+                                      adr_nologin(opt, current.adr),
+                                      current.fil);
 
                                   // libérer emplacement backing actuel et attendre le prochain
                                   back_maydelete(opt, cache, sback, b);
@@ -863,27 +957,30 @@ int url_savename(lien_adrfilsave *const afs,
                                 } else { // sinon on fait rien et on s'en va..
                                          // (ftp etc)
                                   hts_log_print(opt, LOG_DEBUG,
-                                                "Warning: Savename redirect backing error at %s%s",
-                                                moved.adr, moved.fil);
+                                                "Warning: Savename redirect "
+                                                "backing error at %s%s",
+                                                adr_nologin(opt, moved.adr),
+                                                moved.fil);
                                 }
                               }
                             } else {
-                              hts_log_print(opt, LOG_WARNING,
-                                            "Unable to test %s%s (loop to same filename)",
-                                            adr_complete, fil_complete);
+                              hts_log_print(
+                                  opt, LOG_WARNING,
+                                  "Unable to test %s%s (loop to same filename)",
+                                  adr_nologin(opt, adr_complete), fil_complete);
                             }
 
                           }
                         }
                       } else {  // arrêter les frais
-                        hts_log_print(opt, LOG_WARNING,
-                                      "Unable to test %s%s (loop)",
-                                      adr_complete, fil_complete);
+                        hts_log_print(
+                            opt, LOG_WARNING, "Unable to test %s%s (loop)",
+                            adr_nologin(opt, adr_complete), fil_complete);
                       }
                     }           // ok, leaving
                   }
-                } while(!stop_looping && back[b].status > 0
-                        && back[b].status < 1000);
+                } while (!stop_looping && back_status(&back[b]) > 0 &&
+                         back_status(&back[b]) < 1000);
 
                 // Si non déplacé, forcer type?
                 if (!has_been_moved) {
@@ -930,8 +1027,8 @@ int url_savename(lien_adrfilsave *const afs,
               printf("error while savename crash adding\n");
 #endif
               hts_log_print(opt, LOG_ERROR,
-                            "Unexpected savename backing error at %s%s", adr,
-                            fil_complete);
+                            "Unexpected savename backing error at %s%s",
+                            adr_nologin(opt, adr), fil_complete);
             }
             // restaurer
             opt->state._hts_in_html_parsing = hihp;
@@ -962,10 +1059,10 @@ int url_savename(lien_adrfilsave *const afs,
     if ((opt->debug > 1) && (opt->log != NULL)) {
       if (ext_chg == 1)
         hts_log_print(opt, LOG_DEBUG, "Changing link extension %s%s to .%s",
-                      adr_complete, fil_complete, ext);
+                      adr_nologin(opt, adr_complete), fil_complete, ext);
       else
         hts_log_print(opt, LOG_DEBUG, "Changing link name %s%s to %s",
-                      adr_complete, fil_complete, ext);
+                      adr_nologin(opt, adr_complete), fil_complete, ext);
     }
     if (ext_chg == 1) {
       // Cut the old extension only when it is empty (a bare trailing dot), the
@@ -978,7 +1075,9 @@ int url_savename(lien_adrfilsave *const afs,
 
       while((a > fil) && (*a != '.') && (*a != '/'))
         a--;
-      if (*a == '.' && known_ext)
+      /* the placeholder is temporary, so it keeps the name an undelayed run
+         would have picked */
+      if (*a == '.' && known_ext && !ext_chg_delayed)
         *a = '\0'; // cut
       url_savename_addtail(fil, sizeof(fil), ".", ext);
     } else {
@@ -1052,13 +1151,16 @@ int url_savename(lien_adrfilsave *const afs,
           if (strchr(a, ']')) {
             int pos = 0;
             char name[5][256];
+            char value[256];
             char *c = name[0];
+            const char *d;
 
             for(pos = 0; pos < 5; pos++) {
               name[pos][0] = '\0';
             }
             pos = 0;
-            /* one byte spare in each token for the '=' name[0] gets below */
+            // The + 2 cap once left room for an appended '=', and it stays so
+            // the same names fit.
             while(*a != '\0' && *a != ']') {
               if (*a == ':') { // next token; past the fifth they are dropped
                 c = pos + 1 < 5 ? name[++pos] : NULL;
@@ -1072,40 +1174,17 @@ int url_savename(lien_adrfilsave *const afs,
             if (*a == ']') {
               a++;
             }
-            strcatbuff(name[0], "=");   /* param=.. */
-            c = strchr(fil_complete, '?');
-            /* parameters exists */
-            if (c) {
-              char *cp;
-
-              while((cp = strstr(c + 1, name[0])) && *(cp - 1) != '?' && *(cp - 1) != '&') {    /* finds [?&]param= */
-                c = cp;
-              }
-              if (cp) {
-                c = cp + strlen(name[0]);       /* jumps "param=" */
-                TMPL_TAIL(name[1]);             /* prefix */
-                if (*c != '\0' && *c != '&') {
-                  char *d = name[0];
-
-                  /* crawled query text: clip it into the token buffer */
-                  while (*c != '\0' && *c != '&' &&
-                         d + 1 < name[0] + sizeof(name[0])) {
-                    *d++ = *c++;
-                  }
-                  *d = '\0';
-                  d = unescape_http(catbuff, sizeof(catbuff), name[0]);
-                  if (d && *d) {
-                    TMPL_CAT(d); /* value */
-                  } else {
-                    TMPL_TAIL(name[3]); /* empty replacement if any */
-                  }
-                } else {
-                  TMPL_TAIL(name[3]); /* empty replacement if any */
-                }
-                TMPL_TAIL(name[2]); /* suffix */
+            if (url_query_value(fil_complete, name[0], value, sizeof(value))) {
+              TMPL_TAIL(name[1]); /* prefix */
+              d = value[0] != '\0'
+                      ? unescape_http(catbuff, sizeof(catbuff), value)
+                      : NULL;
+              if (d && *d) {
+                TMPL_CAT(d); /* value */
               } else {
-                TMPL_TAIL(name[4]); /* not found replacement if any */
+                TMPL_TAIL(name[3]); /* empty replacement if any */
               }
+              TMPL_TAIL(name[2]); /* suffix */
             } else {
               TMPL_TAIL(name[4]); /* not found replacement if any */
             }
@@ -1147,9 +1226,9 @@ int url_savename(lien_adrfilsave *const afs,
               TMPL_TAILN(dot_pos + 1, 3);
           } else {
             if (!short_ver)
-              TMPL_TAIL(DEFAULT_EXT + 1); // skip the leading dot
+              TMPL_TAIL(&DEFAULT_EXT[1]); // skip the leading dot
             else
-              TMPL_TAIL(DEFAULT_EXT_SHORT + 1); // skip the leading dot
+              TMPL_TAIL(&DEFAULT_EXT_SHORT[1]); // skip the leading dot
           }
           break;
         case 't': // extension
@@ -1160,9 +1239,9 @@ int url_savename(lien_adrfilsave *const afs,
               TMPL_TAILN(dot_pos + 1, 3);
           } else {
             if (!short_ver)
-              TMPL_TAIL(DEFAULT_EXT + 1); // skip the leading dot
+              TMPL_TAIL(&DEFAULT_EXT[1]); // skip the leading dot
             else
-              TMPL_TAIL(DEFAULT_EXT_SHORT + 1); // skip the leading dot
+              TMPL_TAIL(&DEFAULT_EXT_SHORT[1]); // skip the leading dot
           }
           break;
         case 'p': // path without trailing /
@@ -1449,7 +1528,7 @@ int url_savename(lien_adrfilsave *const afs,
     if (*a != '.') {                         // agh pas de point
       strcatbuff(afs->save, ".html");        // préférable!
       hts_log_print(opt, LOG_DEBUG, "Default HTML type set for %s%s => %s",
-                    adr_complete, fil_complete, afs->save);
+                    adr_nologin(opt, adr_complete), fil_complete, afs->save);
     }
   }
   // effacer pass au besoin pour les autentifications
@@ -1564,25 +1643,42 @@ int url_savename(lien_adrfilsave *const afs,
 
   /* convert name to UTF-8 ? Note: already done while parsing. */
 
+  /* The strip above takes one slash, and cleanEndingSpaceOrDot() puts one back
+     by emptying a component made only of dots or spaces ("/.../x.html" ->
+     "/x.html"), which fil_simplifie() then keeps. Stripped here rather than up
+     there, so the reserved-name and 8.3 passes see the name master gave them:
+     the check below only needs it relative at this point. */
+  stripLeadingSlashes(afs->save);
+
   /* callback */
-  RUN_CALLBACK5(opt, savename, adr_complete, fil_complete, referer_adr,
-                referer_fil, afs->save);
+  {
+    /* Nothing sanitizes what the hook writes here, and the name is joined to
+       the output directory below, so it has to come back relative and
+       ".."-free. Checked whatever the engine handed in, because the engine's
+       own name is relative by the line above, and only a hook can break it.
+       Refused rather than collapsed, because an absolute name has no "../" to
+       drop. */
+    char BIGSTK engine_save[HTS_URLMAXSIZE * 2];
+
+    strcpybuff(engine_save, afs->save);
+    RUN_CALLBACK5(opt, savename, adr_complete, fil_complete, referer_adr,
+                  referer_fil, afs->save);
+    if (!hts_path_is_relative_contained(afs->save)) {
+      hts_log_print(opt, LOG_WARNING,
+                    "engine: save-name: the hook returned \"%s\", which leaves "
+                    "the mirror, so the engine keeps \"%s\"",
+                    afs->save, engine_save);
+      strcpybuff(afs->save, engine_save);
+    }
+  }
 
   hts_log_print(opt, LOG_DEBUG, "engine: save-name: local name: %s%s -> %s",
-                adr, fil, afs->save);
+                adr_nologin(opt, adr), fil, afs->save);
 
   /* Ensure that the MANDATORY "temporary" extension is set */
   if (ext_chg_delayed) {
-    char *ptr;
-    char *lastDot = NULL;
+    char *const lastDot = name_last_dot(afs->save);
 
-    for(ptr = afs->save; *ptr != 0; ptr++) {
-      if (*ptr == '.') {
-        lastDot = ptr;
-      } else if (*ptr == '/' || *ptr == '\\') {
-        lastDot = NULL;
-      }
-    }
     if (lastDot == NULL) {
       strcatbuff(afs->save, "." DELAYED_EXT);
     } else if (!IS_DELAYED_EXT(afs->save)) {
@@ -1728,13 +1824,13 @@ int url_savename(lien_adrfilsave *const afs,
         free(saveFinal);
       } else {
         hts_log_print(opt, LOG_ERROR, "Could not revert to UTF-8: %s%s",
-          adr_complete, fil_complete);
+                      adr_nologin(opt, adr_complete), fil_complete);
       }
       free(wsave);
 
       // log in debug
       hts_log_print(opt, LOG_DEBUG, "Too long filename shortened: %s%s => %s",
-        adr_complete, fil_complete, afs->save);
+                    adr_nologin(opt, adr_complete), fil_complete, afs->save);
     } else {
       hts_log_print(opt, LOG_ERROR, "Could not read UTF-8: %s", afs->save);
     }
@@ -1781,6 +1877,10 @@ int url_savename(lien_adrfilsave *const afs,
     strcatbuff(tempo, afs->save);
     strcpybuff(afs->save, tempo);
   }
+  // Before the collision search, so a name already taken this run still moves.
+  if (ext_chg_delayed)
+    url_savename_undelay(opt, afs->save, sizeof(afs->save), ext);
+
   // vérifier que le nom n'est pas déja pris...
   if (opt->liens != NULL) {
     int nom_ok;

@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Протокол проксі. HTTP: стандартний проксі. HTTP (тунель CONNECT): надсилає кожен запит через тунель CONNECT, для проксі, що підтримують лише CONNECT, як-от HTTPTunnelPort у Tor. SOCKS5: порт за замовчуванням 1080.
 Load cookies from file:
 Завантажити cookies з файлу:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Попередньо завантажити cookies з файлу Netscape cookies.txt перед завантаженням.
 Pause between files:
 Пауза між файлами:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 Ігнорувати %s і всі хости під ним
 Manual
 Посібник
+Max Retry-After(s)
+Макс. Retry-After (с)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Найдовше очікування, якого дотримується програма, коли сервер надсилає заголовок Retry-After. Значення 0 означає повтор без очікування.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+Правила, задані тут, діють для поточного дзеркалювання. Вилучення правила знову пропускає нові посилання, але посилання, яке воно вже відхилило, у цьому дзеркалюванні не повернеться.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Цей фільтр не можна використати. Фільтр починається з + або -, далі йде шаблон, і він має вміщатися в одному короткому рядку.
+Theme:
+Тема:
+Classic
+Класична
+Accept headers
+Заголовки Accept
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+Заголовок Accept, що надсилається для кожного виду посилання. «Автоматично» надсилає те, що надсилає вибраний браузер.
+Automatic
+Автоматично
+Old HTTrack value
+Старе значення HTTrack
+Default
+Типово
+Pages
+Сторінки
+Inline frames
+Вбудовані фрейми
+Frames
+Фрейми
+Images
+Зображення
+Style sheets
+Таблиці стилів
+Scripts
+Скрипти
+Fonts
+Шрифти
+Audio
+Аудіо
+Video
+Відео
+Objects
+Об’єкти
+Embedded content
+Вбудований вміст
+Log in with a browser...
+Увійти через браузер...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Увійдіть на сайт у браузері, і дзеркалювання піде з отриманими cookies та ідентифікацією браузера
+No Microsoft Edge WebView2 runtime is installed on this computer
+На цьому комп'ютері не встановлено середовище виконання Microsoft Edge WebView2
+Log in with a browser
+Вхід через браузер
+Go
+Перейти
+Done
+Готово
+Clear login
+Вийти з акаунта
+The browser did not open: %s.
+Браузер не відкрився: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+Браузер не повернув жодного cookie. Адресу та ідентифікатор браузера буде збережено разом із проектом після завершення майстра.
+Cookies collected: %d. They are used when you press OK.
+Зібрано cookies: %d. Вони будуть застосовані, коли ви натиснете ОК.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Зібрано cookies: %d. Їх буде збережено разом із проектом після завершення майстра.
+The login could not be written to %s.
+Не вдалося записати дані входу в %s.
+%d of the browser's cookies were left out, because the engine would not read them.
+Пропущено cookies браузера: %d, оскільки HTTrack не зміг би їх прочитати.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Увійдіть на сайт в іншій вкладці цього браузера. Відкрийте інструменти розробника (F12), потім вкладку «Мережа», перезавантажте сторінку, клацніть правою кнопкою на першому запиті та виберіть Copy as cURL (bash). Вставте текст сюди. Підійде й експорт cookies.txt, для першої адреси у списку.
+Cookies for: %s. Browser identity: %s.
+Cookies для: %s. Ідентифікатор браузера: %s.
+A login cannot be saved for this address, so nothing was kept.
+Для цієї адреси не можна зберегти вхід, тому нічого не збережено.
+Yes
+Так

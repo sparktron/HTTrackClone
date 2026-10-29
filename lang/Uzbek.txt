@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Proksi protokoli. HTTP: oddiy proksi. HTTP (CONNECT tuneli): har bir so'rovni CONNECT tuneli orqali yuboradi; faqat CONNECT'ni qo'llab-quvvatlaydigan proksilar uchun, masalan Tor HTTPTunnelPort. SOCKS5: standart port 1080.
 Load cookies from file:
 Fayldan cookies yuklamoq:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Ko’chirib olishdan oldin Netscape cookies.txt faylidan cookies’ni oldindan yuklamoq.
 Pause between files:
 Fayllar orasidagi pauza:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 %s va uning ostidagi barcha xostlarni e'tiborsiz qoldirish
 Manual
 Qo’llanma
+Max Retry-After(s)
+Maks. Retry-After (s)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Server Retry-After sarlavhasini yuborganda amal qilinadigan eng uzun kutish. Kutmasdan qayta urinish uchun 0 kiriting.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+Bu yerda belgilagan qoidalaringiz hozir bajarilayotgan ko’zgu yaratish jarayoniga qo’llanadi. Qoidani olib tashlash yangi havolalarni yana o’tkazadi, lekin qoida allaqachon rad etgan havola bu jarayonda qaytib kelmaydi.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Bu filtrdan foydalanib bo’lmaydi. Filtr + yoki - belgisi bilan boshlanadi, undan keyin namuna keladi va bitta qisqa qatorga sig’ishi kerak.
+Theme:
+Mavzu:
+Classic
+Klassik
+Accept headers
+Accept sarlavhalari
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+Har bir havola turi uchun yuboriladigan Accept sarlavhasi. Avtomatik tanlangan brauzer yuboradigan qiymatni yuboradi.
+Automatic
+Avtomatik
+Old HTTrack value
+Eski HTTrack qiymati
+Default
+Standart
+Pages
+Sahifalar
+Inline frames
+Ichki ramkalar
+Frames
+Ramkalar
+Images
+Rasmlar
+Style sheets
+Uslublar jadvallari
+Scripts
+Skriptlar
+Fonts
+Shriftlar
+Audio
+Audio
+Video
+Video
+Objects
+Obyektlar
+Embedded content
+Ichiga joylangan kontent
+Log in with a browser...
+Brauzer orqali kirish...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Saytga brauzer orqali kiring, ko’zgu olishda esa olingan cookies va brauzer identifikatori ishlatiladi
+No Microsoft Edge WebView2 runtime is installed on this computer
+Bu kompyuterda Microsoft Edge WebView2 runtime o’rnatilmagan
+Log in with a browser
+Brauzer orqali kirish
+Go
+O’tish
+Done
+Tayyor
+Clear login
+Hisobdan chiqish
+The browser did not open: %s.
+Brauzer ochilmadi: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+Brauzer hech qanday cookies qaytarmadi. Yaratuvchi tugaganda manzil va brauzer identifikatori loyiha bilan birga saqlanadi.
+Cookies collected: %d. They are used when you press OK.
+Yig’ilgan cookies: %d. Ular OK bosilganda ishlatiladi.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Yig’ilgan cookies: %d. Yaratuvchi tugaganda ular loyiha bilan birga saqlanadi.
+The login could not be written to %s.
+Kirish ma’lumotlarini %s ga yozib bo’lmadi.
+%d of the browser's cookies were left out, because the engine would not read them.
+Brauzerning %d ta cookies’i chetda qoldirildi, chunki HTTrack ularni o’qiy olmadi.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Ushbu brauzerning boshqa varag’ida saytga kiring. Dasturchi vositalarini (F12), so’ng Tarmoq varag’ini oching, sahifani qayta yuklang, birinchi so’rovga sichqonchaning o’ng tugmasi bilan bosing va Copy as cURL (bash) ni tanlang. Matnni shu yerga qo’ying. cookies.txt eksporti ham ishlaydi, ro’yxatdagi birinchi manzil uchun.
+Cookies for: %s. Browser identity: %s.
+Cookies tegishli saytlar: %s. Brauzer identifikatori: %s.
+A login cannot be saved for this address, so nothing was kept.
+Bu manzil uchun kirishni saqlab bo'lmaydi, shuning uchun hech narsa saqlanmadi.
+Yes
+Ha

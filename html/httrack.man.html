@@ -82,9 +82,10 @@ offline browser : copy websites to a local directory</p>
 --max-files[=N]</b> ] [ <b>-MN, --max-size[=N]</b> ] [
 <b>-EN, --max-time[=N]</b> ] [ <b>-AN, --max-rate[=N]</b> ]
 [ <b>-%cN, --connection-per-second[=N]</b> ] [ <b>-%G,
---pause</b> ] [ <b>-GN, --max-pause[=N]</b> ] [ <b>-cN,
---sockets[=N]</b> ] [ <b>-TN, --timeout[=N]</b> ] [ <b>-RN,
---retries[=N]</b> ] [ <b>-JN, --min-rate[=N]</b> ] [ <b>-HN,
+--pause</b> ] [ <b>-%JN, --max-retry-after[=N]</b> ] [
+<b>-GN, --max-pause[=N]</b> ] [ <b>-cN, --sockets[=N]</b> ]
+[ <b>-TN, --timeout[=N]</b> ] [ <b>-RN, --retries[=N]</b> ]
+[ <b>-JN, --min-rate[=N]</b> ] [ <b>-HN,
 --host-control[=N]</b> ] [ <b>-%P,
 --extended-parsing[=0]</b> ] [ <b>-n, --near</b> ] [ <b>-t,
 --test</b> ] [ <b>-%L, --list</b> ] [ <b>-%S, --urllist</b>
@@ -106,23 +107,24 @@ offline browser : copy websites to a local directory</p>
 [ <b>-%z, --disable-compression[=0]</b> ] [ <b>-%B,
 --tolerant[=0]</b> ] [ <b>-%s, --updatehack[=0]</b> ] [
 <b>-%u, --urlhack[=0]</b> ] [ <b>-%A, --assume</b> ] [
-<b>-@iN, --protocol[=N]</b> ] [ <b>-%w, --disable-module</b>
-] [ <b>-F, --user-agent</b> ] [ <b>-%R, --referer</b> ] [
-<b>-%E, --from</b> ] [ <b>-%F, --footer</b> ] [ <b>-%l,
---language</b> ] [ <b>-%a, --accept</b> ] [ <b>-%X,
---headers</b> ] [ <b>-C, --cache[=N]</b> ] [ <b>-k,
---store-all-in-cache</b> ] [ <b>-%r, --warc</b> ] [ <b>-%d,
---changes[=0]</b> ] [ <b>-%n, --do-not-recatch[=0]</b> ] [
-<b>-%v, --display[=N]</b> ] [ <b>-Q, --do-not-log</b> ] [
-<b>-q, --quiet</b> ] [ <b>-z, --extra-log</b> ] [ <b>-Z,
---debug-log</b> ] [ <b>-v, --verbose</b> ] [ <b>-f,
---file-log</b> ] [ <b>-f2, --single-log</b> ] [ <b>-I,
---index[=0]</b> ] [ <b>-%i, --build-top-index[=0]</b> ] [
-<b>-%I, --search-index[=N]</b> ] [ <b>-pN,
---priority[=N]</b> ] [ <b>-S, --stay-on-same-dir</b> ] [
-<b>-D, --can-go-down</b> ] [ <b>-U, --can-go-up</b> ] [
-<b>-B, --can-go-up-and-down</b> ] [ <b>-a,
---stay-on-same-address</b> ] [ <b>-d,
+<b>-@iN, --protocol[=N]</b> ] [ <b>-@mN, --mptcp[=0]</b> ] [
+<b>-%w, --disable-module</b> ] [ <b>-F, --user-agent</b> ] [
+<b>-%R, --referer</b> ] [ <b>-%E, --from</b> ] [ <b>-%F,
+--footer</b> ] [ <b>-%l, --language</b> ] [ <b>-%a,
+--accept</b> ] [ <b>-%X, --headers</b> ] [ <b>-%Q,
+--browser-headers[=0]</b> ] [ <b>-C, --cache[=N]</b> ] [
+<b>-k, --store-all-in-cache</b> ] [ <b>-%r, --warc</b> ] [
+<b>-%d, --changes[=0]</b> ] [ <b>-%n,
+--do-not-recatch[=0]</b> ] [ <b>-%v, --display[=N]</b> ] [
+<b>-Q, --do-not-log</b> ] [ <b>-q, --quiet</b> ] [ <b>-z,
+--extra-log</b> ] [ <b>-Z, --debug-log</b> ] [ <b>-v,
+--verbose</b> ] [ <b>-f, --file-log</b> ] [ <b>-f2,
+--single-log</b> ] [ <b>-I, --index[=0]</b> ] [ <b>-%i,
+--build-top-index[=0]</b> ] [ <b>-%I, --search-index[=N]</b>
+] [ <b>-pN, --priority[=N]</b> ] [ <b>-S,
+--stay-on-same-dir</b> ] [ <b>-D, --can-go-down</b> ] [
+<b>-U, --can-go-up</b> ] [ <b>-B, --can-go-up-and-down</b> ]
+[ <b>-a, --stay-on-same-address</b> ] [ <b>-d,
 --stay-on-same-domain</b> ] [ <b>-l, --stay-on-same-tld</b>
 ] [ <b>-e, --go-everywhere</b> ] [ <b>-%H,
 --debug-headers</b> ] [ <b>-%!,
@@ -429,6 +431,18 @@ hour) (--max-time[=N])</p></td></tr>
 
 <p>random pause of MIN[:MAX] seconds between files (e.g.
 %G5:10) (--pause &lt;param&gt;)</p></td></tr>
+<tr valign="top" align="left">
+<td width="9%"></td>
+<td width="8%">
+
+
+<p>-%JN</p></td>
+<td width="1%"></td>
+<td width="82%">
+
+
+<p>longest Retry-After obeyed, in seconds (*%J60, 0=no
+wait) (--max-retry-after[=N])</p></td></tr>
 <tr valign="top" align="left">
 <td width="9%"></td>
 <td width="8%">
@@ -865,20 +879,32 @@ them) (--generate-errors[=N])</p></td></tr>
 <td width="82%">
 
 
-<p>load extra cookies from a Netscape cookies.txt
-(--cookies-file &lt;param&gt;)</p></td></tr>
+<p>use a Netscape cookies.txt as the jar, rewritten at the
+end (--cookies-file &lt;param&gt;)</p></td></tr>
+</table>
+
+
+<p style="margin-left:18%;">&lt;URL&gt;#httrack-bundle=&lt;name&gt;
+crawls &lt;URL&gt; with the user agent, <br>
+headers and cookies of the login bundle &lt;name&gt;.hts,
+read from the project folder or from --bundle-dir
+&lt;dir&gt;</p>
+
+<table width="100%" border="0" rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
 <tr valign="top" align="left">
 <td width="9%"></td>
 <td width="4%">
 
 
-<p>-%Y</p></td>
+<p style="margin-top: 1em">-%Y</p></td>
 <td width="5%"></td>
 <td width="82%">
 
 
-<p>explain which filter rule accepts or rejects a URL, then
-exit (--why &lt;param&gt;)</p></td></tr>
+<p style="margin-top: 1em">explain which filter rule
+accepts or rejects a URL, then exit (--why
+&lt;param&gt;)</p> </td></tr>
 <tr valign="top" align="left">
 <td width="9%"></td>
 <td width="4%">
@@ -977,9 +1003,9 @@ servers, but not standard!) (--tolerant[=0])</p></td></tr>
 <td width="82%">
 
 
-<p>update hacks: various hacks to limit re-transfers when
-updating (identical size, bogus response..)
-(--updatehack[=0])</p> </td></tr>
+<p>update hacks: keep a file already on disk when its size
+matches, even on a first crawl, and accept some bogus
+responses (--updatehack[=0])</p></td></tr>
 <tr valign="top" align="left">
 <td width="9%"></td>
 <td width="4%">
@@ -1037,6 +1063,18 @@ foo.cgi=text/html</p>
 
 <p style="margin-top: 1em">internet protocol (0=both
 ipv6+ipv4, 4=ipv4 only, 6=ipv6 only) (--protocol[=N])</p></td></tr>
+<tr valign="top" align="left">
+<td width="9%"></td>
+<td width="5%">
+
+
+<p>-@mN</p></td>
+<td width="4%"></td>
+<td width="82%">
+
+
+<p>carry connections over Multipath TCP where the system
+offers it (0=no, 1=yes) (--mptcp[=0])</p></td></tr>
 <tr valign="top" align="left">
 <td width="9%"></td>
 <td width="5%">
@@ -1132,8 +1170,10 @@ or legacy %s) (--footer &lt;param&gt;)</p></td></tr>
 
 
 <p>accepted formats (-%a
-&quot;text/html,image/png;q=0.9,*/*;q=0.1&quot; (--accept
-&lt;param&gt;)</p> </td></tr>
+&quot;text/html,image/png;q=0.9,*/*;q=0.1&quot;; repeat as
+-%a &quot;KIND=formats&quot; for one kind of link: document
+iframe frame image style script font audio video object
+embed (--accept &lt;param&gt;)</p></td></tr>
 <tr valign="top" align="left">
 <td width="9%"></td>
 <td width="4%">
@@ -1144,8 +1184,24 @@ or legacy %s) (--footer &lt;param&gt;)</p></td></tr>
 <td width="82%">
 
 
-<p>additional HTTP header line (-%X &quot;X-Magic: 42&quot;
+<p>additional HTTP header line (-%X &quot;X-Magic:
+42&quot;; an Accept line replaces every computed Accept,
+per-kind values included; Content-Length, Transfer-Encoding,
+Connection, Keep-Alive, TE, Upgrade and Expect are dropped
 (--headers &lt;param&gt;)</p></td></tr>
+<tr valign="top" align="left">
+<td width="9%"></td>
+<td width="4%">
+
+
+<p>-%Q</p></td>
+<td width="5%"></td>
+<td width="82%">
+
+
+<p>send the headers a browser -F implies: its Accept
+values, header order and Sec-Fetch-*, and client hints over
+HTTPS (%Q0 don&rsquo;t) (--browser-headers[=0])</p></td></tr>
 </table>
 
 <h3>Log, index, cache
@@ -2394,6 +2450,85 @@ operation it asked for failed. No mirror ran.</p></td></tr>
 
 <p style="margin-left:18%;">The system wide configuration
 file.</p>
+
+<p style="margin-left:9%;"><i>cookies.txt</i></p>
+
+<p style="margin-left:18%;">The cookie jar, in Netscape
+format. Without <i>--cookies-file</i>, the mirror reads the
+one in its output directory and the one in the current
+directory, and writes the jar back to its output directory
+at the end. With <i>--cookies-file</i>, that file alone is
+the jar. HTTrack rewrites it at the end and keeps its old
+content as <i>&lt;file&gt;.bak</i>. HTTrack leaves the file
+unchanged and warns if a line could not be loaded or a
+cookie repeats. It does the same when the file holds a
+comment that no known tool writes. An empty expiry field
+means a session cookie.</p>
+
+<p style="margin-left:18%; margin-top: 1em">The file given
+to <i>--cookies-file</i> can also hold a document.cookie
+string, such as <i>a=1; b=2</i>, as a browser console prints
+it, or a pasted <i>Cookie:</i> request header. Those cookies
+are sent to the registrable domain of the first start URL
+and its subdomains, or to that host alone when it is an
+address or a public suffix. They are Secure when that URL is
+https. HTTrack never rewrites such a file. HttpOnly cookies
+are not in it. A cookies.txt export has them, and so does
+the Cookie header from DevTools &quot;Copy as cURL&quot;,
+pasted here.</p>
+
+<p style="margin-left:9%;"><i>&lt;name&gt;.hts</i></p>
+
+<p style="margin-left:18%;">A login bundle, named by a
+start URL that ends with
+<i>#httrack-bundle=&lt;name&gt;</i>, such as
+<i>https://example.com/members/#httrack-bundle=login1</i>.
+The name holds letters, digits, <i>.</i>, <i>_</i> and
+<i>-</i> only. HTTrack reads the file in the project folder,
+or in the folder given to <i>--bundle-dir &lt;dir&gt;</i>,
+and never writes it. doit.log keeps that folder as an
+absolute path. HTTrack reads the suffix on the command line,
+in a <i>-%L</i> list and in doit.log, never on a crawled
+link. A missing file, or one that does not parse, stops the
+run before any request.</p>
+
+<p style="margin-left:18%; margin-top: 1em">The first line
+is <i># HTTrack bundle 1</i>. Then come <i>url</i> lines,
+each one more start URL, at most one <i>ua</i> line, and
+<i>header</i> and <i>scope</i> lines. A <i>cookies</i> line
+ends them, and a Netscape cookie jar follows it.</p>
+
+<p style="margin-left:18%; margin-top: 1em">The
+bundle&rsquo;s user agent and headers replace <i>-F</i> and
+<i>-%X</i> for each host in its scope, and only there. A
+bundle with header lines but no <i>ua</i> line sends the
+<i>-F</i> user agent. When any start URL naming the bundle,
+or any of its url lines, is https, its headers go over https
+alone, and so do those of the bundles it merges with. By
+default the scope is the registrable domains of the start
+URLs naming the bundle and of its url lines. A host with no
+registrable domain, such as a public suffix, a single label
+or an address, covers itself alone. Scope lines replace that
+default. HTTrack drops a cookie outside the scope and gives
+the count in one warning. HTTrack refuses a Host, Cookie,
+Proxy-* or framing header, a scope line naming a public
+suffix, and a line that holds a control byte or is too long,
+in the cookie jar too and even under <i>-b0</i>. A second
+<i>ua</i> line, header lines over 8192 bytes, or a full
+cookie jar stops the run too. A repeated cookie line or an
+unknown key only warns, and so does an unknown # line in the
+cookie jar. Before the <i>cookies</i> line, a # line is a
+comment. Messages give the file and the line number, never a
+value. Two bundles whose scopes overlap must give the same
+user agent, headers and cookie values, or the run stops.</p>
+
+<p style="margin-left:18%; margin-top: 1em">The
+bundle&rsquo;s cookies go into the cookie jar, which HTTrack
+writes at the end of the crawl. Of the bundle and the jar,
+the newer file wins a cookie both hold. A new capture
+therefore wins over the jar, and a cookie the server
+refreshed wins over an older bundle. On equal times the
+bundle wins.</p>
 
 <p style="margin-left:9%; margin-top: 1em">A running mirror
 also watches its own output directory for these. Creating

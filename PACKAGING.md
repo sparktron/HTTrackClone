@@ -55,6 +55,8 @@ relative symlink to `$(docdir)`, which is how the panes' Help links reach the
 manual. Stripping the documentation leaves that link dangling, htsserver answers
 404, and the panes hide the links they would have carried. Ship the symlink with
 the interface or with the documentation, whichever your split prefers.
+`$(datadir)/httrack/html/palette.css` belongs to the interface. The documentation
+installs its own copy beside `doc.css`.
 
 Older releases installed the interface under `$(docdir)` and made
 `$(datadir)/httrack/html` the symlink, which is what several recipes carried a
@@ -117,6 +119,16 @@ libbrotlidec libzstd`, and without it as `Libs.private: -lbrotlidec -lzstd`.
 The second form drops the `-L` an out-of-the-way prefix needs and orders nothing
 for a static link, so build-depend on `pkg-config` (`pkgconf` on Debian, where
 the old name is transitional) rather than letting the chroot decide. Ours does.
+
+## The Public Suffix List is built in
+
+httrack compiles in a copy of the Public Suffix List, `src/htspsl_data.c`, to
+decide which hosts are the same site for the `Sec-Fetch-Site` header. If your
+distribution ships the list, pass `--with-psl-file` (or
+`--with-psl-file=PATH` when it is not at
+`/usr/share/publicsuffix/public_suffix_list.dat`). httrack then reads that file
+at startup, so a package update reaches it, and it keeps the built-in copy as
+the fallback. Debian recommends `publicsuffix` from `libhttrack3`.
 
 ## Do not re-encode the tree
 

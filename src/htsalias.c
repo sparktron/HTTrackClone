@@ -36,8 +36,10 @@ Please visit our Website: http://www.httrack.com
 
 #include "htsbase.h"
 #include "htsalias.h"
+#include "htscmdline.h"
 #include "htsglobal.h"
 #include "htslib.h"
+#include "htslines.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -68,6 +70,11 @@ Please visit our Website: http://www.httrack.com
   param1 : this option must be alone, and needs one distinct parameter (-P <path>)
   param0 : this option must be alone, but the parameter should be put together (+*.gif)
   paramn : glues a preset or on/off onto -N, detaches a %-carrying template, refuses the rest, a cluster tail (1L0) included
+
+  A glued class shares one HTS_CDLMAXSIZE buffer with its short form, so the
+  value's budget is that size less strlen(short form). Only param1, and paramn
+  where it detaches, give the value the whole buffer. A front end bounding a
+  glued value at HTS_CDLMAXSIZE therefore accepts lengths this refuses.
 
   A name may appear twice; the FIRST row wins, for the expansion and the help
   text. Later rows exist so a reverse lookup by short option finds a name, and
@@ -112,6 +119,9 @@ const char *hts_optalias[][4] = {
   {"language", "-%l", "param1", ""}, {"lang", "-%l", "param1", ""},
   {"accept", "-%a", "param1", ""},
   {"headers", "-%X", "param1", ""},
+  {"browser-headers", "-%Q", "onoff",
+   "send the headers the browser named by -F would send: its Accept "
+   "values, header order, Sec-Fetch-* and, over HTTPS, client hints"},
   {"structure", "-N", "paramn", ""},
   {"user-structure", "-N", "param1", ""},
   {"long-names", "-L", "param", ""},
@@ -127,7 +137,7 @@ const char *hts_optalias[][4] = {
    "fold other hostnames of one site onto it "
    "([scheme://]alias[,...]=[scheme://]host)"},
   {"cookies-file", "-%K", "param1",
-   "load extra cookies from a Netscape cookies.txt"},
+   "use a Netscape cookies.txt as the jar, rewritten at the end"},
   {"changes", "-%d", "onoff",
    "write hts-changes.json: what this crawl changed vs. the previous mirror"},
   {"sitemap", "-%m", "single",
@@ -151,6 +161,12 @@ const char *hts_optalias[][4] = {
    "explain which filter rule accepts or rejects a URL, then exit"},
   {"pause", "-%G", "param1",
    "random pause of MIN[:MAX] seconds between files"},
+  {"max-retry-after", "-%J", "param",
+   "longest Retry-After delay obeyed, in seconds"},
+  {"mptcp", "-@m", "onoff",
+   "carry connections over Multipath TCP where the system offers it"},
+  {"bundle-dir", "--bundle-dir", "param1",
+   "folder where #httrack-bundle= names are read, not the project folder"},
   {"generate-errors", "-o", "level", ""},
   {"do-not-generate-errors", "-o0", "single", ""},
   {"purge-old", "-X", "onoff", ""},
@@ -336,6 +352,8 @@ static const char *const dashvalue_opt[] = {
   "-%L",  /* list */
   "-%S",  /* urllist */
   "-%rf", /* warc-file */
+  "-%X",  /* headers */
+  "--bundle-dir",
   "-F",   /* user-agent */
   NULL
 };
@@ -569,6 +587,25 @@ static void optparam_error(optparam_state state, const char *spelling,
                       spelling, next, help);
 }
 
+/* Report that --name refuses param, and ask to remove its quotes if it has
+   any. */
+static void optvalue_error(const char *name, const char *param,
+                           char *return_error, size_t return_error_size) {
+  char help[256];
+
+  optalias_help_line(help, sizeof(help), name);
+  if (hts_is_quoted(param, strlen(param)))
+    slprintfbuff_clip(return_error, return_error_size,
+                      "Syntax error:\n\tOption --%s: %s " HTS_QUOTED_HINT
+                      "\n%s",
+                      name, param, help);
+  else
+    slprintfbuff_clip(
+        return_error, return_error_size,
+        "Syntax error:\n\tOption --%s does not take the value %s\n%s", name,
+        param, help);
+}
+
 /*
   Check for alias in command-line
   argc,argv     as in main()
@@ -592,7 +629,6 @@ int optalias_check(int argc, const char *const *argv, int n_arg,
       char command[HTS_CDLMAXSIZE];
       char param[HTS_CDLMAXSIZE];
       char addcommand[256];
-      char help[256];
 
       /* */
       char *position;
@@ -692,11 +728,8 @@ int optalias_check(int argc, const char *const *argv, int n_arg,
             !optalias_paramn_glues(param) &&
             (optalias_paramn_cluster_tail(param) ||
              strchr(param, '%') == NULL)) {
-          slprintfbuff_clip(
-              return_error, return_error_size,
-              "Syntax error:\n\tOption --%s does not take the value %s\n%s",
-              hts_optalias[pos][0], param,
-              optalias_help_line(help, sizeof(help), hts_optalias[pos][0]));
+          optvalue_error(hts_optalias[pos][0], param, return_error,
+                         return_error_size);
           return 0;
         }
 
@@ -710,11 +743,8 @@ int optalias_check(int argc, const char *const *argv, int n_arg,
         /* Every other class glues the value onto the short form in one
            buffer, where strlcatbuff aborts rather than clips. */
         if (!detached && strlen(param) >= return_argv_size - strlen(command)) {
-          slprintfbuff_clip(
-              return_error, return_error_size,
-              "Syntax error:\n\tOption --%s does not take the value %s\n%s",
-              hts_optalias[pos][0], param,
-              optalias_help_line(help, sizeof(help), hts_optalias[pos][0]));
+          optvalue_error(hts_optalias[pos][0], param, return_error,
+                         return_error_size);
           return 0;
         }
 
@@ -740,12 +770,8 @@ int optalias_check(int argc, const char *const *argv, int n_arg,
                own values out above */
             if (strcmp(hts_optalias[pos][2], "param") == 0 &&
                 param[0] != '\0' && !optalias_param_takes(command, param)) {
-              slprintfbuff_clip(
-                  return_error, return_error_size,
-                  "Syntax error:\n\tOption --%s does not take the "
-                  "value %s\n%s",
-                  hts_optalias[pos][0], param,
-                  optalias_help_line(help, sizeof(help), hts_optalias[pos][0]));
+              optvalue_error(hts_optalias[pos][0], param, return_error,
+                             return_error_size);
               return 0;
             }
             /* --cache=off or --index=on */
@@ -769,13 +795,8 @@ int optalias_check(int argc, const char *const *argv, int n_arg,
                 slprintfbuff_clip(return_error, return_error_size,
                                   "Unknown option: %s\n", argv[n_arg] + 2);
               else
-                slprintfbuff_clip(
-                    return_error, return_error_size,
-                    "Syntax error:\n\tOption --%s does not take the value "
-                    "%s\n%s",
-                    hts_optalias[pos][0], param,
-                    optalias_help_line(help, sizeof(help),
-                                       hts_optalias[pos][0]));
+                optvalue_error(hts_optalias[pos][0], param, return_error,
+                               return_error_size);
               return 0;
             }
             strlcatbuff(return_argv[0], suffix, return_argv_size);
@@ -804,6 +825,16 @@ int optalias_check(int argc, const char *const *argv, int n_arg,
         strlcpybuff(return_argv[0], argv[n_arg], return_argv_size);
         strlcatbuff(return_argv[0], argv[n_arg + 1], return_argv_size);
         *return_argc = 1;
+        return 2;
+      }
+      /* -N DIGITS is a preset; any other next word not starting with '-' is
+         the template the parse loop takes (htscoremain.c case 'N'), so it is
+         never a URL. Keep both tests in step. */
+      if (strcmp(hts_optalias[pos][2], "paramn") == 0 && n_arg + 1 < argc &&
+          argv[n_arg + 1][0] != '-') {
+        strlcpybuff(return_argv[0], argv[n_arg], return_argv_size);
+        strlcpybuff(return_argv[1], argv[n_arg + 1], return_argv_size);
+        *return_argc = 2;
         return 2;
       }
       if ((strcmp(hts_optalias[pos][2], "param1") == 0)
@@ -849,6 +880,10 @@ int optalias_find(const char *token) {
 
 /* Finds the <token> real option and returns the index, or -1 if failed */
 int optreal_find(const char *token) {
+  /* -O followed by digits (-O1) is -O, and still takes the path after it */
+  if (strncmp(token, "-O", 2) == 0 && token[2] != '\0' &&
+      strspn(token + 2, "0123456789") == strlen(token + 2))
+    token = "-O";
   if (token[0] != '\0') {
     int i = 0;
 
@@ -860,6 +895,33 @@ int optreal_find(const char *token) {
     }
   }
   return -1;
+}
+
+hts_boolean optcluster_next(const char *token, size_t *at, char *name,
+                            size_t name_size) {
+  const size_t i = *at;
+  size_t len;
+
+  if (name_size < 5 || token[i] == '\0')
+    return HTS_FALSE;
+  len = strchr("%&@#", token[i]) != NULL && token[i + 1] != '\0' ? 2 : 1;
+  name[0] = '-';
+  memcpy(name + 1, token + i, len);
+  name[len + 1] = '\0';
+  /* -&P is -%P */
+  if (name[1] == '&' && len == 2)
+    name[1] = '%';
+  /* a sub-letter naming an option of its own: -%rf, -%Zs */
+  if (len == 2 && isalpha((unsigned char) token[i + 2])) {
+    name[3] = token[i + 2];
+    name[4] = '\0';
+    if (optreal_find(name) >= 0)
+      len = 3;
+    else
+      name[3] = '\0';
+  }
+  *at = i + len;
+  return HTS_TRUE;
 }
 
 const char *optreal_value(int p) { return hts_optalias[p][1]; }
@@ -886,6 +948,7 @@ const char *optalias_help(const char *token) {
 static hts_boolean cmdl_reserve(cmdl_argv *cmd, int count) {
   char **slots;
   hts_boolean *flags;
+  int *spans;
   int capacity;
 
   if (count <= cmd->capacity)
@@ -902,16 +965,15 @@ static hts_boolean cmdl_reserve(cmdl_argv *cmd, int count) {
     return HTS_FALSE;
   cmd->argv = slots;
   /* hts_boolean is no wider than a pointer, so this cannot wrap either */
-  flags = (hts_boolean *) realloct(cmd->unquoted,
+  flags = (hts_boolean *) realloct(cmd->param,
                                    sizeof(hts_boolean) * (size_t) capacity);
   if (flags == NULL) /* argv stays grown; capacity does not, so it is retried */
     return HTS_FALSE;
-  cmd->unquoted = flags;
-  flags = (hts_boolean *) realloct(cmd->param,
-                                   sizeof(hts_boolean) * (size_t) capacity);
-  if (flags == NULL)
-    return HTS_FALSE;
   cmd->param = flags;
+  spans = (int *) realloct(cmd->span, sizeof(int) * (size_t) capacity);
+  if (spans == NULL)
+    return HTS_FALSE;
+  cmd->span = spans;
   cmd->capacity = capacity;
   return HTS_TRUE;
 }
@@ -928,8 +990,8 @@ hts_boolean cmdl_init(cmdl_argv *cmd, int slots) {
 void cmdl_free(cmdl_argv *cmd) {
   hts_arena_free(&cmd->tokens);
   freet(cmd->argv);
-  freet(cmd->unquoted);
   freet(cmd->param);
+  freet(cmd->span);
   memset(cmd, 0, sizeof(*cmd));
 }
 
@@ -946,20 +1008,13 @@ hts_boolean cmdl_ins(cmdl_argv *cmd, const char *token, int pos) {
     return HTS_FALSE;
   for (i = cmd->argc; i > pos; i--) {
     cmd->argv[i] = cmd->argv[i - 1];
-    cmd->unquoted[i] = cmd->unquoted[i - 1];
     cmd->param[i] = cmd->param[i - 1];
+    cmd->span[i] = cmd->span[i - 1];
   }
   cmd->argv[pos] = copy;
-  cmd->unquoted[pos] = HTS_FALSE;
   cmd->param[pos] = HTS_FALSE;
+  cmd->span[pos] = 0;
   cmd->argc++;
-  return HTS_TRUE;
-}
-
-hts_boolean cmdl_ins_unquoted(cmdl_argv *cmd, const char *token, int pos) {
-  if (!cmdl_ins(cmd, token, pos))
-    return HTS_FALSE;
-  cmd->unquoted[pos] = HTS_TRUE;
   return HTS_TRUE;
 }
 
@@ -970,6 +1025,47 @@ hts_boolean cmdl_add(cmdl_argv *cmd, const char *token) {
 void cmdl_mark_param(cmdl_argv *cmd, int pos) {
   assertf(pos >= 0 && pos < cmd->argc);
   cmd->param[pos] = HTS_TRUE;
+}
+
+/* Fold an rc VALUE for option KEY: -%A and -%w values are lowercased; a
+   free-text (param1) "(none)" is read in any case, quoted or not; any other
+   option reads on/off in any case, and unquotes them only for a switch or
+   a level. */
+static void optinclude_fold(const char *key, char *value) {
+  static const char *const onoff[] = {"on", "off", NULL};
+  static const char *const none[] = {HTS_NOPARAM, NULL};
+  const char *const *keywords;
+  const char *word = value;
+  size_t len = strlen(value);
+  const char *type;
+  hts_boolean unquote;
+  int pos = optalias_find(key), i;
+
+  if (pos < 0)
+    return;
+  /* these options match their value case-sensitively in lowercase */
+  if (strcmp(hts_optalias[pos][1], "-%A") == 0 ||
+      strcmp(hts_optalias[pos][1], "-%w") == 0) {
+    hts_lowcase(value);
+    return;
+  }
+  type = hts_optalias[pos][2];
+  if (strcmp(type, "param0") == 0)
+    return;
+  keywords = strcmp(type, "param1") == 0 ? none : onoff;
+  unquote = keywords == none || strcmp(type, "onoff") == 0 ||
+            strcmp(type, "level") == 0;
+  if (unquote && len >= 2 && value[0] == '"' && value[len - 1] == '"') {
+    word++;
+    len -= 2;
+  }
+  for (i = 0; keywords[i] != NULL; i++) {
+    if (strlen(keywords[i]) == len &&
+        strncasecmp(word, keywords[i], len) == 0) {
+      memcpy(value, keywords[i], len + 1);
+      return;
+    }
+  }
 }
 
 /* Include a file to the current command line */
@@ -992,44 +1088,46 @@ cmdl_file_result optinclude_file(const char *name, cmdl_argv *cmd) {
       char *a, *b;
       int result;
 
-      /* read line */
-      linput(fp, line, 250);
-      hts_lowcase(line);
+      /* a clipped option can mean something else, so it is skipped */
+      if (hts_readline(fp, line, 250, HTS_LINE_DROP_FF)) {
+        fprintf(stderr, "* %s: line too long, ignored\n", name);
+        continue;
+      }
       /* trim first: a blank line is skipped, not parsed as an option */
       hts_rtrim(line, HTS_REALSPACES);
-      if (strnotempty(line)) {
-        /* no comment line: # // ; */
-        if (strchr("#/;", line[0]) == NULL) {
+      a = line;
+      a += strspn(a, HTS_REALSPACES);
+      if (*a != '\0') {
+        /* no comment line: # // ; even indented */
+        if (strchr("#/;", *a) == NULL) {
           /* jump "set " and spaces */
-          a = line;
-          while(is_realspace(*a))
-            a++;
-          if (strncmp(a, "set", 3) == 0) {
-            if (is_realspace(*(a + 3))) {
-              a += 4;
+          if (strncasecmp(a, "set", 3) == 0 && is_realspace(a[3]))
+            a += 4;
+          a += strspn(a, HTS_REALSPACES);
+
+          /* the option ends at a space or '=', so a '=' in the value stays */
+          b = a + strcspn(a, HTS_REALSPACES "=");
+          if (*b) {
+            const hts_boolean equal = *b == '=';
+
+            *b++ = '\0';
+            b += strspn(b, HTS_REALSPACES);
+            /* skip the '=' of "key = value" */
+            if (!equal && *b == '=') {
+              b++;
+              b += strspn(b, HTS_REALSPACES);
             }
           }
-          while(is_realspace(*a))
-            a++;
-          /* delete = ("sockets=8") */
-          if ((b = strchr(a, '=')))
-            *b = ' ';
-
-          /* isolate option and parameter */
-          b = a;
-          while((!is_realspace(*b)) && (*b))
-            b++;
-          if (*b) {
-            *b = '\0';
-            b++;
-          }
           /* a is now the option, b the parameter */
+          hts_lowcase(a);
+          optinclude_fold(a, b);
 
           {
             int return_argc;
             char return_error[256];
             char _tmp_argv[4][HTS_CDLMAXSIZE];
             char *tmp_argv[4];
+            hts_boolean quote_ok = HTS_TRUE;
 
             tmp_argv[0] = _tmp_argv[0];
             tmp_argv[1] = _tmp_argv[1];
@@ -1043,8 +1141,14 @@ cmdl_file_result optinclude_file(const char *name, cmdl_argv *cmd) {
                                     &return_argc, (tmp_argv + 2),
                                     sizeof(_tmp_argv[0]), return_error,
                                     sizeof(return_error));
+            /* strip a value's quote pair, but -O decodes its own quotes */
+            if (result && return_argc > 1 && strncmp(tmp_argv[2], "-O", 2) != 0)
+              quote_ok = hts_unquote_arg(tmp_argv[3]);
             if (!result) {
               printf("%s\n", return_error);
+            } else if (!quote_ok) {
+              fprintf(stderr, "* %s: missing quote in %s, ignored\n", name,
+                      tmp_argv[3]);
             } else {
               if (return_error[0] != '\0')
                 fprintf(stderr, "* %s\n", return_error);

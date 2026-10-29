@@ -1,0 +1,69 @@
+#!/bin/bash
+#
+# hts_addfilter() and hts_setfilters() queue signed scan rules within the length
+# cap, in call order, and refuse the rest (#128). The filter list stops growing
+# at its bound.
+
+set -euo pipefail
+
+# shellcheck source=tests/testlib.sh
+. "${0%"${0##*/}"}./testlib.sh"
+
+out=$(httrack -O /dev/null -#test=addfilter)
+
+for want in "minus: queued=1 kept=1" "plus: queued=1 kept=1" \
+    "unsigned: queued=0 kept=0" "minus only: queued=0 kept=0" \
+    "plus only: queued=0 kept=0" "newline: queued=0 kept=0" \
+    "empty: queued=0 kept=0" "at the cap: queued=1 kept=1" \
+    "past the cap: queued=0 kept=0" "harmless escape: queued=1 kept=1" \
+    "space escape: queued=1 kept=1" "star escape: queued=1 kept=1" \
+    "high escape: queued=1 kept=1" "space: queued=1 kept=1" \
+    "query: queued=1 kept=1" \
+    "cap after decoding: ok=1" "two rules: ordered=1" \
+    "set with a bad rule: refused=1" "set supersedes earlier adds: ok=1" \
+    "empty set: ok=1" \
+    "addfilter self-test OK"; do
+    grep -qxF "$want" <<<"$out" || fail "missing '$want' in: $out"
+done
+
+# the command line and -%S decode rules as hts_addfilter() does
+tmpdir=$(mktemp -d)
+cleanup_push rm -rf "$tmpdir"
+long=$(printf '%%41%.0s' $(seq 700))
+for pair in 'http://example.com/A|+*%41*|accepted by rule #1 (+*A*)' \
+    'http://example.com/a%20b|-*a b*|rejected by rule #1 (-*a b*)' \
+    'http://example.com/x?q=a%20b|-*?q=a%20b*|rejected by rule #1 (-*?q=a%20b*)' \
+    'http://example.com/x?a%20b|-*a b*|no filter rule matches' \
+    'http://example.com/A|+*%%341*|no filter rule matches'; do
+    IFS='|' read -r url rule want <<<"$pair"
+    out=$(httrack -O "$tmpdir/p" -q --why "$url" "$rule" http://example.com/)
+    grep -qF "$url: $want" <<<"$out" || fail "argv '$rule': $out"
+done
+# a -%S rule longer than the cap that decodes under it
+printf -- '-*%s\n' "$long" >"$tmpdir/rules"
+url="http://example.com/$(printf 'A%.0s' $(seq 700))"
+out=$(httrack -O "$tmpdir/p" -q --why "$url" -%S "$tmpdir/rules" http://example.com/)
+grep -qF "$url: rejected by rule #1" <<<"$out" || fail "-%S long rule: $out"
+
+out=$(httrack -O /dev/null -#test=filterremove)
+for want in "remove none: ok=1" "remove one: ok=1" "remove all: ok=1" \
+    "filterremove self-test OK"; do
+    grep -qxF "$want" <<<"$out" || fail "missing '$want' in: $out"
+done
+
+out=$(httrack -O /dev/null -#test=filtergrow)
+for want in "growth bound: ok=1" "full list drops a rule: ok=1" \
+    "a full list grows: ok=1" "no growth past the bound: ok=1" "filtergrow self-test OK"; do
+    grep -qxF "$want" <<<"$out" || fail "missing '$want' in: $out"
+done
+
+out=$(httrack -O /dev/null -#test=filterlayout)
+grep -qxF "layout after set and add: ok=1" <<<"$out" || fail "layout: $out"
+
+out=$(httrack -O /dev/null -#test=filterkeep)
+for want in "unrelated rule keeps all: ok=1" "resent box drops only junk: ok=1" \
+    "rule aimed at it drops it: ok=1"; do
+    grep -qxF "$want" <<<"$out" || fail "missing '$want' in: $out"
+done
+
+echo "PASS"

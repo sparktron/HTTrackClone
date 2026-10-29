@@ -7,6 +7,8 @@
 	<title>'${html:projname}' - HTTrack Website Copier</title>
 
 	<link rel="stylesheet" type="text/css" media="screen" href="style.css">
+	<link rel="stylesheet" type="text/css" media="screen" href="/server/theme.css">
+	<link rel="stylesheet" type="text/css" media="screen" href="user.css">
 	<script type="text/javascript" src="ping.js" defer></script>
 
 <script language="javascript">
@@ -23,7 +25,7 @@ function info(str) {
 </script>
 
 </head>
-<body onLoad="do_load();" onUnload="do_unload();">
+<body class="page-finished" onLoad="do_load();" onUnload="do_unload();">
 
 <table width="76%" border="0" align="center" cellspacing="0" cellpadding="0" class="tableWidth">
 	<tr>
@@ -39,7 +41,6 @@ ${do:if-file-exists:html/doc/html/index.html}
 		<a href="/doc/html/index.html" target="_blank"
 			onClick="window.open('/doc/html/index.html', 'httrack-doc', 'toolbar=no, location=no, directories=no, status=yes, menubar=no, scrollbars=yes, resizable=yes, width=980, height=760'); return false"
 			title='${html:LANG_MANUAL}' onMouseOver="info('${js:LANG_MANUAL}'); return true" onMouseOut="info('&nbsp;'); return true"
-			style="color:#FFFFFF"
 		>
 		${LANG_MANUAL}
 		</a>
@@ -78,13 +79,13 @@ ${do:end-if}
 
 ${do:output-mode:html}${do:if-not-empty:commandReturn}
 ${LANG_F19}
-<font color="red">
+<span class="alert">
 ${commandReturnMsg}
-</font>
+</span>
 ${LANG_F20}
-<font color="blue">
+<span class="cmdline">
 httrack ${commandReturnCmdl}
-</font>
+</span>
 ${LANG_F21}
 ${/* end-if clears the output mode rather than restoring it, so re-arm it */}
 ${do:end-if}${do:output-mode:html}

@@ -42,17 +42,23 @@ Please visit our Website: http://www.httrack.com
 #include "htsio.h"
 #include "htsdefines.h"
 #include "htsalias.h"
+#include "htscmdline.h"
+#include "htslines.h"
 #include "htswarc.h"
 #include "htschanges.h"
 #include "htsbauth.h"
 #include "htswrap.h"
 #include "htsmodules.h"
+#include <limits.h>
+#include <stdint.h>
 #include "htszlib.h"
 #include "htscharset.h"
 #include "htsselftest.h"
 #include "htscrashtest.h"
 #include "htsmd5.h"
 #include "htsthread.h"
+#include "htsfetch.h"
+#include "htsbundle.h"
 
 #include <ctype.h>
 /* hts_self_path() */
@@ -257,14 +263,98 @@ static void cmdl_print_args(httrackp *opt, const cmdl_argv *cmd) {
   } \
 } while(0)
 
-/* Scan a decimal option argument into an option field. "%d" writes an int,
-   and an enum field is one byte under -fshort-enums, so never aim it there. */
-#define scanOptInt(arg, field)                                                 \
+/* Read the glued digits of the option at com into field, or refuse the
+   command line when they are above max. With no digits, nothing changes.
+   A refusal panics and returns -1 from hts_main_internal. */
+#define readGluedOpt_(reader, field, max)                                      \
   do {                                                                         \
-    int value_;                                                                \
-    if (sscanf((arg), "%d", &value_) == 1)                                     \
-      (field) = value_;                                                        \
+    if (reader(&com, 0, (max), &(field)) == HTS_SCAN_REFUSED) {                \
+      char s_[256];                                                            \
+                                                                               \
+      snprintf(s_, sizeof(s_), "Value out of range in option %s", argv[na]);   \
+      HTS_PANIC_PRINTF(s_);                                                    \
+      htsmain_free();                                                          \
+      return -1;                                                               \
+    }                                                                          \
   } while (0)
+#define readGluedInt(field, max) readGluedOpt_(cmdl_glued_int, field, max)
+#define readGluedLLint(field, max) readGluedOpt_(cmdl_glued_llint, field, max)
+/* readGluedInt() for an enum, narrower than an int under -fshort-enums. */
+#define readGluedEnum(field, max)                                              \
+  do {                                                                         \
+    int level_ = (field);                                                      \
+                                                                               \
+    readGluedInt(level_, max);                                                 \
+    (field) = level_;                                                          \
+  } while (0)
+
+hts_scan_result cmdl_glued_llint(char **com, LLint min, LLint max, LLint *out) {
+  const char *const digits = *com + 1;
+  const char *end;
+  const hts_boolean ok = hts_parse_llint(digits, &end, min, max, out);
+
+  if (end == digits)
+    return HTS_SCAN_NONE;
+  *com += end - digits; // Onto the last digit, which the caller steps past.
+  return ok ? HTS_SCAN_OK : HTS_SCAN_REFUSED;
+}
+
+hts_scan_result cmdl_glued_int(char **com, int min, int max, int *out) {
+  LLint value;
+  const hts_scan_result got = cmdl_glued_llint(com, min, max, &value);
+
+  if (got == HTS_SCAN_OK)
+    *out = (int) value;
+  return got;
+}
+
+/* Panic with msg, and ask to remove the quotes of value if it has any. */
+static void cmdl_panic_value(httrackp *opt, const char *msg,
+                             const char *value) {
+  char s[HTS_CDLMAXSIZE * 2 + 256];
+
+  char shown[HTS_CDLMAXSIZE];
+
+  if (hts_is_quoted(value, strlen(value)))
+    snprintf(s, sizeof(s), "%s: \"%s " HTS_QUOTED_HINT, msg,
+             adr_nologin_r(shown, sizeof(shown), value + 1));
+  else
+    snprintf(s, sizeof(s), "%s", msg);
+  HTS_PANIC_PRINTF(s);
+}
+
+/* Prints a --host-alias rule with the login of each of its names masked. */
+static void print_rule_nologin(const char *rule) {
+  while (*rule != '\0') {
+    char tok[HTS_CDLMAXSIZE];
+    char shown[HTS_CDLMAXSIZE + 8];
+    size_t n = strcspn(rule, ",=");
+
+    if (n >= sizeof(tok))
+      n = sizeof(tok) - 1;
+    memcpy(tok, rule, n);
+    tok[n] = '\0';
+    fputs(adr_nologin_r(shown, sizeof(shown), tok), stdout);
+    rule += n;
+    if (*rule == ',' || *rule == '=')
+      putchar(*rule++);
+  }
+  putchar('\n');
+}
+
+/* Panic on com, the end of option arg that no option takes. When com is
+   quoted, the message names the option before it. */
+static void cmdl_bad_option(httrackp *opt, const char *arg, const char *prefix,
+                            const char *com) {
+  char s[HTS_CDLMAXSIZE * 2 + 256];
+
+  if (hts_is_quoted(com, strlen(com)))
+    snprintf(s, sizeof(s), "Option %.*s: %s " HTS_QUOTED_HINT,
+             (int) (com - arg), arg, com);
+  else
+    snprintf(s, sizeof(s), "invalid option %s%c\n", prefix, *com);
+  HTS_PANIC_PRINTF(s);
+}
 
 HTSEXT_API int hts_main(int argc, char **argv) {
   httrackp *opt = hts_create_opt();
@@ -274,8 +364,52 @@ HTSEXT_API int hts_main(int argc, char **argv) {
   return ret;
 }
 
+/* Write the progress lock at PATH, dated one second back so a request written
+   the instant the file appears sorts after it. False when it could not be
+   written at all. */
+static hts_boolean write_progress_lock(httrackp *opt, const char *path,
+                                       const char *t, int argc, char **argv) {
+  FILE *fp = hts_fopen_private(path, "wb"); /* it echoes argv */
+  int i;
+
+  if (fp == NULL)
+    return HTS_FALSE;
+  fprintf(fp, "Mirror in progress since %s .. please wait!" LF, t);
+  for (i = 0; i < argc; i++) {
+    if (strchr(argv[i], ' ') == NULL)
+      fprintf(fp, "%s ", argv[i]);
+    else // entre ""
+      fprintf(fp, "\"%s\" ", argv[i]);
+  }
+  fprintf(fp, LF);
+  fprintf(fp, "To pause the engine: create an empty file named "
+              "'" HTS_PAUSE_LOCKNAME "' (an earlier run's copy is"
+              " ignored, so create it again)" LF);
+  fprintf(fp, "To stop it and keep the mirror: create an empty file named "
+              "'" HTS_ABORT_LOCKNAME "' (an earlier run's copy is"
+              " ignored, so create it again)" LF);
+#if USE_BEGINTHREAD
+  fprintf(fp, "PID=%d\n", (int) getpid());
+#ifndef _WIN32
+  fprintf(fp, "UID=%d\n", (int) getuid());
+  fprintf(fp, "GID=%d\n", (int) getuid());
+#endif
+  fprintf(fp, "START=" LLintP "\n", (LLint) time(NULL));
+#endif
+  fclose(fp);
+  /* Whole-second filesystems tie two files written in the same second, and the
+     backdate is what breaks that tie. */
+  if (!hts_file_backdate(path, 1) && opt->log != NULL)
+    hts_log_print(opt, LOG_WARNING,
+                  "engine: could not date hts-in_progress.lock back, so a"
+                  " stop request written in this first second is ignored");
+  return HTS_TRUE;
+}
+
 static int hts_main_internal(int argc, char **argv, httrackp * opt);
 static hts_boolean cmdl_shortopt_has(const char *s, char c);
+static hts_boolean cmdl_shortopt_named(const char *s, const char *opt);
+static void cmdl_doit_line(String *line, const cmdl_argv *cmd);
 
 // Main, récupère les paramètres et appelle le robot
 HTSEXT_API int hts_main2(int argc, char **argv, httrackp * opt) {
@@ -296,6 +430,55 @@ HTSEXT_API int hts_main2(int argc, char **argv, httrackp * opt) {
   return code;
 }
 
+/* Counts one more URL; a -1 count (-i, --continue) restarts from zero. */
+static void cmdl_count_url(int *count) {
+  if (*count < 0)
+    *count = 0;
+  (*count)++;
+}
+
+/* Steps *AT through cluster WORD as optcluster_next() does, setting *VALUE to
+   the index of the word the option takes from *NEXT on (-qO <path>), or -1. */
+static hts_boolean cmdl_cluster_step(const char *word, size_t *at, char *name,
+                                     size_t name_size, int argc,
+                                     char *const *argv, int *next, int *value) {
+  int pos;
+
+  if (!optcluster_next(word, at, name, name_size))
+    return HTS_FALSE;
+  pos = optreal_find(name);
+  *value = -1;
+  /* only a lone -N reads the next word; a clustered one reads its digits */
+  if (pos < 0 || strcmp(opttype_value(pos), "param1") != 0 ||
+      strcmp(name, "-N") == 0 || *next >= argc || argv[*next][0] == '-')
+    return HTS_TRUE;
+  *value = (*next)++;
+  return HTS_TRUE;
+}
+
+/* Copies to CMD each word, from ARGV[FIRST] on, that an option of cluster WORD
+   takes as its value (-qO <path>), counting a list's (-q%L) as URLs. Returns
+   how many, or -1 out of memory. */
+static int cmdl_cluster_params(cmdl_argv *cmd, const char *word, int argc,
+                               char **argv, int first, int *argv_url) {
+  char name[8];
+  size_t at = 1;
+  int next = first;
+  int value;
+
+  while (cmdl_cluster_step(word, &at, name, sizeof(name), argc, argv, &next,
+                           &value)) {
+    if (value < 0)
+      continue;
+    if (!cmdl_add(cmd, argv[value]))
+      return -1;
+    cmdl_mark_param(cmd, cmd->argc - 1);
+    if (strcmp(name, "-%L") == 0)
+      cmdl_count_url(argv_url);
+  }
+  return next - first;
+}
+
 /* Whether the option at NA may take the word after it though it begins with
    '-': only where that word was put there as an option's parameter, which
    optalias_check() emits having refused an option name in that position itself.
@@ -304,6 +487,29 @@ HTSEXT_API int hts_main2(int argc, char **argv, httrackp * opt) {
    stays the next option it always was (#1425). */
 static hts_boolean optparam_dash_ok(const cmdl_argv *cmd, int na) {
   return na + 1 < cmd->argc && cmd->param[na + 1];
+}
+
+/* Store the --bundle-dir at na in opt and cmd as an absolute path, so doit.log
+   finds it from anywhere. HTS_FALSE after a panic. */
+static hts_boolean bundle_dir_set(httrackp *opt, cmdl_argv *cmd, int na) {
+  const char *const dir = na + 1 < cmd->argc ? cmd->argv[na + 1] : NULL;
+  const hts_boolean relative = dir != NULL && dir[0] != '/' && dir[0] != '\\' &&
+                               !(dir[0] != '\0' && dir[1] == ':');
+  char cwd[HTS_URLMAXSIZE] = "";
+  char abs[HTS_URLMAXSIZE];
+  char *copy;
+
+  if (dir == NULL || (dir[0] == '-' && !optparam_dash_ok(cmd, na)) ||
+      (relative && getcwd(cwd, sizeof(cwd)) == NULL) ||
+      !slprintfbuff(abs, sizeof(abs), "%s%s%s", cwd, relative ? "/" : "",
+                    dir) ||
+      (copy = hts_arena_strdup(&cmd->tokens, abs)) == NULL) {
+    HTS_PANIC_PRINTF("Option bundle-dir needs a blank space and a folder");
+    return HTS_FALSE;
+  }
+  cmd->argv[na + 1] = copy;
+  StringCopy(opt->bundle_dir, abs);
+  return HTS_TRUE;
 }
 
 /* Print the headers -#C lists for `url`, read back out of the ZIP cache. */
@@ -392,6 +598,30 @@ static void cmdl_print_cache_entry(httrackp *opt, cache_back *cache,
   freet(r.adr);
 }
 
+/* Feeds the log backstop the passwords of the blank-separated start URLs,
+   but not of the +/- filters among them, of the proxy and --why, and the
+   secret -%X values. */
+static void hts_secret_learn_options(httrackp *opt, const char *urls) {
+  const char *u = urls;
+
+  while (*u != '\0') {
+    const size_t n = strcspn(u, " \t\r\n");
+
+    // a start URL never exceeds the URL buffers, so a longer word is no URL
+    if (n != 0 && *u != '+' && *u != '-' && n < HTS_URLMAXSIZE * 2) {
+      char word[HTS_URLMAXSIZE * 2];
+
+      memcpy(word, u, n);
+      word[n] = '\0';
+      hts_secret_add_login(opt, word);
+    }
+    u += n != 0 ? n : 1;
+  }
+  hts_secret_add_login(opt, StringBuff(opt->proxy.name));
+  hts_secret_add_login(opt, StringBuff(opt->why_url));
+  hts_secret_add_headers(opt, StringBuff(opt->headers));
+}
+
 static int hts_main_internal(int argc, char **argv, httrackp * opt) {
   /* command line rebuilt from argv, config files and doit.log */
   cmdl_argv x_cmd = {NULL, NULL, NULL, 0, 0, {NULL, 0, 0}};
@@ -409,6 +639,9 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
   int httrack_logmode = 3;      // ONE log file
 
   ensureUrlCapacity(url, url_sz, 65536);
+  /* a library caller may run twice on one opt */
+  hts_bundle_free(opt);
+  StringCopy(opt->bundle_dir, "");
 
   // Create options
   _DEBUG_HEAD = 0;              // pas de debuggage en têtes
@@ -546,11 +779,8 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
 
         /* Compter URLs et détecter -i,-q.. */
         if (tmp_argc == 1) {    /* pas -P & co */
-          if (!cmdl_opt(tmp_argv[0])) { /* pas -c0 & co */
-            if (argv_url < 0)
-              argv_url = 0; // -1==force -> 1=one url already detected, wipe all
-                            // previous options
-            argv_url++;
+          if (!hts_rule_would_be_read_as_opt(tmp_argv[0])) { /* not -c0 & co */
+            cmdl_count_url(&argv_url);
             if (!argv_firsturl)
               argv_firsturl = x_cmd.argv[x_cmd.argc - 1];
           } else {
@@ -571,6 +801,18 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                   argv_url = -1;
                   opt->quiet = HTS_TRUE;
                 }
+                if (optreal_find(tmp_argv[0]) < 0) {
+                  const int taken = cmdl_cluster_params(
+                      &x_cmd, tmp_argv[0], argc, argv, na + result, &argv_url);
+
+                  if (taken < 0) {
+                    cmdl_free(&x_cmd);
+                    HTS_PANIC_PRINTF("Error, not enough memory");
+                    htsmain_free();
+                    return -1;
+                  }
+                  result += taken;
+                }
               } else if (strcmp(tmp_argv[0] + 2, "quiet") == 0) {
                 opt->quiet = 1; // ne pas poser de questions! (nohup par exemple)
               } else if (strcmp(tmp_argv[0] + 2, "continue") == 0) {
@@ -580,12 +822,8 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
             }
           }
         } else if (tmp_argc == 2) {
-          if ((strcmp(tmp_argv[0], "-%L") == 0)) {      // liste d'URLs
-            if (argv_url < 0)
-              argv_url = 0; // -1==force -> 1=one url already detected, wipe all
-                            // previous options
-            argv_url++;         /* forcer */
-          }
+          if ((strcmp(tmp_argv[0], "-%L") == 0)) // URL list
+            cmdl_count_url(&argv_url);
         }
       }
 
@@ -603,38 +841,25 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
   {
     int loops = 0;
 
-    while(loops < 2) {
-      char *com;
+    while (loops < 2) {
       int na;
 
       for(na = 1; na < argc; na++) {
 
-        if (argv[na][0] == '"') {
-          char BIGSTK tempo[HTS_CDLMAXSIZE];
+        /* another option's value is not an option (--user-agent -Oz) */
+        if (hts_rule_would_be_read_as_opt(argv[na]) &&
+            !x_cmd.param[na]) { // option
+          const char *const word = argv[na];
+          char name[8];
+          size_t at = 1;
+          int next = na + 1;
+          int value;
 
-          strcpybuff(tempo, argv[na] + 1);
-          if (hts_lastchar(tempo) != '"') {
-            /* +256 holds the prefix around a max-length argument. */
-            char BIGSTK s[HTS_CDLMAXSIZE + 256];
-
-            snprintf(s, sizeof(s), "Missing quote in %s", argv[na]);
-            HTS_PANIC_PRINTF(s);
-            htsmain_free();
-            return -1;
-          }
-          hts_choplastchar(tempo);
-          /* tempo is argv[na] minus its surrounding quotes, so it fits in place
-           */
-          strlcpybuff(argv[na], tempo, strlen(argv[na]) + 1);
-        }
-
-        if (cmdl_opt(argv[na])) {       // option
-          com = argv[na] + 1;
-
-          while(*com) {
-            switch (*com) {
-            case 'O':          // output path
-              if ((na + 1 >= argc) || (argv[na + 1][0] == '-')) {
+          /* the word the parse loop gives -O, past -P's in -PO */
+          while (cmdl_cluster_step(word, &at, name, sizeof(name), argc, argv,
+                                   &next, &value)) {
+            if (strcmp(name, "-O") == 0) {
+              if (value < 0) {
                 HTS_PANIC_PRINTF
                   ("Option O needs to be followed by a blank space, and a path (or path,path)");
                 printf("Example: -O /binary/\n");
@@ -645,26 +870,21 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                 int i /*, j */ ;
                 int inQuote;
                 String *path;
-                int noDbl = 0;
+                hts_boolean one_path = HTS_FALSE;
 
-                if (com[1] == '1') {    /* only 1 arg */
-                  com++;
-                  noDbl = 1;
-                }
-                na++;
+                if (word[at] == '1') /* only 1 arg */
+                  one_path = HTS_TRUE;
                 StringClear(opt->path_html);
                 StringClear(opt->path_log);
-                for(i = 0 /*, j = 0 */ , inQuote = 0, path = &opt->path_html;
-                    argv[na][i] != 0; i++) {
-                  if (argv[na][i] == '"') {
-                    if (inQuote)
-                      inQuote = 0;
-                    else
-                      inQuote = 1;
-                  } else if (!inQuote && !noDbl && argv[na][i] == ',') {
+                for (i = 0 /*, j = 0 */, inQuote = 0, path = &opt->path_html;
+                     argv[value][i] != 0; i++) {
+                  /* a plain -O strips quotes, which group a comma */
+                  if (!one_path && argv[value][i] == '"') {
+                    inQuote = !inQuote;
+                  } else if (!inQuote && !one_path && argv[value][i] == ',') {
                     path = &opt->path_log;
                   } else {
-                    StringAddchar(*path, argv[na][i]);
+                    StringAddchar(*path, argv[value][i]);
                   }
                 }
                 if (StringLength(opt->path_log) == 0) {
@@ -676,12 +896,10 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                   opt->dir_topindex = 1;        // rebuilt top index
                 }
               }
-              break;
-            }                   // switch
-            com++;
-          }                     // while
+            }
+          }
 
-        }                       // arg
+        } // arg
 
       }                         // for
 
@@ -701,10 +919,12 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
           || (strnotempty(StringBuff(opt->path_html))))
         loops++;                // do not loop once again and do not include rc file (O option exists)
       else {
-        if ((!fexist_utf8(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                                  StringBuff(opt->path_log),
-                                  "hts-cache/doit.log"))) ||
-            (argv_url > 0)) {
+        /* Pass 2 only looks for an -O the rc file gave, so read it once. */
+        if (loops == 0 &&
+            ((!fexist_utf8(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                                   StringBuff(opt->path_log),
+                                   "hts-cache/doit.log"))) ||
+             (argv_url > 0))) {
           /* first rc file that exists wins */
           cmdl_file_result res =
               optinclude_file(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
@@ -736,7 +956,7 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
       }
 
       loops++;
-    }                           // while
+    } // while
 
   }                             // traiter -O
 
@@ -748,45 +968,48 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                              StringBuff(opt->path_log), "hts-cache/doit.log"),
                      "rb");
     if (fp) {
-      int insert_after = 1;     /* insérer après nom au début */
+      int insert_after = 1; /* insert after the program name */
 
-      //
-      char BIGSTK buff[8192];
-      char *p, *lastp;
+      String buff = STRING_EMPTY;
+      char **tokens;
+      int ntokens = 0;
+      int i;
+      hts_boolean ok;
+      /* a TAB is argument data, since the writer leaves it unquoted */
+      const hts_boolean cut = hts_readline_alloc(
+          fp, &buff, HTS_READLINE_ALLOC_MAX, HTS_LINE_DROP_FF);
 
-      linput(fp, buff, 8000);
       fclose(fp);
       fp = NULL;
-      p = buff;
-      do {
-        int quoted; /* "" unquotes to empty but is still a real token (#106) */
-
-        // read next
-        lastp = p;
-        quoted = (p != NULL && *p == '"');
-        if (p) {
-          p = next_token(p, 1);
-          if (p) {
-            *p = 0;             // null
-            p++;
-          }
-        }
-
-        /* Insert parameters BUT so that they can be in the same order */
-        if (lastp) {
-          if (strnotempty(lastp) || quoted) {
-            if (!cmdl_ins_unquoted(&x_cmd, lastp, insert_after)) {
-              cmdl_free(&x_cmd);
-              HTS_PANIC_PRINTF("Error, not enough memory");
-              htsmain_free();
-              return -1;
-            }
-            /* this engine wrote the line and parsed it once already */
-            cmdl_mark_param(&x_cmd, insert_after);
-            insert_after++;
-          }
-        }
-      } while (lastp != NULL);
+      /* any argument dropped would resume a different mirror */
+      if (cut) {
+        StringFree(buff);
+        cmdl_free(&x_cmd);
+        HTS_PANIC_PRINTF("Error, hts-cache/doit.log is too long to resume "
+                         "the mirror");
+        htsmain_free();
+        return -1;
+      }
+      /* "" unquotes to empty but is still a real token (#106) */
+      tokens = hts_split_args(StringBuffRW(buff), &ntokens,
+                              HTS_SPLIT_STRIP_QUOTES | HTS_SPLIT_DROP_EMPTY);
+      for (i = 0; tokens != NULL && i < ntokens; i++) {
+        /* inserted in order, after the program name */
+        if (!cmdl_ins(&x_cmd, tokens[i], insert_after))
+          break;
+        /* this engine wrote the line and parsed it once already */
+        cmdl_mark_param(&x_cmd, insert_after);
+        insert_after++;
+      }
+      ok = tokens != NULL && i == ntokens;
+      freet(tokens);
+      StringFree(buff);
+      if (!ok) {
+        cmdl_free(&x_cmd);
+        HTS_PANIC_PRINTF("Error, not enough memory");
+        htsmain_free();
+        return -1;
+      }
       /* the array may have been grown and moved */
       argv = x_cmd.argv;
       argc = x_cmd.argc;
@@ -906,6 +1129,21 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                                     "hts-cache/old.txt")))
               UNLINK(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
                              StringBuff(opt->path_log), "hts-cache/old.txt"));
+            {
+              static const char *const damaged[] = {"hts-cache/damaged.zip",
+                                                    "hts-cache/damaged.lst",
+                                                    "hts-cache/damaged.txt"};
+              size_t i;
+
+              for (i = 0; i < sizeof(damaged) / sizeof(damaged[0]); i++) {
+                const char *const name =
+                    fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                            StringBuff(opt->path_log), damaged[i]);
+
+                if (fexist_utf8(name))
+                  UNLINK(name);
+              }
+            }
             if (fexist_utf8(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
                                     StringBuff(opt->path_log),
                                     "hts-cache/doit.log")))
@@ -935,6 +1173,8 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
             HTS_PANIC_PRINTF(s);
             htsmain_free();
             return -1;
+          } else if (strfield2(argv[i] + 2, "bundle-dir")) {
+            i++; /* The option parser reads its value. */
           }
           //
           else {
@@ -945,7 +1185,6 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
             htsmain_free();
             return -1;
           }
-
         }
       }
     }
@@ -961,8 +1200,15 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
 
       if (a[0] == '-' && a[1] == '#' && strncmp(a + 2, "test", 4) == 0 &&
           (a[6] == '\0' || a[6] == '=')) {
+#ifdef HTS_NO_SELFTEST
+        const int code = 1;
+
+        fprintf(stderr, "httrack: this build has no engine self-tests "
+                        "(built with HTS_NO_SELFTEST)\n");
+#else
         const char *const name = a[6] == '=' ? a + 7 : NULL;
         const int code = hts_selftest(opt, name, argc - (k + 1), &argv[k + 1]);
+#endif
 
         htsmain_free();
         return code;
@@ -1170,31 +1416,26 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
   {
     char *com;
     int na;
+    int prev_opt = 0;
 
     /* the flags below are indexed with argv, which still aliases x_cmd */
     assertf(argv == x_cmd.argv && argc == x_cmd.argc);
 
     for(na = 1; na < argc; na++) {
+      /* the tokens the loop stepped over were the previous option's */
+      if (prev_opt != 0)
+        x_cmd.span[prev_opt] = na - prev_opt;
+      prev_opt = hts_rule_would_be_read_as_opt(argv[na]) ? na : 0;
 
-      if (argv[na][0] == '"' && !x_cmd.unquoted[na]) {
-        char BIGSTK tempo[HTS_CDLMAXSIZE + 256];
-
-        strcpybuff(tempo, argv[na] + 1);
-        if (hts_lastchar(tempo) != '"') {
-          char s[HTS_CDLMAXSIZE + 256];
-
-          snprintf(s, sizeof(s), "Missing quote in %s", argv[na]);
-          HTS_PANIC_PRINTF(s);
+      if (strcmp(argv[na], "--bundle-dir") == 0) {
+        if (!bundle_dir_set(opt, &x_cmd, na)) {
           htsmain_free();
           return -1;
         }
-        hts_choplastchar(tempo);
-        /* tempo is argv[na] minus its surrounding quotes, so it fits in place
-         */
-        strlcpybuff(argv[na], tempo, strlen(argv[na]) + 1);
+        na++;
+        continue;
       }
-
-      if (cmdl_opt(argv[na])) { // option
+      if (hts_rule_would_be_read_as_opt(argv[na])) { // option
         com = argv[na] + 1;
 
         while(*com) {
@@ -1232,9 +1473,8 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
             break;
           case 'r':            // n'est plus le recurse get bestial mais wizard itou!
             if (isdigit((unsigned char) *(com + 1))) {
-              sscanf(com + 1, "%d", &opt->depth);
-              while(isdigit((unsigned char) *(com + 1)))
-                com++;
+              // One short of INT_MAX, as the seed is queued at depth + 1.
+              readGluedInt(opt->depth, INT_MAX - 1);
             } else
               opt->depth = 3;
             break;
@@ -1314,96 +1554,66 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
           case 'K':
             opt->urlmode = HTS_URLMODE_ABSOLUTE;
             if (isdigit((unsigned char) *(com + 1))) {
-              scanOptInt(com + 1, opt->urlmode);
+              readGluedEnum(opt->urlmode, HTS_URLMODE_TRANSPARENT_PROXY);
               if (opt->urlmode == HTS_URLMODE_ABSOLUTE) { // in fact K0 ==> K2
                 // and K ==> K0
                 opt->urlmode = HTS_URLMODE_RELATIVE;
               }
-              while(isdigit((unsigned char) *(com + 1)))
-                com++;
             }
             break;
           case 'c':
             if (isdigit((unsigned char) *(com + 1))) {
-              sscanf(com + 1, "%d", &opt->maxsoc);
-              while(isdigit((unsigned char) *(com + 1)))
-                com++;
-              opt->maxsoc = max(opt->maxsoc, 1);        // FORCER A 1
+              readGluedInt(opt->maxsoc, INT_MAX);
+              opt->maxsoc = max(opt->maxsoc, 1); // At least one socket.
             } else
               opt->maxsoc = 4;
 
             break;
             //
           case 'p':
-            sscanf(com + 1, "%d", &opt->getmode);
-            while(isdigit((unsigned char) *(com + 1)))
-              com++;
+            readGluedInt(opt->getmode, INT_MAX);
             break;
             //        
           case 'G':
-            sscanf(com + 1, LLintP, &opt->fragment);
-            while(isdigit((unsigned char) *(com + 1)))
-              com++;
+            readGluedLLint(opt->fragment, INT64_MAX);
             break;
           case 'M':
-            sscanf(com + 1, LLintP, &opt->maxsite);
-            while(isdigit((unsigned char) *(com + 1)))
-              com++;
+            readGluedLLint(opt->maxsite, INT64_MAX);
             break;
           case 'm':
             // -m,10000 variant
             if (*(com + 1) != ',') {
-              sscanf(com + 1, LLintP, &opt->maxfile_nonhtml);
-              while(isdigit((unsigned char) *(com + 1)))
-                com++;
+              readGluedLLint(opt->maxfile_nonhtml, INT64_MAX);
             }
             if (*(com + 1) == ',' && isdigit((unsigned char) *(com + 2))) {
               com++;
-              sscanf(com + 1, LLintP, &opt->maxfile_html);
-              while(isdigit((unsigned char) *(com + 1)))
-                com++;
+              readGluedLLint(opt->maxfile_html, INT64_MAX);
             } else
               opt->maxfile_html = -1;
             break;
             //
           case 'T':
-            sscanf(com + 1, "%d", &opt->timeout);
-            while(isdigit((unsigned char) *(com + 1)))
-              com++;
+            readGluedInt(opt->timeout, INT_MAX);
             break;
           case 'J':
-            sscanf(com + 1, "%d", &opt->rateout);
-            while(isdigit((unsigned char) *(com + 1)))
-              com++;
+            readGluedInt(opt->rateout, INT_MAX);
             break;
           case 'R':
-            sscanf(com + 1, "%d", &opt->retry);
-            while(isdigit((unsigned char) *(com + 1)))
-              com++;
+            readGluedInt(opt->retry, INT_MAX);
             break;
           case 'E':
-            sscanf(com + 1, "%d", &opt->maxtime);
-            while(isdigit((unsigned char) *(com + 1)))
-              com++;
+            readGluedInt(opt->maxtime, INT_MAX);
             break;
           case 'H':
-            sscanf(com + 1, "%d", &opt->hostcontrol);
-            while(isdigit((unsigned char) *(com + 1)))
-              com++;
+            readGluedInt(opt->hostcontrol, INT_MAX);
             break;
           case 'A':
-            sscanf(com + 1, "%d", &opt->maxrate);
-            while(isdigit((unsigned char) *(com + 1)))
-              com++;
+            readGluedInt(opt->maxrate, INT_MAX);
             break;
 
           case 'j':
             opt->parsejava = HTSPARSE_DEFAULT;
-            if (isdigit((unsigned char) *(com + 1))) {
-              sscanf(com + 1, "%d", &opt->parsejava);
-              while(isdigit((unsigned char) *(com + 1)))
-                com++;
-            }
+            readGluedInt(opt->parsejava, INT_MAX);
             break;
             //
           case 'I':
@@ -1431,9 +1641,7 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
             break;
             //
           case 'b':
-            scanOptInt(com + 1, opt->accept_cookie);
-            while(isdigit((unsigned char) *(com + 1)))
-              com++;
+            readGluedInt(opt->accept_cookie, HTS_TRUE);
             break;
             //
           case 'N':
@@ -1495,9 +1703,7 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
           } break;
           case 's':
             if (isdigit((unsigned char) *(com + 1))) {
-              scanOptInt(com + 1, opt->robots);
-              while(isdigit((unsigned char) *(com + 1)))
-                com++;
+              readGluedEnum(opt->robots, HTS_ROBOTS_ALWAYS_STRICT);
             } else
               opt->robots = HTS_ROBOTS_SOMETIMES;
 #if DEBUG_ROBOTS
@@ -1505,21 +1711,15 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
 #endif
             break;
           case 'o':
-            scanOptInt(com + 1, opt->errpage);
-            while(isdigit((unsigned char) *(com + 1)))
-              com++;
+            readGluedInt(opt->errpage, HTS_TRUE);
             break;
           case 'u':
-            scanOptInt(com + 1, opt->check_type);
-            while(isdigit((unsigned char) *(com + 1)))
-              com++;
+            readGluedInt(opt->check_type, 2);
             break;
             //
           case 'C':
             if (isdigit((unsigned char) *(com + 1))) {
-              scanOptInt(com + 1, opt->cache);
-              while(isdigit((unsigned char) *(com + 1)))
-                com++;
+              readGluedEnum(opt->cache, HTS_CACHE_TEST_UPDATE);
             } else
               opt->cache = HTS_CACHE_PRIORITY;
             break;
@@ -1584,12 +1784,17 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                   com++;
                 }
                 break;          // No passwords in html files
+              case 'Q':
+                opt->browser_headers = HTS_TRUE;
+                if (*(com + 1) == '0') {
+                  opt->browser_headers = HTS_FALSE;
+                  com++;
+                }
+                break;
               case 'I':
                 opt->kindex = 1;
                 if (isdigit((unsigned char) *(com + 1))) {
-                  scanOptInt(com + 1, opt->kindex);
-                  while(isdigit((unsigned char) *(com + 1)))
-                    com++;
+                  readGluedInt(opt->kindex, 2);
                 }
                 break;          // Keyword Index
               case 'c':
@@ -1598,9 +1803,7 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                   com++;
                 break;
               case 'e':
-                sscanf(com + 1, "%d", &opt->extdepth);
-                while(isdigit((unsigned char) *(com + 1)))
-                  com++;
+                readGluedInt(opt->extdepth, INT_MAX);
                 break;
               case 'B':
                 opt->tolerant = 1;
@@ -1685,9 +1888,7 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
               case 'v':
                 opt->verbosedisplay = HTS_VERBOSE_FULL;
                 if (isdigit((unsigned char) *(com + 1))) {
-                  scanOptInt(com + 1, opt->verbosedisplay);
-                  while(isdigit((unsigned char) *(com + 1)))
-                    com++;
+                  readGluedEnum(opt->verbosedisplay, HTS_VERBOSE_FULL);
                 }
                 break;
               case 'i':
@@ -1700,9 +1901,8 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
               case 'N':
                 opt->savename_delayed = HTS_SAVENAME_DELAYED_HARD;
                 if (isdigit((unsigned char) *(com + 1))) {
-                  scanOptInt(com + 1, opt->savename_delayed);
-                  while(isdigit((unsigned char) *(com + 1)))
-                    com++;
+                  readGluedEnum(opt->savename_delayed,
+                                HTS_SAVENAME_DELAYED_HARD);
                 }
                 break;
               case 'D':
@@ -1891,6 +2091,7 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                     return -1;
                   }
                   StringCopy(opt->lang_iso, argv[na]);
+                  opt->lang_given = HTS_TRUE;
                 }
                 break;
                 //
@@ -1902,18 +2103,30 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                   htsmain_free();
                   return -1;
                 } else {
-                  na++;
-                  if (strlen(argv[na]) >= 256) {
+                  const int kind = hts_accept_kind_of(argv[++na]);
+                  const char *const value =
+                      kind >= 0 ? strchr(argv[na], '=') + 1 : argv[na];
+
+                  if (strlen(value) >= HTS_ACCEPT_MAXSIZE) {
                     HTS_PANIC_PRINTF("Accept list string too long");
                     htsmain_free();
                     return -1;
                   }
-                  StringCopy(opt->accept, argv[na]);
+                  if (kind < 0) {
+                    StringCopy(opt->accept, argv[na]);
+                    opt->accept_given = HTS_TRUE;
+                  } else {
+                    if (StringNotEmpty(opt->accept_kinds))
+                      StringCat(opt->accept_kinds, "\n");
+                    StringCat(opt->accept_kinds, argv[na]);
+                  }
                 }
                 break;
                 //
               case 'X':  // HTTP header line
-                if ((na + 1 >= argc) || (argv[na + 1][0] == '-')) {
+                /* a vetted pair's value may begin with '-' (#1425) */
+                if ((na + 1 >= argc) ||
+                    (argv[na + 1][0] == '-' && !optparam_dash_ok(&x_cmd, na))) {
                   HTS_PANIC_PRINTF
                     ("Option %X needs to be followed by a blank space, and a raw HTTP header line");
                   printf("Example: -%%X \"X-Magic: 42\"\n");
@@ -1926,8 +2139,26 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                     htsmain_free();
                     return -1;
                   }
-                  StringCat(opt->headers, argv[na]);
-                  StringCat(opt->headers, "\r\n");  /* separator */
+                  {
+                    const char *const why = http_custom_header_warning(
+                        StringBuff(opt->headers), argv[na]);
+
+                    // with the -%H log's redaction of a login header
+                    if (why != NULL) {
+                      char shown[HTS_URLMAXSIZE * 2];
+
+                      /* one write, so a merged stdout cannot split it */
+                      fprintf(stderr, "warning: -%%X %s: %s\n", why,
+                              hts_header_shown(opt, argv[na], shown,
+                                               sizeof(shown)));
+                    }
+                  }
+                  /* A refused line goes in, so the request drops its folds. */
+                  if (StringNotEmpty(opt->headers) ||
+                      (argv[na][0] != ' ' && argv[na][0] != '\t')) {
+                    StringCat(opt->headers, argv[na]);
+                    StringCat(opt->headers, "\r\n"); /* separator */
+                  }
                 }
                 break;
                 //
@@ -2077,8 +2308,9 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                 break;
 
               case 'g': // strip-query: accumulate "[pattern=]keys" entries
-                /* a key may begin with '-' (#1179) */
-                if (na + 1 >= argc) {
+                /* a vetted pair's key may begin with '-' (#1179) */
+                if ((na + 1 >= argc) ||
+                    (argv[na + 1][0] == '-' && !optparam_dash_ok(&x_cmd, na))) {
                   HTS_PANIC_PRINTF("Option strip-query needs a blank space and "
                                    "[host/pattern=]key1,key2,...");
                   printf("Example: --strip-query "
@@ -2094,8 +2326,9 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                 break;
 
               case 'C': // host-alias: accumulate "alias[,alias...]=host" rules
-                /* an alias may begin with '-' (#1179) */
-                if (na + 1 >= argc) {
+                /* a vetted pair's alias may begin with '-' (#1179) */
+                if ((na + 1 >= argc) ||
+                    (argv[na + 1][0] == '-' && !optparam_dash_ok(&x_cmd, na))) {
                   HTS_PANIC_PRINTF("Option host-alias needs a blank space and "
                                    "alias[,alias...]=canonical-host");
                   printf("Example: --host-alias "
@@ -2109,7 +2342,8 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                   if (!hts_host_alias_rule_ok(argv[na])) {
                     HTS_PANIC_PRINTF("Invalid host-alias rule: expected "
                                      "alias[,alias...]=canonical-host");
-                    printf("Rejected: %s\n", argv[na]);
+                    printf("Rejected: ");
+                    print_rule_nologin(argv[na]);
                     printf("Each side names a host, optionally behind its "
                            "scheme; a path is not part of an address\n");
                     htsmain_free();
@@ -2120,7 +2354,7 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                   StringCat(opt->host_alias, argv[na]);
                 }
                 break;
-              case 'K': // cookies-file: extra Netscape cookies.txt to preload
+              case 'K': // cookies-file: the Netscape jar, rewritten at the end
                 /* a vetted pair's value may begin with '-' (#1425) */
                 if ((na + 1 >= argc) ||
                     (argv[na + 1][0] == '-' && !optparam_dash_ok(&x_cmd, na))) {
@@ -2174,6 +2408,12 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                     return -1;
                   }
                   na++;
+                  if (hts_is_quoted(argv[na], strlen(argv[na]))) {
+                    cmdl_panic_value(opt, "Option warc-max-size needs a size",
+                                     argv[na]);
+                    htsmain_free();
+                    return -1;
+                  }
                   { // reject non-numeric/negative/overflow; keep default 0
                     // (single file)
                     char *end;
@@ -2216,8 +2456,10 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                     v = strtoll(argv[na], &end, 10);
                     if (!isdigit((unsigned char) argv[na][0]) || *end != '\0' ||
                         errno == ERANGE || v <= 0) {
-                      HTS_PANIC_PRINTF(
-                          "Option single-file-max-size needs a positive size");
+                      cmdl_panic_value(
+                          opt,
+                          "Option single-file-max-size needs a positive size",
+                          argv[na]);
                       htsmain_free();
                       return -1;
                     }
@@ -2279,6 +2521,38 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                   StringCopy(opt->why_url, argv[na]);
                 }
                 break;
+              case 'J': // --max-retry-after: cap on an obeyed Retry-After
+              {
+                char *end;
+                LLint secs;
+
+                /* strtoll, not sscanf("%d"): the upper bound used to reject an
+                   overflowed value by accident, and clipping loses that. */
+                errno = 0;
+                secs = strtoll(com + 1, &end, 10);
+                if (end == com + 1 || errno == ERANGE || secs < 0) {
+                  cmdl_panic_value(opt,
+                                   "Invalid --max-retry-after (expected a "
+                                   "non-negative delay in seconds)",
+                                   com + 1);
+                  htsmain_free();
+                  return -1;
+                }
+                /* Clip rather than abort, as back_set_retry_after does for the
+                   server's own value. */
+                if (secs > HTS_MAX_RETRY_AFTER_LIMIT) {
+                  opt->max_retry_after = HTS_MAX_RETRY_AFTER_LIMIT;
+                  /* Report what was stored, so a test can see the clip. */
+                  hts_log_print(opt, LOG_NOTICE,
+                                "--max-retry-after " LLintP
+                                "s is above the limit, using %ds",
+                                secs, opt->max_retry_after);
+                } else {
+                  opt->max_retry_after = (int) secs;
+                }
+                while (isdigit((unsigned char) *(com + 1)))
+                  com++;
+              } break;
               case 'G': // pause: randomized inter-file delay MIN[:MAX] seconds
                 if ((na + 1 >= argc) || (argv[na + 1][0] == '-')) {
                   HTS_PANIC_PRINTF("Option pause needs a blank space and a "
@@ -2297,8 +2571,10 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                   /* positive-form bounds: NaN fails every comparison, so this
                      rejects it before the undefined (int)(NaN*1000) cast */
                   if (nf < 1 || !(pmin >= 0 && pmax >= pmin && pmax <= 86400)) {
-                    HTS_PANIC_PRINTF("Invalid --pause range (expected "
-                                     "MIN[:MAX] seconds, 0<=MIN<=MAX<=86400)");
+                    cmdl_panic_value(opt,
+                                     "Invalid --pause range (expected "
+                                     "MIN[:MAX] seconds, 0<=MIN<=MAX<=86400)",
+                                     argv[na]);
                     htsmain_free();
                     return -1;
                   }
@@ -2312,12 +2588,9 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                 break;
 
               default:{
-                  char s[HTS_CDLMAXSIZE + 256];
-
-                  sprintf(s, "invalid option %%%c\n", *com);
-                  HTS_PANIC_PRINTF(s);
-                  htsmain_free();
-                  return -1;
+                cmdl_bad_option(opt, argv[na], "%", com);
+                htsmain_free();
+                return -1;
                 }
                 break;
 
@@ -2339,11 +2612,7 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                 {
                   int res = 0;
 
-                  if (isdigit((unsigned char) *(com + 1))) {
-                    sscanf(com + 1, "%d", &res);
-                    while(isdigit((unsigned char) *(com + 1)))
-                      com++;
-                  }
+                  readGluedInt(res, INT_MAX);
                   switch (res) {
                   case 1:
                   case 4:
@@ -2369,13 +2638,28 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
 #endif
                 break;
 
-              default:{
-                  char s[HTS_CDLMAXSIZE + 256];
+              case 'm': { // --mptcp: Multipath TCP where the system has it
+                int on = 1;
 
-                  sprintf(s, "invalid option @%c\n", *com);
+                readGluedInt(on, INT_MAX);
+                if (on != 0 && on != 1) {
+                  char s[64];
+
+                  snprintf(s, sizeof(s), "Unknown value for -@m: %d", on);
                   HTS_PANIC_PRINTF(s);
                   htsmain_free();
                   return -1;
+                }
+                opt->mptcp = on != 0 ? HTS_TRUE : HTS_FALSE;
+                if (on != 0 && !hts_mptcp_available())
+                  printf("Warning, option @m has no effect "
+                         "(no Multipath TCP on this system)\n");
+              } break;
+
+              default:{
+                cmdl_bad_option(opt, argv[na], "@", com);
+                htsmain_free();
+                return -1;
               } break;
               }
             }
@@ -2405,12 +2689,7 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                   coucal cache_hashtable = coucal_new(0);
                   int sendb = 0;
 
-                  if (isdigit((unsigned char) *(com + 1))) {
-                    sscanf(com + 1, "%d", &sendb);
-                    while(isdigit((unsigned char) *(com + 1)))
-                      com++;
-                  } else
-                    sendb = 0;
+                  readGluedInt(sendb, INT_MAX);
                   if (!((na + 1 >= argc) || (argv[na + 1][0] == '-'))) {
                     na++;
                     hasFilter = 1;
@@ -2555,14 +2834,10 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                 break;          // vérifier stdin
                 //
               case 'L':
-                sscanf(com + 1, "%d", &opt->maxlink);
-                while(isdigit((unsigned char) *(com + 1)))
-                  com++;
+                readGluedInt(opt->maxlink, INT_MAX);
                 break;
               case 'F':
-                sscanf(com + 1, "%d", &opt->maxfilter);
-                while(isdigit((unsigned char) *(com + 1)))
-                  com++;
+                readGluedInt(opt->maxfilter, HTS_FILTERS_MAX);
                 break;
               case 'Z':
                 opt->makestat = 1;
@@ -2571,9 +2846,7 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                 opt->maketrack = 1;
                 break;
               case 'u':
-                sscanf(com + 1, "%d", &opt->waittime);
-                while(isdigit((unsigned char) *(com + 1)))
-                  com++;
+                readGluedInt(opt->waittime, INT_MAX);
                 break;
 
                 /*case 'R':    // ohh ftp, catch->ftpget
@@ -2676,33 +2949,59 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
             break;
             //
           default:{
-              char s[HTS_CDLMAXSIZE + 256];
-
-              sprintf(s, "invalid option %c\n", *com);
-              HTS_PANIC_PRINTF(s);
-              htsmain_free();
-              return -1;
+            cmdl_bad_option(opt, argv[na], "", com);
+            htsmain_free();
+            return -1;
             }
             break;
           }                     // switch
           com++;
         }                       // while
 
-      } else {                  // URL/filters
+      } else { // URL/filters
         char catbuff[CATBUFF_SIZE];
+        /* doit.log keeps argv, so the bundle suffix is cut from a copy */
+        char word[HTS_CDLMAXSIZE];
         const size_t urlSize = strlen(argv[na]);
         const size_t capa = strlen(url) + urlSize + 32;
 
+        if (hts_is_quoted(argv[na], urlSize)) {
+          cmdl_panic_value(opt, "Argument refused", argv[na]);
+          htsmain_free();
+          return -1;
+        }
+        /* a filter may hold a quote on purpose, but usually it is a leftover */
+        if ((argv[na][0] == '+' || argv[na][0] == '-') &&
+            strchr(argv[na], '"') != NULL)
+          fprintf(stderr, "* Warning: filter %s holds a quote, kept as is\n",
+                  argv[na]);
         assertf(urlSize < HTS_URLMAXSIZE);
+        strcpybuff(word, argv[na]);
+        if (argv[na][0] != '+' && argv[na][0] != '-') {
+          const char *const why = hts_bundle_take(opt, word);
+
+          if (why != NULL) {
+            cmdl_panic_value(opt, why, argv[na]);
+            htsmain_free();
+            return -1;
+          }
+        }
         if (urlSize < HTS_URLMAXSIZE) {
           ensureUrlCapacity(url, url_sz, capa);
           if (strnotempty(url))
             strlcatbuff(url, " ", url_sz); // separator space
-          append_escape_spc_url(unescape_http_unharm(catbuff, sizeof(catbuff), argv[na], 1), url, url_sz);
+          /* a rule is decoded once, where the engine splits the rules */
+          append_escape_spc_url(
+              word[0] == '+' || word[0] == '-'
+                  ? word
+                  : unescape_http_unharm(catbuff, sizeof(catbuff), word, 1),
+              url, url_sz);
         }
-      }                         // if argv=- etc. 
+      } // if argv=- etc.
 
     }                           // for
+    if (prev_opt != 0)
+      x_cmd.span[prev_opt] = na - prev_opt;
   }
 
 #if BDEBUG==3
@@ -2737,17 +3036,12 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
 
   // If both cache generations exist, keep the most complete one
   hts_cache_reconcile(opt, CACHE_RECONCILE_INTERRUPTED);
-  // Débuggage des en têtes
-  if (_DEBUG_HEAD) {
-    ioinfo = FOPEN(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                           StringBuff(opt->path_log), "hts-ioinfo.txt"),
-                   "wb");
-  }
-
   {
     /* Sized to the concat-buffer capacity so it can always hold the lock-file
        path produced by fconcat(), even with a long log path (issue #183). */
     char n_lock[OPT_GET_BUFF_SIZE(opt)];
+
+    char n_lock_staged[OPT_GET_BUFF_SIZE(opt)];
 
     // on peut pas avoir un affichage ET un fichier log
     // ca sera pour la version 2
@@ -2771,13 +3065,16 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
       /* Check FS directory structure created */
       structcheck_utf8(StringBuff(opt->path_log));
 
-      opt->log = FOPEN(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                               StringBuff(opt->path_log), "hts-log.txt"),
-                       "w");
-      if (httrack_logmode == 2)
-        opt->errlog = FOPEN(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                                    StringBuff(opt->path_log), "hts-err.txt"),
+      /* owner-only: the log echoes the command line and URLs with passwords */
+      opt->log =
+          hts_fopen_private(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                                    StringBuff(opt->path_log), "hts-log.txt"),
                             "w");
+      if (httrack_logmode == 2)
+        opt->errlog =
+            hts_fopen_private(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                                      StringBuff(opt->path_log), "hts-err.txt"),
+                              "w");
       else
         opt->errlog = opt->log;
       if (opt->log == NULL) {
@@ -2806,11 +3103,26 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
       opt->errlog = NULL;
     }
 
+    // -%H may run before path_log exists, so create it first.
+    if (_DEBUG_HEAD) {
+      structcheck_utf8(StringBuff(opt->path_log));
+      /* owner-only: it records request headers, Authorization included */
+      ioinfo = hts_fopen_private(
+          fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                  StringBuff(opt->path_log), "hts-ioinfo.txt"),
+          "wb");
+      if (ioinfo == NULL)
+        hts_log_print(opt, LOG_WARNING | LOG_ERRNO,
+                      "unable to create header debug file %s",
+                      fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                              StringBuff(opt->path_log), "hts-ioinfo.txt"));
+    }
+
     // un petit lock-file pour indiquer un miroir en cours, ainsi qu'un éventuel fichier log
     {
-      FILE *fp = NULL;
-
       char t[256];
+      char *masked_url;
+      const char *shown_url;
 
       time_local_rfc822(t);     // faut bien que ca serve quelque part l'heure RFC1945 arf'
 
@@ -2868,7 +3180,6 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
       // reprise/update
       if (opt->cache) {
         FILE *fp;
-        int i;
 
 #ifdef _WIN32
         hts_mkdir_utf8(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
@@ -2878,35 +3189,18 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
               (OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt), StringBuff(opt->path_log), "hts-cache"),
               HTS_PROTECT_FOLDER);
 #endif
-        fp = FOPEN(fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                           StringBuff(opt->path_log), "hts-cache/doit.log"),
-                   "wb");
+        /* owner-only: the command line may carry credentials */
+        fp = hts_fopen_private(
+            fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                    StringBuff(opt->path_log), "hts-cache/doit.log"),
+            "wb");
         if (fp) {
-          for(i = 0 + 1; i < argc; i++) {
-            /* argv[] is already unquoted here, so a leading quote is data */
-            if ((strchr(argv[i], ' ') != NULL) ||
-                (strchr(argv[i], '"') != NULL) ||
-                (strchr(argv[i], '\\') != NULL)) {
-              size_t j;
+          String line = STRING_EMPTY;
 
-              fprintf(fp, "\"");
-              for(j = 0; argv[i][j] != '\0'; j++) {
-                if (argv[i][j] == 34)
-                  fprintf(fp, "\\\"");
-                else if (argv[i][j] == '\\')
-                  fprintf(fp, "\\\\");
-                else
-                  fprintf(fp, "%c", argv[i][j]);
-              }
-              fprintf(fp, "\"");
-            } else if (strnotempty(argv[i]) == 0) { // ""
-              fprintf(fp, "\"\"");
-            } else { // nothing to escape
-              fprintf(fp, "%s", argv[i]);
-            }
-            if (i < argc - 1)
-              fprintf(fp, " ");
-          }
+          cmdl_doit_line(&line, &x_cmd);
+          if (StringLength(line) != 0)
+            fwrite(StringBuff(line), 1, StringLength(line), fp);
+          StringFree(line);
           fprintf(fp, LF);
           fprintf(fp, "File generated automatically on %s, do NOT edit" LF, t);
           fprintf(fp, LF);
@@ -2926,56 +3220,62 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
         }
       }
       // petit message dans le lock
-      if ((fp = FOPEN(n_lock, "wb")) != NULL) {
-        int i;
-
-        fprintf(fp, "Mirror in progress since %s .. please wait!" LF, t);
-        for(i = 0; i < argc; i++) {
-          if (strchr(argv[i], ' ') == NULL)
-            fprintf(fp, "%s ", argv[i]);
-          else                  // entre ""
-            fprintf(fp, "\"%s\" ", argv[i]);
-        }
-        fprintf(fp, LF);
-        fprintf(fp, "To pause the engine: create an empty file named "
-                    "'" HTS_PAUSE_LOCKNAME "' (an earlier run's copy is"
-                    " ignored, so create it again)" LF);
-        fprintf(fp,
-                "To stop it and keep the mirror: create an empty file named "
-                "'" HTS_ABORT_LOCKNAME "' (an earlier run's copy is"
-                " ignored, so create it again)" LF);
-#if USE_BEGINTHREAD
-        fprintf(fp, "PID=%d\n", (int) getpid());
-#ifndef _WIN32
-        fprintf(fp, "UID=%d\n", (int) getuid());
-        fprintf(fp, "GID=%d\n", (int) getuid());
-#endif
-        fprintf(fp, "START=%d\n", (int) time(NULL));
-#endif
-        fclose(fp);
-        fp = NULL;
-        /* One second back, so a request written the instant this file appears
-           sorts after it even where the filesystem stamps whole seconds. */
-        if (!hts_file_backdate(n_lock, 1) && opt->log != NULL)
-          hts_log_print(
-              opt, LOG_WARNING,
-              "engine: could not date hts-in_progress.lock back, so a"
-              " stop request written in this first second is ignored");
+      strcpybuff(n_lock_staged,
+                 fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                         StringBuff(opt->path_log), "hts-in_progress.tmp"));
+      /* The lock is written aside and moved on, so it is already dated back
+         when it appears under the name scripts watch. A move that fails falls
+         back to writing it in place, which is what the engine always did. */
+      if (!write_progress_lock(opt, n_lock_staged, t, argc, argv) ||
+          !hts_rename_over(opt, n_lock_staged, n_lock)) {
+        UNLINK(n_lock_staged);
+        if (!write_progress_lock(opt, n_lock, t, argc, argv) &&
+            opt->log != NULL)
+          hts_log_print(opt, LOG_WARNING,
+                        "engine: could not create hts-in_progress.lock, so"
+                        " this mirror cannot be stopped or paused by a file");
       }
-      // fichier log        
+      hts_secret_learn_options(opt, url);
+      masked_url = hts_mask_passwords(url, HTS_MASK_LIST);
+      shown_url = masked_url != NULL ? masked_url : "(out of memory)";
+      // hts-log.txt
       if (opt->log) {
-        int i;
+        int i, opt_at = 0;
 
         fprintf(opt->log,
                 "HTTrack" HTTRACK_VERSION "%s launched on %s at %s" LF,
-                hts_get_version_info(opt), t, url);
+                hts_get_version_info(opt), t, shown_url);
         fprintf(opt->log, "(");
         for(i = 0; i < argc; i++) {
           const char *arg = argv[i]; // already UTF-8 on every platform
-          if (strchr(arg, ' ') == NULL || strchr(arg, '\"') != NULL)
-            fprintf(opt->log, "%s ", arg);
-          else                  // entre "" (si espace(s) et pas déja de ")
-            fprintf(opt->log, "\"%s\" ", arg);
+          // quoted if it holds a blank and no quote
+          const hts_boolean quote =
+              strchr(arg, ' ') != NULL && strchr(arg, '\"') == NULL;
+          // a start URL, or a -P, -%mu, -%R or --why value, is one address
+          hts_boolean addr;
+          char *masked;
+
+          if (x_cmd.span[i] != 0) {
+            opt_at = x_cmd.span[i] > 1 ? i : 0;
+            addr = HTS_FALSE;
+          } else if (opt_at != 0 && i < opt_at + x_cmd.span[opt_at]) {
+            addr = cmdl_shortopt_has(argv[opt_at], 'P') ||
+                   cmdl_shortopt_named(argv[opt_at], "-%mu") ||
+                   cmdl_shortopt_named(argv[opt_at], "-%R") ||
+                   cmdl_shortopt_named(argv[opt_at], "-%Y");
+          } else {
+            opt_at = 0;
+            addr = i != 0 && arg[0] != '+' && arg[0] != '-';
+          }
+          masked = addr ? hts_mask_passwords(arg, HTS_MASK_ADDR) : NULL;
+
+          if (quote)
+            fputc('"', opt->log);
+          // a -%X login header gets the -%H log's redaction
+          if (!addr || masked != NULL)
+            fprintfio(opt->log, addr ? masked : arg, "", opt);
+          fputs(quote ? "\" " : " ", opt->log);
+          freet(masked);
         }
         fprintf(opt->log, ")" LF);
         fprintf(opt->log, LF);
@@ -2991,14 +3291,15 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
                HTTRACK_VERSION "%s " HTTRACK_AFF_AUTHORS "" LF, t,
                hts_get_version_info(opt));
         if (opt->wizard == HTS_WIZARD_NONE) {
-          printf
-            ("mirroring %s with %d levels, %d sockets,t=%d,s=%d,logm=%d,lnk=%d,mdg=%d\n",
-             url, opt->depth, opt->maxsoc, opt->travel, opt->seeker,
-             httrack_logmode, opt->urlmode, opt->getmode);
+          printf("mirroring %s with %d levels, %d "
+                 "sockets,t=%d,s=%d,logm=%d,lnk=%d,mdg=%d\n",
+                 shown_url, opt->depth, opt->maxsoc, opt->travel, opt->seeker,
+                 httrack_logmode, opt->urlmode, opt->getmode);
         } else { // the magic wizard
-          printf("mirroring %s with the wizard help..\n", url);
+          printf("mirroring %s with the wizard help..\n", shown_url);
         }
       }
+      freet(masked_url);
     }
 
     io_flush;
@@ -3108,13 +3409,15 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
     /* Only the exit status tells a wrapper the engine gave up mid-mirror. The
        fault flag is read too, because a dozen sites write exit_xh = 1 for a
        stop the user asked for and any of them can land after the abort. */
-    if (opt->state.exit_xh == -1 || hts_worker_faulted()) {
+    if (hts_load_acquire_int(&opt->state.exit_xh) == -1 ||
+        hts_worker_faulted()) {
       exit_code = HTS_EXIT_MIRROR_ABORTED;
       HTS_PANIC_PRINTF("mirror aborted before completion, see the log file");
     }
 
     /* Not after a fault: that mirror is not resumable. */
-    if (opt->state.exit_xh == 1 && !hts_worker_faulted()) {
+    if (hts_load_acquire_int(&opt->state.exit_xh) == 1 &&
+        !hts_worker_faulted()) {
       if (opt->log) {
         fprintf(opt->log,
                 "* * MIRROR ABORTED! * *\nThe mirror stopped before the end. "
@@ -3132,7 +3435,8 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
     /* Not or cleanly interrupted; erase hts-cache/ref temporary directory.
        A ^C or a cap leaves exit_xh at 0, so keep the ref when either cut a
        transfer mid-body (#1595). */
-    if (opt->state.exit_xh == 0 && !opt->abort_left_partial) {
+    if (hts_load_acquire_int(&opt->state.exit_xh) == 0 &&
+        !opt->abort_left_partial) {
       // erase ref files if not interrupted
       DIR *dir;
       struct dirent *entry;
@@ -3179,6 +3483,7 @@ static int hts_main_internal(int argc, char **argv, httrackp * opt) {
     if (_DEBUG_HEAD) {
       if (ioinfo) {
         fclose(ioinfo);
+        ioinfo = NULL;
       }
     }
     // supprimer lock
@@ -3239,43 +3544,76 @@ int check_path(String * s, char *defaultname) {
   return return_value;
 }
 
+/* Append the token at i, with its parameters, quoted as doit.log holds it. */
+static void cmdl_quote_unit(String *out, const cmdl_argv *cmd, int i) {
+  const int span = cmd->span[i] > 1 ? cmd->span[i] : 1;
+  const int end = span < cmd->argc - i ? i + span : cmd->argc;
+
+  for (; i < end; i++) {
+    if (StringLength(*out) != 0)
+      StringAddchar(*out, ' ');
+    /* argv[] is final, so a leading quote is data */
+    hts_quote_arg(out, cmd->argv[i]);
+  }
+}
+
+/* Append cmd's arguments as doit.log's line, leaving out an option an
+   identical later one repeats, so each resume's -iC2 does not pile up. */
+static void cmdl_doit_line(String *line, const cmdl_argv *cmd) {
+  hts_boolean *drop =
+      (hts_boolean *) calloct((size_t) cmd->argc, sizeof(hts_boolean));
+  coucal seen = drop != NULL ? coucal_new(0) : NULL;
+  String unit = STRING_EMPTY;
+  int i;
+
+  for (i = cmd->argc - 1; seen != NULL && i > 0; i--) {
+    if (cmd->span[i] == 0)
+      continue;
+    StringClear(unit);
+    cmdl_quote_unit(&unit, cmd, i);
+    if (coucal_exists(seen, StringBuff(unit)))
+      drop[i] = HTS_TRUE;
+    else
+      coucal_write(seen, StringBuff(unit), 0);
+  }
+  for (i = 1; i < cmd->argc; i++) {
+    if (seen == NULL || !drop[i])
+      cmdl_quote_unit(line, cmd, i);
+    if (cmd->span[i] > 1)
+      i += cmd->span[i] - 1;
+  }
+  StringFree(unit);
+  if (seen != NULL)
+    coucal_delete(&seen);
+  freet(drop);
+}
+
 /* Does the short-option cluster s carry c from the main option set (-i, -iC2,
-   -%Mi)? Walked as the parser does below: %, &, @ and # each take the letter
-   after them into another set, so the i of -%i is not the main-set -i. */
+   -%Mi)? The i of -%i belongs to another set. */
 static hts_boolean cmdl_shortopt_has(const char *s, char c) {
-  const char *com;
+  const char opt[3] = {'-', c, '\0'};
+
+  return cmdl_shortopt_named(s, opt);
+}
+
+/* Does the short option cluster s hold the option opt, such as "-%mu"? */
+static hts_boolean cmdl_shortopt_named(const char *s, const char *opt) {
+  char name[8];
+  size_t at = 1;
 
   if (s[0] != '-' || s[1] == '-')
     return HTS_FALSE;
-  for (com = s + 1; *com != '\0'; com++) {
-    switch (*com) {
-    case '%':
-    case '&':
-    case '@':
-    case '#':
-      if (*(com + 1) != '\0')
-        com++; /* skip the other set's letter */
-      break;
-    default:
-      if (*com == c)
-        return HTS_TRUE;
-      break;
-    }
-  }
+  while (optcluster_next(s, &at, name, sizeof(name)))
+    if (strcmp(name, opt) == 0)
+      return HTS_TRUE;
   return HTS_FALSE;
 }
 
-// détermine si l'argument est une option
-int cmdl_opt(char *s) {
-  if (s[0] == '-') {            // c'est peut être une option
-    if (strchr(s, '.') != NULL && strchr(s, '%') == NULL)
-      return 0;                 // sans doute un -www.truc.fr (note: -www n'est pas compris)
-    else if (strchr(s, '/') != NULL)
-      return 0;                 // idem, -*cgi-bin/
-    else if (strchr(s, '*') != NULL)
-      return 0;                 // joker, idem
-    else
-      return 1;
-  } else
-    return 0;
+HTSEXT_API hts_boolean hts_rule_would_be_read_as_opt(const char *arg) {
+  if (arg == NULL || arg[0] != '-')
+    return HTS_FALSE;
+  // A dot means a host (-www.a.com), but any '%' keeps -%c0.5 an option.
+  if (strchr(arg, '.') != NULL && strchr(arg, '%') == NULL)
+    return HTS_FALSE;
+  return strchr(arg, '/') == NULL && strchr(arg, '*') == NULL;
 }

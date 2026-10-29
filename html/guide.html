@@ -214,9 +214,10 @@ keep their links to each other.</p>
 	<a href="#opt-experts-only">Use a cache for updates</a> should stay on.</p>
 </div>
 
-<p data-for="win web">The <b>Add a URL</b> button takes one address at a time, and does two
-things the address box cannot. It attaches a login and password to that one address, for a
-page behind basic authentication. And it captures an address out of your browser, for a page
+<p data-for="win web">The <b>Add a URL</b> button takes one address at a time. It can attach
+a login and password to that one address, for a page behind basic authentication.</p>
+
+<p data-for="win">It can also capture an address out of your browser, for a page
 you can only reach by submitting a form or following a script: HTTrack listens on a local
 port, you point your browser at it as a proxy and click the link or the submit button as
 usual, and the address the browser asks for is added to the project.</p>
@@ -629,6 +630,20 @@ bottom are the ones that keep you welcome.</p>
 	translation a multilingual site hands over.</p>
 </div>
 
+<div class="opt" id="opt-accept-headers">
+	<div class="opt-head"><span class="opt-name">Accept headers</span><span class="cli">-%a, --accept</span></div>
+	<p>The <code>Accept</code> header sent for each kind of link: pages, frames, images, style
+	sheets, scripts, fonts, audio, video and embedded objects. A row left on Automatic sends what
+	the chosen browser sends. With a Chrome, Edge or Firefox identity, that is the browser's own
+	value on secure (https) sites, unless <code>-%Q0</code> turns browser headers off. Otherwise it
+	is the old HTTrack value. On the command line, <code>--accept 'image=image/png,*/*'</code> sets
+	one kind. A value with no kind replaces every row left on Automatic.</p>
+	<p data-for="win">The rows open in their own window, from the Accept headers button.</p>
+	<figure data-for="win">
+		<img data-for="win" src="img/guide-win-opt-accept-headers.png" alt="WinHTTrack Accept headers window" width="586" height="445">
+	</figure>
+</div>
+
 <div class="opt" data-for="win web">
 	<div class="opt-head"><span class="opt-name">Default referer</span><span class="cli">-%R, --referer</span></div>
 	<p>The <code>Referer</code> sent with the first request. Occasionally needed by sites that refuse
@@ -711,8 +726,17 @@ bottom are the ones that keep you welcome.</p>
 
 <div class="opt" data-for="win web">
 	<div class="opt-head"><span class="opt-name">Load cookies from file</span><span class="cli">-%K, --cookies-file</span></div>
-	<p>Preloads cookies from a Netscape <code>cookies.txt</code> before the crawl starts. How you
-	mirror something that needs you logged in, by exporting the session from your browser.</p>
+	<p>Uses a Netscape <code>cookies.txt</code> as the whole cookie jar. Export your browser session
+	to it to mirror a site that needs a login.
+	At the end of the crawl the file is rewritten with the cookies the crawl ended with, and the old one
+	is kept as <code>.bak</code>. HTTrack leaves the file unchanged and warns if a line
+	could not be loaded or a cookie repeats. It does the same when the file holds a comment
+	that no known tool writes.</p>
+	<p>The file can also hold a document.cookie string, such as <code>a=1; b=2</code>, as the
+	browser console prints it, or a pasted <code>Cookie:</code> request header. Those cookies go
+	to the domain of the first start URL, and the file is never rewritten. HttpOnly cookies are not
+	in it. A cookies.txt export has them, and so does the Cookie header from DevTools
+	"Copy as cURL", pasted here.</p>
 </div>
 
 <div class="opt" data-for="win web droid">
