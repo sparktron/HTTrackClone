@@ -41,7 +41,7 @@ trap 'set +e; rm -rf "$work"' EXIT
 # -R0: no retries, so one refused handshake logs exactly two errors (the check
 # that failed, then the link given up on).
 SSL_CERT_FILE="$work/empty-ca.pem" \
-    bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 2 --not-found 'simple/basic.html' \
+    bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 2 --no-host-root \
     --log-found 'TLS certificate check failed for .*self.signed' \
     httrack 'BASEURL/simple/basic.html' -R0
 
@@ -59,5 +59,5 @@ SSL_CERT_FILE="$work/empty-ca.pem" \
 
 # -%V0 must not survive an explicit -%V after it.
 SSL_CERT_FILE="$work/empty-ca.pem" \
-    bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 2 --not-found 'simple/basic.html' \
+    bash "$top_srcdir/tests/local-crawl.sh" --tls --errors 2 --no-host-root \
     httrack 'BASEURL/simple/basic.html' -R0 '-%V0' '-%V'
