@@ -61,6 +61,7 @@ static int linput(FILE * fp, char *s, int max);
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <time.h>
 #ifdef HAVE_SYS_TYPES_H
 #include <sys/types.h>
 #endif
@@ -251,7 +252,64 @@ static hts_boolean vt_size_refresh(void) {
 static int use_show;
 static httrackp *global_opt = NULL;
 
+/* Raised by sig_leave(), drained from the engine's own thread: the log line it
+   stands for goes through hts_log_print(), which allocates and takes locks. */
+static volatile sig_atomic_t stop_log_pending = 0;
+
+/* Write out what the ^C handler could only flag. */
+static void sig_drain_pending(httrackp *opt) {
+  if (stop_log_pending) {
+    stop_log_pending = 0;
+    hts_log_print(opt, LOG_ERROR, "Exit requested by shell or user");
+  }
+}
+
 static void signal_handlers(void);
+
+/* Seconds the exit wait may outlast what is left of --max-time. */
+#define EXIT_WAIT_GRACE 5
+
+static htsmutex exit_wait_lock = HTSMUTEX_INIT;
+static hts_boolean exit_wait_done = HTS_FALSE;
+/* Kept reachable once abandoned, so a leak checker at exit does not flag it. */
+static httrackp *volatile exit_abandoned_opt = NULL;
+
+/* Runs on its own worker, so it waits for every thread but itself. */
+static void exit_wait_thread(void *arg) {
+  (void) arg;
+  htsthread_wait_n(1);
+  hts_mutexlock(&exit_wait_lock);
+  exit_wait_done = HTS_TRUE;
+  hts_mutexrelease(&exit_wait_lock);
+}
+
+/* Bounded by --max-time plus a grace, because a stuck getaddrinfo() never
+   returns. HTS_FALSE when threads were left running, so opt must stay. */
+static hts_boolean exit_wait_threads(const httrackp *opt) {
+  TStamp left, deadline;
+
+  if (opt->maxtime <= 0 || hts_newthread(exit_wait_thread, NULL) != 0) {
+    htsthread_wait();
+    return HTS_TRUE;
+  }
+  left =
+      (TStamp) opt->maxtime - ((TStamp) time(NULL) - HTS_STAT.stat_timestart);
+  if (left < 0)
+    left = 0;
+  deadline = mtime_local() + (left + EXIT_WAIT_GRACE) * 1000;
+  for (;;) {
+    hts_boolean done;
+
+    hts_mutexlock(&exit_wait_lock);
+    done = exit_wait_done;
+    hts_mutexrelease(&exit_wait_lock);
+    if (done)
+      return HTS_TRUE;
+    if (mtime_local() >= deadline)
+      return HTS_FALSE;
+    Sleep(50);
+  }
+}
 
 #ifdef _WIN32
 /* Windows opens stdout in text mode, so every \n leaves as \r\n. A shell
@@ -337,13 +395,18 @@ int main(int argc, char **argv) {
     fprintf(stderr, "* %s\n", hts_errmsg(opt));
   }
   global_opt = NULL;
-  htsthread_wait(); /* pending threads still read opt */
-  hts_free_opt(opt);
-  hts_uninit();
-
+  /* pending threads still read opt */
+  if (exit_wait_threads(opt)) {
+    hts_free_opt(opt);
+    hts_uninit();
 #ifdef _WIN32
-  WSACleanup();
+    WSACleanup();
 #endif
+  } else {
+    exit_abandoned_opt = opt;
+    fprintf(stderr, "* Exiting without waiting for engine threads still "
+                    "running after --max-time\n");
+  }
 
   return ret;
 }
@@ -369,6 +432,7 @@ static int __cdecl htsshow_chopt(t_hts_callbackarg * carg, httrackp * opt) {
   return htsshow_start(carg, opt);
 }
 static int __cdecl htsshow_end(t_hts_callbackarg * carg, httrackp * opt) {
+  sig_drain_pending(opt);
   return 1;
 }
 static int __cdecl htsshow_preprocesshtml(t_hts_callbackarg * carg,
@@ -409,6 +473,8 @@ static int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_b
   LLint stat_bytes = -1;
   LLint stat_bytes_recv = -1;
   int irate = -1;
+
+  sig_drain_pending(opt);
 
   if (stats) {
     stat_written = stats->stat_files;
@@ -536,34 +602,35 @@ static int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_b
           for (_i = 0 + k; (_i < max(back_max * k, 1)) && (index < nstats);
                _i++) {                                  // no lien
             int i = (back_index + _i) % back_max;       // commencer par le "premier" (l'actuel)
+            const int slot_status = hts_load_acquire_int(&back[i].status);
 
-            if (back[i].status >= 0) { // signifie "lien actif"
+            if (slot_status >= 0) { // an active slot
               ok = 0;
               switch (j) {
               case 0:          // prioritaire
-                if ((back[i].status > 0) && (back[i].status < 99)) {
+                if ((slot_status > 0) && (slot_status < 99)) {
                   strcpybuff(StatsBuffer[index].state, "receive");
                   ok = 1;
                 }
                 break;
               case 1:
-                if (back[i].status == STATUS_WAIT_HEADERS) {
+                if (slot_status == STATUS_WAIT_HEADERS) {
                   strcpybuff(StatsBuffer[index].state, "request");
                   ok = 1;
-                } else if (back[i].status == STATUS_CONNECTING) {
+                } else if (slot_status == STATUS_CONNECTING) {
                   strcpybuff(StatsBuffer[index].state, "connect");
                   ok = 1;
-                } else if (back[i].status == STATUS_WAIT_DNS) {
+                } else if (slot_status == STATUS_WAIT_DNS) {
                   strcpybuff(StatsBuffer[index].state, "search");
                   ok = 1;
-                } else if (back[i].status == STATUS_FTP_TRANSFER) {     // ohh le beau ftp
+                } else if (slot_status == STATUS_FTP_TRANSFER) { // ftp
                   snprintf(StatsBuffer[index].state, sizeof(StatsBuffer[index].state),
                            "ftp: %s", back[i].info);
                   ok = 1;
                 }
                 break;
               default:
-                if (back[i].status == STATUS_READY) {   // prêt
+                if (slot_status == STATUS_READY) { // ready
                   if (back[i].r.statuscode == 200) {
                     strcpybuff(StatsBuffer[index].state, "ready");
                     ok = 1;
@@ -591,13 +658,19 @@ static int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_b
                 //
                 s[0] = '\0';
                 strcpybuff(StatsBuffer[index].url_sav, back[i].url_sav);        // pour cancel
-                if (strcmp(back[i].url_adr, "file://"))
-                  strcatbuff(s, back[i].url_adr);
-                else
+                if (strcmp(back[i].url_adr, "file://")) {
+                  size_t keep;
+                  const char *const host =
+                      stats_skip_login(back[i].url_adr, &keep);
+
+                  strncatbuff(s, back[i].url_adr, keep);
+                  strcatbuff(s, host);
+                } else
                   strcatbuff(s, "localhost");
                 if (back[i].url_fil[0] != '/')
                   strcatbuff(s, "/");
                 strcatbuff(s, back[i].url_fil);
+                hts_hide_secrets(opt, s, sizeof(s));
 
                 StatsBuffer[index].file[0] = '\0';
                 {
@@ -619,16 +692,21 @@ static int __cdecl htsshow_loop(t_hts_callbackarg * carg, httrackp * opt, lien_b
                   strcatbuff(StatsBuffer[index].name, s + l - maxurl / 2 + 2);
                 }
 
-                if (back[i].r.totalsize >= 0) { // taille prédéfinie
-                  StatsBuffer[index].sizetot = back[i].r.totalsize;
-                  StatsBuffer[index].size = back[i].r.size;
-                } else {        // pas de taille prédéfinie
-                  if (back[i].status == STATUS_READY) { // prêt
-                    StatsBuffer[index].sizetot = back[i].r.size;
-                    StatsBuffer[index].size = back[i].r.size;
+                /* An FTP worker may be writing the sizes right now. */
+                const LLint size = hts_load_relaxed_llint(&back[i].r.size);
+                const LLint totalsize =
+                    hts_load_relaxed_llint(&back[i].r.totalsize);
+
+                if (totalsize >= 0) { // known size
+                  StatsBuffer[index].sizetot = totalsize;
+                  StatsBuffer[index].size = size;
+                } else {                             // unknown size
+                  if (slot_status == STATUS_READY) { // ready
+                    StatsBuffer[index].sizetot = size;
+                    StatsBuffer[index].size = size;
                   } else {
                     StatsBuffer[index].sizetot = 8192;
-                    StatsBuffer[index].size = (back[i].r.size % 8192);
+                    StatsBuffer[index].size = (size % 8192);
                   }
                 }
                 index++;
@@ -871,46 +949,91 @@ static int linput(FILE * fp, char *s, int max) {
   return j;
 }
 
-// routines de détournement de SIGHUP & co (Unix)
+// Signal handlers (SIGHUP & co, Unix)
 //
-static void sig_ignore(int code) {      // ignorer signal
+/* A handler may only write(), and may only touch a volatile sig_atomic_t: both
+   printf and hts_log_print take a lock and allocate, so a signal arriving
+   while the interrupted thread holds the stdout lock deadlocks. Each one also
+   puts errno back, because the interrupted code was about to read it. */
+#define SIG_FD_OUT 1
+#define SIG_FD_ERR 2
+
+static void sig_print(int fd, const char *msg, size_t len) {
+  /* MSVC's write() counts in unsigned int and answers in int */
+  (void) (write(fd, msg, (unsigned int) len) == (int) len);
 }
-static void sig_term(int code) {        // quitter brutalement
-  fprintf(stderr, "\nProgram terminated (signal %d)\n", code);
-  exit(0);
+
+#define SIG_PRINT(fd, lit) sig_print((fd), (lit), sizeof(lit) - 1)
+
+/* "<prefix><code>)\n", the shape the two handlers below used to printf. */
+static void sig_print_code(int fd, const char *prefix, size_t len, int code) {
+  char buffer[256];
+  unsigned int size;
+
+  if (len > sizeof(buffer) - 16)
+    len = sizeof(buffer) - 16;
+  memcpy(buffer, prefix, len);
+  size = (unsigned int) len;
+  size += hts_print_num(&buffer[size], code);
+  buffer[size++] = ')';
+  buffer[size++] = '\n';
+  sig_print(fd, buffer, size);
 }
-static void sig_finish(int code) {      // finir et quitter
-  signal(code, sig_term);       // quitter si encore
+
+#define SIG_PRINT_CODE(fd, lit, code)                                          \
+  sig_print_code((fd), (lit), sizeof(lit) - 1, (code))
+
+static void sig_ignore(int code) { // ignore the signal
+}
+
+static void sig_term(int code) { // quit at once (never returns)
+  SIG_PRINT_CODE(SIG_FD_ERR, "\nProgram terminated (signal ", code);
+  /* _exit, not exit: exit() runs OpenSSL's atexit teardown here, whose free()
+     can deadlock on the malloc lock the interrupted thread holds. */
+  _exit(0);
+}
+
+static void sig_finish(int code) { // finish the mirror, then quit
+  const int saved = errno;
+
+  signal(code, sig_term); // quit at once if asked again
   if (global_opt != NULL) {
-    global_opt->state.exit_xh = 1;
+    hts_store_release_int(&global_opt->state.exit_xh, 1);
   }
-  fprintf(stderr, "\nExit requested to engine (signal %d)\n", code);
+  SIG_PRINT_CODE(SIG_FD_ERR, "\nExit requested to engine (signal ", code);
+  errno = saved;
 }
 
 #ifndef _WIN32
 static void sig_doback(int blind);
-static void sig_back(int code) {        // ignorer et mettre en backing 
+
+static void sig_back(int code) { // ^Z: suspend, or go to the background
+  const int saved = errno;
+
   if (global_opt != NULL && !global_opt->background_on_suspend) {
     signal(SIGTSTP, SIG_DFL);   // ^Z
-    printf("\nInterrupting the program.\n");
-    fflush(stdout);
+    SIG_PRINT(SIG_FD_OUT, "\nInterrupting the program.\n");
     kill(getpid(), SIGTSTP);
   } else {
     // Background the process.
     signal(code, sig_ignore);
     sig_doback(0);
   }
+  errno = saved;
 }
 
 static void sig_brpipe(int code) {      // treat if necessary
+  const int saved = errno;
+
   signal(code, sig_brpipe);
+  errno = saved;
 }
-static void sig_doback(int blind) {     // mettre en backing 
+
+static void sig_doback(int blind) { // go to the background
   int out = -1;
 
   //
-  printf("\nMoving into background to complete the mirror...\n");
-  fflush(stdout);
+  SIG_PRINT(SIG_FD_OUT, "\nMoving into background to complete the mirror...\n");
 
   if (global_opt != NULL) {
     // suppress logging and asking lousy questions
@@ -930,7 +1053,7 @@ static void sig_doback(int blind) {     // mettre en backing
   case 0:
     break;
   case -1:
-    fprintf(stderr, "Error: can not fork process\n");
+    SIG_PRINT(SIG_FD_ERR, "Error: can not fork process\n");
     break;
   default:                     // pere
     _exit(0);
@@ -939,15 +1062,11 @@ static void sig_doback(int blind) {     // mettre en backing
 }
 #endif
 
-#undef FD_ERR
-#define FD_ERR 2
-
 static void sig_fatal(int code) {
   const char msg[] = "\nCaught signal ";
   const char msgreport[] =
     "\nPlease report the problem at http://forum.httrack.com\n";
   char buffer[256];
-  /* MSVC's write() counts in unsigned int; this stays under buffer[256] */
   unsigned int size;
 
   signal(code, SIG_DFL);
@@ -957,26 +1076,25 @@ static void sig_fatal(int code) {
   size = sizeof(msg) - 1;
   size += hts_print_num(&buffer[size], code);
   buffer[size++] = '\n';
-  (void) (write(FD_ERR, buffer, size) == size);
+  sig_print(SIG_FD_ERR, buffer, size);
   hts_print_backtrace();
-  (void) (write(FD_ERR, msgreport, sizeof(msgreport) - 1)
-    == sizeof(msgreport) - 1);
+  SIG_PRINT(SIG_FD_ERR, msgreport);
   abort();
 }
 
-#undef FD_ERR
-
 static void sig_leave(int code) {
+  const int saved = errno;
+
   if (global_opt != NULL && global_opt->state._hts_in_mirror) {
-    signal(code, sig_term);     // quitter si encore
-    printf("\n** Finishing pending transfers.. press again ^C to quit.\n");
-    if (global_opt != NULL) {
-      // ask for stop
-      hts_log_print(global_opt, LOG_ERROR, "Exit requested by shell or user");
-      global_opt->state.stop = 1;
-    }
+    signal(code, sig_term); // quit at once if asked again
+    SIG_PRINT(SIG_FD_OUT,
+              "\n** Finishing pending transfers.. press again ^C to quit.\n");
+    // ask for stop, and leave the log line to sig_drain_pending()
+    stop_log_pending = 1;
+    hts_store_release_int(&global_opt->state.stop, 1);
+    errno = saved;
   } else {
-    sig_term(code);
+    sig_term(code); /* never returns */
   }
 }
 

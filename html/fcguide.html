@@ -44,6 +44,7 @@
 	<ul>
 		<li><a href="guide.html">Interface guide</a></li>
 		<li><a href="faq.html">FAQ and troubleshooting</a></li>
+		<li><a href="login.html">Sites behind a login</a></li>
 		<li><a href="abuse.html">Using HTTrack responsibly</a></li>
 	</ul>
 	<h2>Command line</h2>
@@ -220,7 +221,7 @@ Spider options:
   sN follow robots.txt and meta robots tags (0=never,1=sometimes,* 2=always) (--robots[=N])
  %h  force HTTP/1.0 requests (reduce update features, only for old servers or proxies) (--http-10)
  %B  tolerant requests (accept bogus responses on some servers, but not standard!) (--tolerant)
- %s  update hacks: various hacks to limit re-transfers when updating (identical size, bogus response..) (--updatehack)
+ %s  update hacks: keep a file already on disk when its size matches, even on a first crawl, and accept some bogus responses (--updatehack)
  %A  assume that a type (cgi,asp..) is always linked with a mime type (-%A php3=text/html) (--assume &lt;param&gt;)
 
 Browser ID:
@@ -1155,7 +1156,7 @@ Spider options:
  sN  follow robots.txt and meta robots tags (0=never,1=sometimes,* 2=always)
  %h  force HTTP/1.0 requests (reduce update features, only for old servers or proxies)
  %B  tolerant requests (accept bogus responses on some servers, but not standard!)
- %s  update hacks: various hacks to limit re-transfers when updating
+ %s  update hacks: keep a file already on disk when its size matches, even on a first crawl, and accept some bogus responses
  %A  assume that a type (cgi,asp..) is always linked with a mime type (-%A php3=text/html) (--assume &lt;param&gt;)
 </i></b></pre>
 
@@ -2093,6 +2094,11 @@ these:
  sockets=8
  sockets 8
 </i></b></pre></ul>
+
+<p align=justify> A TAB separates words like a space does, and a TAB
+inside a value is kept as part of the value. A line whose first
+non-blank character is '#', ';' or '/' is a comment, even when it is
+indented.
 
 
 <p align=justify> .httrackrc is sought in the following sequence with

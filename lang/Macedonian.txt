@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Протокол на прокси. HTTP: стандарден прокси. HTTP (тунел CONNECT): го испраќа секое барање преку тунел CONNECT, за прокси што поддржуваат само CONNECT како HTTPTunnelPort на Tor. SOCKS5: стандардна порта 1080.
 Load cookies from file:
 Вчитај колачиња од датотека:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Однапред вчитај колачиња од датотека Netscape cookies.txt пред преземањето.
 Pause between files:
 Пауза меѓу датотеки:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 Игнорирај го %s и сите хостови под него
 Manual
 Прирачник
+Max Retry-After(s)
+Макс. Retry-After (с)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Најдолго чекање што се почитува кога серверот испраќа заглавје Retry-After. Внесете 0 за нов обид без чекање.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+Правилата што ги поставувате тука важат за копирањето на сајтот што е во тек. Отстранувањето на правило повторно ги пропушта новите врски, но врската што правилото веќе ја одбило нема да се врати во ова копирање.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Ова правило за филтрирање не може да се користи. Правилото започнува со + или -, потоа следи шаблон, и мора да се смести во еден краток ред.
+Theme:
+Тема:
+Classic
+Класична
+Accept headers
+Заглавја Accept
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+Заглавјето Accept што се испраќа за секој вид врска. Автоматски испраќа она што го испраќа избраниот прелистувач.
+Automatic
+Автоматски
+Old HTTrack value
+Стара вредност на HTTrack
+Default
+Стандардно
+Pages
+Страници
+Inline frames
+Вградени рамки
+Frames
+Рамки
+Images
+Слики
+Style sheets
+Стилови
+Scripts
+Скрипти
+Fonts
+Фонтови
+Audio
+Аудио
+Video
+Видео
+Objects
+Објекти
+Embedded content
+Вградена содржина
+Log in with a browser...
+Најава преку прелистувач...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Најавете се на сајтот во прелистувач, а копирањето ќе продолжи со добиените колачиња и идентификацијата на прелистувачот
+No Microsoft Edge WebView2 runtime is installed on this computer
+На овој компјутер не е инсталирана извршната околина Microsoft Edge WebView2
+Log in with a browser
+Најава преку прелистувач
+Go
+Оди
+Done
+Готово
+Clear login
+Одјава
+The browser did not open: %s.
+Прелистувачот не се отвори: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+Прелистувачот не врати ниту едно колаче. Адресата и идентитетот на прелистувачот ќе се зачуваат со проектот кога ќе заврши волшебникот.
+Cookies collected: %d. They are used when you press OK.
+Собрани колачиња: %d. Ќе се користат кога ќе притиснете „Добро“.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Собрани колачиња: %d. Ќе се зачуваат со проектот кога ќе заврши волшебникот.
+The login could not be written to %s.
+Најавата не можеше да се запише во %s.
+%d of the browser's cookies were left out, because the engine would not read them.
+Изоставени колачиња на прелистувачот: %d, бидејќи HTTrack не би можел да ги прочита.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Најавете се на страницата во друго јазиче на овој прелистувач. Отворете ги алатките за развивачи (F12), па јазичето Мрежа, повторно вчитајте ја страницата, кликнете со десното копче на првото барање и изберете Copy as cURL (bash). Залепете го текстот тука. Работи и извоз во cookies.txt, за првата адреса во списокот.
+Cookies for: %s. Browser identity: %s.
+Колачиња за: %s. Идентитет на прелистувачот: %s.
+A login cannot be saved for this address, so nothing was kept.
+За оваа адреса не може да се зачува најава, затоа ништо не е зачувано.
+Yes
+Да

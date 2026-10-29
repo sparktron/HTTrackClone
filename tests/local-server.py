@@ -582,6 +582,11 @@ class Handler(SimpleHTTPRequestHandler):
     # rule is one the engine acts on, so a refusal is the tail going unread.
     TAIL_ONLINE_UA = "tailonline"
     TAIL_RESUME = 1023  # where the old reader resumed: HTS_ROBOTS_LINE_SIZE - 1
+    # ... and one whose rule values start on the bytes that separate the
+    # engine's character classes: a VT the rule parser skips as whitespace, and
+    # a quote it keeps because is_realspace() does not take one.
+    CLASS_ROBOTS_UA = "classrobots"
+    CLASS_ROBOTS_BODY = b'User-agent: *\nDisallow:\v/vtab/\nDisallow: "/quoted/\n'
 
     def tail_robots_body(self, own_line):
         phantom = "Allow: /secret/"
@@ -615,6 +620,9 @@ class Handler(SimpleHTTPRequestHandler):
             "User-agent: *\n" + "".join("Disallow: %s\n" % r for r in rules)
         ).encode()
 
+    def route_reqheaders(self):
+        self.send_raw(str(self.headers).encode(), "text/plain")
+
     def route_robots(self):
         # The Sitemap: record is group-independent; only --sitemap acts on it.
         ua = self.headers.get("User-Agent") or ""
@@ -630,6 +638,9 @@ class Handler(SimpleHTTPRequestHandler):
         blob = self.BLOB_ROBOTS_RE.search(ua)
         if blob:
             self.send_raw(self.robots_blob_body(int(blob.group(1))), "text/plain")
+            return
+        if self.CLASS_ROBOTS_UA in ua:
+            self.send_raw(self.CLASS_ROBOTS_BODY, "text/plain")
             return
         if self.TAIL_ROBOTS_UA in ua or self.TAIL_ONLINE_UA in ua:
             self.send_raw(
@@ -1233,21 +1244,34 @@ class Handler(SimpleHTTPRequestHandler):
     # on-disk acceptance path reads as "already complete", shorter gets a 206.
     RANGED_BIN = b"RANGED-" + bytes((i * 11 + 5) % 256 for i in range(8192))
 
-    def route_ranged_asset(self):
-        body = self.RANGED_BIN
+    # Same body under a known extension (#1926): the delayed placeholder used to
+    # drop that extension, so the previous mirror's copy could not be found.
+    RANGED_GIF = b"GIF89a" + bytes((i * 7 + 3) % 256 for i in range(8192))
+
+    def send_ranged(self, body, content_type):
+        log = os.environ.get("RANGED_LOG")
+        if log:
+            with open(log, "a", newline="\n") as fp:
+                fp.write(
+                    "%s\t%s\n"
+                    % (
+                        self.headers.get("Range", "-"),
+                        self.headers.get("Accept-Encoding", "-"),
+                    )
+                )
         m = re.match(r"bytes=(\d+)-", self.headers.get("Range", "") or "")
         start = int(m.group(1)) if m else 0
         if not m or start == 0:
-            self.send_raw(body, "application/octet-stream")
+            self.send_raw(body, content_type)
         elif start >= len(body):
             self.send_response(416, "Requested Range Not Satisfiable")
-            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Range", "bytes */%d" % len(body))
             self.send_header("Content-Length", "0")
             self.end_headers()
         else:
             self.send_response(206, "Partial Content")
-            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Type", content_type)
             self.send_header(
                 "Content-Range", "bytes %d-%d/%d" % (start, len(body) - 1, len(body))
             )
@@ -1255,6 +1279,17 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body[start:])
+
+    def route_ranged_asset(self):
+        self.send_ranged(self.RANGED_BIN, "application/octet-stream")
+
+    def route_ranged_gif(self):
+        self.send_ranged(self.RANGED_GIF, "image/gif")
+
+    # A type no extension maps to, so the mirror names this one from the URL
+    # alone and the saved name carries no extension at all (#1926).
+    def route_ranged_bare(self):
+        self.send_ranged(self.RANGED_GIF, "application/x-httrack-nomap")
 
     # 256 KB: past stdio's buffer, so the write itself reaches the disk.
     DISKFULL_BIN = b"DISKFULL\n" + b"\x41\x42\x43\x44" * 65536
@@ -2735,6 +2770,43 @@ class Handler(SimpleHTTPRequestHandler):
     def route_longloc_target(self):
         self.send_raw(b"<html><body>long-location target</body></html>\n", "text/html")
 
+    # Serves a quoted CSS url() whose file name holds "(2)".
+    def route_cssparen_index(self):
+        self.send_html(
+            "<style>body { background: url('bg (2).png'); }\n"
+            'p { background: url("tile (3).png"); }</style>\n'
+            '<div style="background: url(&quot;ent (4).png&quot;)">a</div>\n'
+            '<div style="background: url(&#39;apos.png?a=1&amp;b=2&#39;)">b</div>\n'
+            '<div style="background: url(&quot;it&#39;s.png&quot;)">c</div>'
+        )
+
+    def route_cssparen_png(self):
+        self.send_raw(b"\x89PNG\r\n\x1a\n", "image/png")
+
+    # A playlist over the 8 KB httrack loads in memory, so it is read back from disk.
+    def route_bigm3u_index(self):
+        self.send_html('<a href="list.m3u">playlist</a>')
+
+    def route_bigm3u_list(self):
+        body = b"\n" * 9000 + b"song.mp3\n"
+        self.send_raw(body, "audio/x-mpegurl")
+
+    def route_bigm3u_song(self):
+        self.send_raw(b"ID3", "audio/mpeg")
+
+    # a long header httrack never parses, like the one algolia.com sends
+    LONGCSP = ("Content-Security-Policy-Report-Only", "script-src " + "a" * 4800)
+
+    def route_longcsp_index(self):
+        self.send_raw(
+            b'<html><body><a href="page.html">page</a></body></html>\n',
+            "text/html",
+            (self.LONGCSP,),
+        )
+
+    def route_longcsp_page(self):
+        self.send_raw(b"<html><body>page</body></html>\n", "text/html", (self.LONGCSP,))
+
     # same shape with a Location the reader takes whole: the control proving
     # the fixture only refuses because the header outran the read
     def route_shortloc_index(self):
@@ -2976,13 +3048,21 @@ class Handler(SimpleHTTPRequestHandler):
     def route_cookiewall2_wall(self):
         self._cookiewall_reply("wall.html")
 
-    def _cookiewall_reply(self, location):
+    # Secure twin, crawled over TLS: the wall is seen to change only when the
+    # engine asks with the https scheme.
+    def route_cookiewall5_index(self):
+        self.send_html('\t<a href="wall.php">wall</a>')
+
+    def route_cookiewall5_wall(self):
+        self._cookiewall_reply("wall.php", "gate=1; Path=/; Secure")
+
+    def _cookiewall_reply(self, location, set_cookie="gate=1; Path=/"):
         if self.request_cookies().get("gate") == "1":
             self.send_raw(
                 b"<html><body>" + self.WALL_MARK + b"</body></html>\n", "text/html"
             )
         else:
-            self._wall_redirect(location, "gate=1; Path=/")
+            self._wall_redirect(location, set_cookie)
 
     # No-cookie self-redirect: the jar never changes, so httrack must give up at
     # once rather than re-fetch (proves the cookie-wall retry stays gated on #15).
@@ -3000,6 +3080,34 @@ class Handler(SimpleHTTPRequestHandler):
     def route_cookiewall4_wall(self):
         nonce = int(self.request_cookies().get("gate", "0")) + 1
         self._wall_redirect("wall.php", f"gate={nonce}; Path=/")
+
+    # A page that deletes the SID cookie, for the --cookies-file rewrite.
+    def route_cookies_forget(self):
+        self._set_cookies.append("SID=x; Max-Age=0; Path=/")
+        sid = self.request_cookies().get("SID", "none")
+        self.send_html(f"\tForgotten SID={sid}.")
+
+    # --- /manycookies/ (#101): the gate page needs every cookie back.
+    MANY_COOKIES = 12
+    MANY_MARK = b"ALL-COOKIES-REPLAYED"
+
+    def _many_cookies(self):
+        return [("c%02d" % i, "v%02d" % i) for i in range(self.MANY_COOKIES)]
+
+    def route_manycookies_index(self):
+        for name, value in self._many_cookies():
+            self._set_cookies.append(f"{name}={value}; Path=/manycookies/")
+        self.send_html('\t<a href="gate.html">gate</a>')
+
+    def route_manycookies_gate(self):
+        jar = self.request_cookies()
+        missing = [n for n, v in self._many_cookies() if jar.get(n) != v]
+        if missing:
+            self.fail_cookie("cookie " + ",".join(missing))
+            return
+        self.send_raw(
+            b"<html><body>" + self.MANY_MARK + b"</body></html>\n", "text/html"
+        )
 
     def _wall_redirect(self, location, set_cookie):
         self.send_response(302, "Found")
@@ -3043,20 +3151,25 @@ class Handler(SimpleHTTPRequestHandler):
     def route_deeptrickle_index(self):
         self.send_html('\t<a href="p0.bin">p0</a>\n\t<a href="p1.bin">p1</a>\n')
 
-    def route_trickle_page(self):
+    def route_trickle_page(self, seconds=None):
+        seconds = seconds or self.TRICKLE_SECONDS
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(2 * self.TRICKLE_SECONDS))
+        self.send_header("Content-Length", str(2 * seconds))
         self.end_headers()
         if self.command == "HEAD":
             return
         try:
-            for _ in range(self.TRICKLE_SECONDS):
+            for _ in range(seconds):
                 self.wfile.write(b"xy")
                 self.wfile.flush()
                 time.sleep(1.0)
         except OSError:
             pass
+
+    # #128: holds the only socket while the test adds a scan rule.
+    def route_short_trickle(self):
+        self.route_trickle_page(8)
 
     # #973: quoted, so the link parser keeps the < and > (only an unquoted > ends
     # a link) and the whole run reaches the progress panel.
@@ -3087,6 +3200,51 @@ class Handler(SimpleHTTPRequestHandler):
                 time.sleep(0.05)
         except OSError:
             pass
+
+    # #483 via -M: an index 60 bytes under -M50000, so p0's headers cross the
+    # cap, and its 4096-byte body stays within the 5000-byte grace.
+    DCAP_INDEX_BYTES = 50000 - 60
+
+    def route_dcap_index(self):
+        self.send_sized_bin_index(self.DCAP_INDEX_BYTES)
+
+    # 60 bytes under -M5000, so the cap trips while p0's headers trickle (#1854).
+    DHARD_INDEX_BYTES = 5000 - 60
+
+    def route_dhard_index(self):
+        self.send_sized_bin_index(self.DHARD_INDEX_BYTES)
+
+    def route_dhard_page(self):
+        self.log_request(200)
+        try:
+            self.wfile.write(
+                b"HTTP/1.0 200 OK\r\nContent-Type: application/octet-stream\r\n"
+            )
+            for i in range(40):
+                self.wfile.write(b"X-Pad-%02d: %s\r\n" % (i, b"p" * 64))
+                self.wfile.flush()
+                time.sleep(0.05)
+            self.wfile.write(b"Content-Length: 16\r\n\r\n" + b"z" * 16)
+        except OSError:
+            pass
+
+    # An HTML page of 8 .bin links, padded to exactly total bytes on the wire.
+    def send_sized_bin_index(self, total):
+        links = "".join('<a href="p%d.bin">p%d</a>\n' % (i, i) for i in range(8))
+        pad = 0
+        for _ in range(4):  # two corrections settle the Content-Length digits
+            body = ("<html><!--%s-->\n%s</html>\n" % ("x" * pad, links)).encode()
+            head = (
+                "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n"
+                "Content-Length: %d\r\n\r\n" % len(body)
+            ).encode()
+            missing = total - len(head) - len(body)
+            if missing == 0:
+                break
+            pad += missing
+        assert missing == 0, "the index cannot be sized exactly"
+        self.log_request(200)
+        self.wfile.write(head + body)
 
     # -M byte cap (#77): large fast files so a crawl overruns -M immediately.
     BIGFILE_BYTES = 640 * 1024
@@ -3362,6 +3520,113 @@ class Handler(SimpleHTTPRequestHandler):
         else:
             self.send_raw(self.FAKE_PNG, "image/png")
 
+    # --- a web-font stylesheet, Google Fonts' shape (#139) -----------------
+    # The <link> names an extension-less path, which no default scan rule can
+    # match, and the sheet's own url() assets sit on this same foreign host.
+    # Every url is absolute, on one line, so a scan reading a scheme's // as a
+    # comment loses every asset after the first.
+
+    def route_fetchmeta(self):
+        """A page naming one resource per destination, each echoing the
+        request headers it was fetched with (Sec-Fetch-*)."""
+        name = urlsplit(self.path).path.rsplit("/", 1)[-1]
+        scheme = "https" if hasattr(self.connection, "cipher") else "http"
+        port = self.server.server_address[1]
+        here = "%s://127.0.0.1:%d/fetchmeta/" % (scheme, port)
+        other = "%s://localhost:%d/fetchmeta/" % (scheme, port)
+        echo = "PATH %s\n%s" % (self.path, self.headers)
+        if name == "index.html":
+            body = (
+                "<html><!--%s--><head>"
+                '<link rel="stylesheet" href="style.css">'
+                '<link rel="stylesheet" href="%sxstyle.css">'
+                '<link rel="canonical" href="canon.html">'
+                '<script src="app.js"></script></head><body>'
+                '<img src="img.png"><img src="bounce.png">'
+                '<iframe src="frame.html"></iframe>'
+                '<a href="page.html">p</a><a href="%scross.html">x</a>'
+                '<a href="moved.html">m</a><img src="noext">'
+                '<a href="named.html" target="main">n</a>'
+                '<a href="based.html">b</a>'
+                "</body></html>" % (echo, other, other)
+            )
+            self.send_raw(body.encode(), "text/html")
+        elif name == "style.css":
+            css = (
+                "/*%s*/ @font-face{src:url(font.woff2)} body{background:url(bg.png)}"
+                " div{background:url(bg.svg)}"
+            )
+            self.send_raw((css % echo).encode(), "text/css")
+        elif name == "xstyle.css":
+            # xfont sits on the page's origin, so it is same-origin, and
+            # cfont is cross-site.
+            css = (
+                "/*%s*/ @font-face{src:url(%sxfont.woff2)}"
+                " @font-face{src:url(cfont.woff2)}"
+            )
+            self.send_raw((css % (echo, here)).encode(), "text/css")
+        elif name == "frame.html":
+            body = (
+                '<meta http-equiv="refresh" content="0; url=refreshed.html">'
+                '<a href="inframe.html">f</a>'
+            )
+            self.send_raw((body + echo).encode(), "text/html")
+        elif name == "named.html":
+            body = '<a href="from-named.html">f</a>\n'
+            self.send_raw((body + echo).encode(), "text/html")
+        elif name == "based.html":
+            body = '<base target="_top"><a href="from-based.html">f</a>\n'
+            self.send_raw((body + echo).encode(), "text/html")
+        elif name == "applet.html":
+            # The parser rewrites this tag in place between its two links.
+            body = (
+                "<applet background=a.png code=A.class"
+                " title='q codebase=C crossorigin x=' background=b.png></applet>"
+            )
+            self.send_raw(body.encode(), "text/html")
+        elif name == "start.html":
+            self.send_redirect(here + "index.html")
+        # Each chain leaves for localhost and comes back, so it is cross-site.
+        elif name in ("bounce.png", "moved.html", "noext"):
+            self.send_redirect(other + "hop-" + name)
+        elif name.startswith("hop-"):
+            self.send_redirect(here + "landed-" + name[4:])
+        else:
+            types = {
+                "png": "image/png",
+                "js": "text/javascript",
+                "woff2": "font/woff2",
+                "html": "text/html",
+                "svg": "image/svg+xml",
+            }
+            ctype = types.get(name.rsplit(".", 1)[-1], "text/plain")
+            self.send_raw(echo.encode(), ctype)
+
+    def route_webfont(self):
+        name = urlsplit(self.path).path.rsplit("/", 1)[-1]
+        base = "http://127.0.0.1:%d/webfont/" % self.server.server_address[1]
+        if name == "css":
+            self.send_raw(
+                (
+                    "/*url(%shidden.webp)*/@font-face{font-family:'F';"
+                    "src:url(%sface.ttf) format('truetype');}"
+                    "body{background:url(%sbg.webp);}" % (base, base, base)
+                ).encode(),
+                "text/css",
+            )
+        elif name == "boot.js":
+            self.send_raw(
+                (
+                    '// var hidden = "%sjshidden.webp";\n'
+                    'var seen = "%sjsseen.webp";\n' % (base, base)
+                ).encode(),
+                "application/x-javascript",
+            )
+        else:
+            # Each body names itself, so a test can tell it from an error page.
+            body = ("webfont asset %s\n" % name).encode()
+            self.send_raw(body, "font/ttf" if name.endswith(".ttf") else "image/webp")
+
     # --- a page whose local name comes from its cached type (#1421) ---------
     # page.php answers text/html, so it mirrors as page.html. It then fails to
     # answer on two consecutive updates, answers again on the fourth crawl, and
@@ -3580,14 +3845,72 @@ class Handler(SimpleHTTPRequestHandler):
             ).encode()
         self.send_raw(body, "text/html")
 
+    # --- a 100 Continue ahead of a header-less response (#1740) -------------
+    # The interim block is not the final response's headers, so the WARC record
+    # must carry what /warc100/plain.html (the same reply, no 100) produces.
+    WARC100_INTERIM_BODY = b"<html><body><p>WARC100-INTERIM</p></body></html>\r\n\r\n"
+    WARC100_PLAIN_BODY = b"<html><body><p>WARC100-NOINTER</p></body></html>\r\n\r\n"
+
+    def send_bare_body(self, body, interim=False):
+        """HTTP/0.9-style reply: no status line and no headers, end-of-body is
+        the close. httrack takes its "bogus server" branch on the leading '<'."""
+        self.close_connection = True
+        try:
+            if interim:
+                self.wfile.write(
+                    b"HTTP/1.1 100 Continue\r\nX-Interim-Header: yes\r\n\r\n"
+                )
+                self.wfile.flush()
+            self.wfile.write(body)
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_WR)  # end-of-body, not a reset
+        except OSError:
+            pass
+
+    def route_warc100_index(self):
+        self.send_html(
+            '\t<a href="interim.html">interim</a>\n'
+            '\t<a href="plain.html">plain</a>\n'
+            '\t<a href="normal.html">normal</a>\n'
+        )
+
+    def route_warc100_interim(self):
+        self.send_bare_body(self.WARC100_INTERIM_BODY, interim=True)
+
+    def route_warc100_plain(self):
+        self.send_bare_body(self.WARC100_PLAIN_BODY)
+
+    def route_warc100_normal(self):
+        """A 100 ahead of a real response: the record keeps the real headers."""
+        body = b"<html><body><p>WARC100-NORMAL</p></body></html>\r\n"
+        self.close_connection = True
+        try:
+            self.wfile.write(b"HTTP/1.1 100 Continue\r\nX-Interim-Header: yes\r\n\r\n")
+            self.wfile.flush()
+            self.wfile.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                b"X-Final-Header: yes\r\nConnection: close\r\n"
+                b"Content-Length: %d\r\n\r\n" % len(body)
+            )
+            self.wfile.write(body)
+            self.wfile.flush()
+        except OSError:
+            pass
+
     ROUTES = {
         "/sfmark.html": route_singlefile_mark,
+        "/warc100/index.html": route_warc100_index,
+        "/warc100/interim.html": route_warc100_interim,
+        "/warc100/plain.html": route_warc100_plain,
+        "/warc100/normal.html": route_warc100_normal,
         "/cookies/entrance.php": route_entrance,
         "/cookies/second.php": route_second,
         "/cookies/third.php": route_third,
+        "/cookies/forget.php": route_cookies_forget,
         "/gated/index.php": route_gated_index,
         "/gated/secret.php": route_gated_secret,
         "/robots.txt": route_robots,
+        "/reqheaders/echo.txt": route_reqheaders,
         "/sitemapdir/index.xml": route_sitemap_index,
         "/sitemap.xml": route_sitemap_index,
         "/sitemapdir/pages.xml.gz": route_sitemap_pages,
@@ -3718,6 +4041,8 @@ class Handler(SimpleHTTPRequestHandler):
         "/dynfail/dynchild.html": route_dynfail_child,
         "/dynfail/dyngone.html": route_dynfail_gone,
         "/ranged/asset.bin": route_ranged_asset,
+        "/ranged/asset.gif": route_ranged_gif,
+        "/ranged/bare": route_ranged_bare,
         "/types/index.html": route_types_index,
         "/types/control.php": route_types,
         "/types/photo.png": route_types,
@@ -3818,6 +4143,8 @@ class Handler(SimpleHTTPRequestHandler):
         "/xssjob/": route_xssjob_index,
         "/xssjob/index.html": route_xssjob_index,
         "/trickle/p0.bin": route_trickle_page,
+        "/trickle/short.bin": route_short_trickle,
+        "/trickle/short2.bin": route_short_trickle,
         "/trickle/p1.bin": route_trickle_page,
         "/trickle/p2.bin": route_trickle_page,
         "/trickle/p3.bin": route_trickle_page,
@@ -3829,6 +4156,17 @@ class Handler(SimpleHTTPRequestHandler):
         DEEPDIR + "/p0.bin": route_trickle_page,
         DEEPDIR + "/p1.bin": route_trickle_page,
         "/dcancel/index.html": route_dcancel_index,
+        "/dcap/index.html": route_dcap_index,
+        "/dhard/index.html": route_dhard_index,
+        "/dhard/p0.bin": route_dhard_page,
+        "/dcap/p0.bin": route_dcancel_page,
+        "/dcap/p1.bin": route_dcancel_page,
+        "/dcap/p2.bin": route_dcancel_page,
+        "/dcap/p3.bin": route_dcancel_page,
+        "/dcap/p4.bin": route_dcancel_page,
+        "/dcap/p5.bin": route_dcancel_page,
+        "/dcap/p6.bin": route_dcancel_page,
+        "/dcap/p7.bin": route_dcancel_page,
         "/dcancel/p0.bin": route_dcancel_page,
         "/dcancel/p1.bin": route_dcancel_page,
         "/dcancel/p2.bin": route_dcancel_page,
@@ -3877,9 +4215,24 @@ class Handler(SimpleHTTPRequestHandler):
         "/cookiewall3/wall.php": route_cookiewall3_wall,
         "/cookiewall4/index.html": route_cookiewall4_index,
         "/cookiewall4/wall.php": route_cookiewall4_wall,
+        "/cookiewall5/index.html": route_cookiewall5_index,
+        "/cookiewall5/wall.php": route_cookiewall5_wall,
+        "/manycookies/index.html": route_manycookies_index,
+        "/manycookies/gate.html": route_manycookies_gate,
         "/redir/index.html": route_redir_index,
         "/redir/go.php": route_redir_go,
         "/redir/target.html": route_redir_target,
+        "/cssparen/index.html": route_cssparen_index,
+        "/cssparen/bg (2).png": route_cssparen_png,
+        "/cssparen/tile (3).png": route_cssparen_png,
+        "/cssparen/ent (4).png": route_cssparen_png,
+        "/cssparen/apos.png": route_cssparen_png,
+        "/cssparen/it's.png": route_cssparen_png,
+        "/bigm3u/index.html": route_bigm3u_index,
+        "/bigm3u/list.m3u": route_bigm3u_list,
+        "/bigm3u/song.mp3": route_bigm3u_song,
+        "/longcsp/index.html": route_longcsp_index,
+        "/longcsp/page.html": route_longcsp_page,
         "/longloc/index.html": route_longloc_index,
         "/longloc/go.php": route_longloc_go,
         "/longloc/target.html": route_longloc_target,
@@ -4105,6 +4458,12 @@ class Handler(SimpleHTTPRequestHandler):
         if path.startswith("/asset/"):
             self.route_asset()
             return True
+        if path.startswith("/fetchmeta/"):
+            self.route_fetchmeta()
+            return True
+        if path.startswith("/webfont/"):
+            self.route_webfont()
+            return True
         if path.startswith("/ctpurge/"):
             self.route_ctpurge()
             return True
@@ -4163,6 +4522,9 @@ def main():
     parser.add_argument("--tls", action="store_true", help="serve HTTPS")
     parser.add_argument("--cert", help="TLS certificate (PEM)")
     parser.add_argument("--key", help="TLS private key (PEM)")
+    parser.add_argument(
+        "--mptcp", action="store_true", help="listen with Multipath TCP"
+    )
     args = parser.parse_args()
 
     root = os.path.abspath(args.root)
@@ -4181,7 +4543,16 @@ def main():
             socketserver.TCPServer.server_bind(self)
             self.server_name, self.server_port = self.server_address[:2]
 
-    httpd = BacklogHTTPServer((args.bind, 0), factory)
+    # An MPTCP listener is what lets a client negotiate multipath instead of
+    # being silently fallen back to TCP, so a test can tell the two apart.
+    httpd = BacklogHTTPServer((args.bind, 0), factory, bind_and_activate=not args.mptcp)
+    if args.mptcp:
+        httpd.socket.close()
+        httpd.socket = socket.socket(
+            httpd.address_family, socket.SOCK_STREAM, socket.IPPROTO_MPTCP
+        )
+        httpd.server_bind()
+        httpd.server_activate()
 
     if args.tls:
         import ssl

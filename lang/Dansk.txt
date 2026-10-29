@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Proxyprotokol. HTTP: standardproxy. HTTP (CONNECT-tunnel): sender hver forespørgsel gennem en CONNECT-tunnel, til proxyer der kun understøtter CONNECT som Tors HTTPTunnelPort. SOCKS5: standardport 1080.
 Load cookies from file:
 Indlæs cookies fra fil:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Indlæs cookies fra en Netscape cookies.txt-fil, før crawlingen starter.
 Pause between files:
 Pause mellem filer:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 Ignorer %s og alle værter under den
 Manual
 Vejledning
+Max Retry-After(s)
+Maks. Retry-After (s)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Længste ventetid, der følges, når en server sender en Retry-After-header. Brug 0 for at prøve igen uden at vente.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+De regler, du angiver her, gælder for den spejlkopiering, der kører nu. Fjerner du en regel, slipper nye links igennem igen, men et link, som reglen allerede har afvist, kommer ikke tilbage under denne spejlkopiering.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Denne skanningsregel kan ikke bruges. En regel starter med + eller -, efterfulgt af et mønster, og skal stå på én kort linje.
+Theme:
+Tema:
+Classic
+Klassisk
+Accept headers
+Accept-headere
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+Accept-headeren, der sendes for hver slags link. Automatisk sender det, som den valgte browser sender.
+Automatic
+Automatisk
+Old HTTrack value
+Gammel HTTrack-værdi
+Default
+Standard
+Pages
+Sider
+Inline frames
+Indlejrede rammer
+Frames
+Rammer
+Images
+Billeder
+Style sheets
+Typografiark
+Scripts
+Scripts
+Fonts
+Skrifttyper
+Audio
+Lyd
+Video
+Video
+Objects
+Objekter
+Embedded content
+Indlejret indhold
+Log in with a browser...
+Log ind med en browser...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Log ind på webstedet i en browser, og crawl med de cookies og den browser-identitet, browseren fik
+No Microsoft Edge WebView2 runtime is installed on this computer
+Der er ikke installeret nogen Microsoft Edge WebView2-runtime på denne computer
+Log in with a browser
+Log ind med en browser
+Go
+Gå
+Done
+Færdig
+Clear login
+Log ud
+The browser did not open: %s.
+Browseren blev ikke åbnet: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+Browseren kom tilbage uden cookies. Adressen og browseridentiteten gemmes med projektet, når guiden er færdig.
+Cookies collected: %d. They are used when you press OK.
+Indsamlede cookies: %d. De bruges, når du trykker på OK.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Indsamlede cookies: %d. De gemmes med projektet, når guiden er færdig.
+The login could not be written to %s.
+Login-oplysningerne kunne ikke skrives til %s.
+%d of the browser's cookies were left out, because the engine would not read them.
+%d af browserens cookies blev udeladt, fordi HTTrack ikke kunne læse dem.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Log ind på webstedet i en anden fane i denne browser. Åbn udviklerværktøjerne (F12) og derefter fanen Netværk, genindlæs siden, højreklik på den første anmodning og vælg Copy as cURL (bash). Indsæt teksten her. En cookies.txt-eksport virker også, for den første adresse på listen.
+Cookies for: %s. Browser identity: %s.
+Cookies til: %s. Browseridentitet: %s.
+A login cannot be saved for this address, so nothing was kept.
+Et login kan ikke gemmes for denne adresse, så intet blev gemt.
+Yes
+Ja

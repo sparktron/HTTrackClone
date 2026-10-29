@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 代理協定。HTTP：標準代理。HTTP（CONNECT 隧道）：透過 CONNECT 隧道傳送每個請求，用於僅支援 CONNECT 的代理，例如 Tor 的 HTTPTunnelPort。SOCKS5：預設連接埠 1080。
 Load cookies from file:
 從檔案載入 cookies:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 在抓取前從 Netscape 格式的 cookies.txt 檔案預先載入 cookies。
 Pause between files:
 檔案之間暫停:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 忽略 %s 及其下所有主機
 Manual
 手冊
+Max Retry-After(s)
+最長 Retry-After(秒)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+伺服器送出 Retry-After 標頭時，最長願意等待的秒數。填 0 表示不等待就重試。
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+在此設定的規則會套用到目前正在執行的鏡像。移除規則後，新的連結會再次通過，但已被該規則拒絕的連結在本次鏡像中不會再回來。
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+無法使用此掃描規則。規則以 + 或 - 開頭，後接比對模式，且必須是一行簡短文字。
+Theme:
+主題:
+Classic
+經典
+Accept headers
+Accept 標頭
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+為每種連結傳送的 Accept 標頭。「自動」會傳送所選瀏覽器傳送的值。
+Automatic
+自動
+Old HTTrack value
+舊版 HTTrack 值
+Default
+預設
+Pages
+網頁
+Inline frames
+內嵌框架
+Frames
+框架
+Images
+圖片
+Style sheets
+樣式表
+Scripts
+指令碼
+Fonts
+字型
+Audio
+音訊
+Video
+視訊
+Objects
+物件
+Embedded content
+嵌入內容
+Log in with a browser...
+使用瀏覽器登入...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+在瀏覽器中登入網站，然後使用它取得的 cookies 與瀏覽器身份進行擷取
+No Microsoft Edge WebView2 runtime is installed on this computer
+此電腦上未安裝 Microsoft Edge WebView2 執行階段
+Log in with a browser
+使用瀏覽器登入
+Go
+前往
+Done
+完成
+Clear login
+登出
+The browser did not open: %s.
+瀏覽器無法開啟：%s。
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+瀏覽器未傳回任何 cookies。精靈完成後，位址和瀏覽器身份會與專案一起儲存。
+Cookies collected: %d. They are used when you press OK.
+已收集的 cookies：%d。按「確定」後將會使用。
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+已收集的 cookies：%d。精靈完成後會與專案一起儲存。
+The login could not be written to %s.
+無法將登入資訊寫入 %s。
+%d of the browser's cookies were left out, because the engine would not read them.
+瀏覽器的 cookies 中有 %d 個被略過，因為 HTTrack 無法讀取。
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+在此瀏覽器的另一個分頁中登入網站。開啟開發人員工具（F12），再開啟「網路」分頁，重新載入頁面，在第一個請求上按右鍵，選擇 Copy as cURL (bash)。將文字貼到這裡。也可以使用 cookies.txt 匯出檔，它會用於清單中的第一個位址。
+Cookies for: %s. Browser identity: %s.
+Cookies 適用於：%s。瀏覽器身份：%s。
+A login cannot be saved for this address, so nothing was kept.
+無法為此位址儲存登入資訊，因此未保留任何內容。
+Yes
+是

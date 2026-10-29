@@ -12,6 +12,9 @@ set -euo pipefail
 . "${0%"${0##*/}"}./testlib.sh"
 
 skip_on_windows "Windows raises no SIGPIPE, so none of the three mechanisms exists there"
+# The engine really does die there. #1784 is wontfix, because every binary we
+# ship sets its own SIGPIPE handler before it crawls.
+skip_on_hurd "the engine dies on SIGPIPE here (#1784, wontfix)"
 
 rc=0
 out=$(httrack -O /dev/null '-#test=sigpipe' 2>&1) || rc=$?

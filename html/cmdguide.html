@@ -43,6 +43,7 @@
 	<ul>
 		<li><a href="guide.html">Interface guide</a></li>
 		<li><a href="faq.html">FAQ and troubleshooting</a></li>
+		<li><a href="login.html">Sites behind a login</a></li>
 		<li><a href="abuse.html">Using HTTrack responsibly</a></li>
 	</ul>
 	<h2>Command line</h2>
@@ -284,7 +285,7 @@ ones it kept so the local copy browses offline. These options tune both halves.<
   <tr><td><tt>--replace-external (-x), --generate-errors (-o)</tt></td><td>Replace external links with an error page, and generate an error page for links that failed.</td></tr>
   <tr><td><tt>--preserve (-%p), --disable-passwords (-%x)</tt></td><td>Leave HTML untouched (no rewriting), and strip passwords out of saved links.</td></tr>
   <tr><td><tt>--extended-parsing (-%P), --parse-java (-j)</tt></td><td>Aggressive link discovery, and how much script content is parsed for links.</td></tr>
-  <tr><td><tt>--mime-html (-%M)</tt></td><td>Save the whole mirror as a single MIME-encapsulated <tt>.mht</tt> archive (<tt>index.mht</tt>).</td></tr>
+  <tr><td><tt>--mime-html (-%M)</tt></td><td>Save the whole mirror as a single MIME-encapsulated <tt>.mht</tt> archive (<tt>index.mht</tt>). The archive names the first page it saves as its root, so that is what a reader opens.</td></tr>
   <tr><td><tt>--single-file (-%Z), --single-file-max-size N</tt></td><td>Once the mirror is finished, rewrite every saved page with its stylesheets, scripts, images and fonts embedded as <tt>data:</tt> URIs. Assets over the cap (10&nbsp;MB by default) keep their link, as do audio, video, and the links from one page to another. A sibling of <tt>-%M</tt>, not a replacement: see the recipe below for which to pick.</td></tr>
   <tr><td><tt>--index (-I), --build-top-index (-%i), --search-index (-%I)</tt></td><td>Build a per-mirror index, a top index across projects, and a searchable keyword index.</td></tr>
 </table>
@@ -309,8 +310,9 @@ options control what HTTrack says about itself.</p>
   <tr><td><tt>--user-agent (-F)</tt></td><td>The <tt>User-Agent</tt>. Set a browser string to get past crawler blocks; <tt>--user-agent ""</tt> sends none.</td></tr>
   <tr><td><tt>--referer (-%R), --from (-%E), --language (-%l), --accept (-%a)</tt></td><td>Referer, From, Accept-Language and Accept headers.</td></tr>
   <tr><td><tt>--headers (-%X)</tt></td><td>Add raw header lines to every request.</td></tr>
+  <tr><td><tt>--browser-headers (-%Q)</tt></td><td>When <tt>-F</tt> names a browser (<tt>Mozilla/5.0 ...</tt>), send over HTTPS the headers it adds. Chrome and Edge get their client hints, and every browser gets <tt>Sec-Fetch-*</tt>. A link httrack cannot classify gets no <tt>Sec-Fetch-*</tt>, since a wrong value can get it refused. On by default, and <tt>-%Q0</tt> turns it off.</td></tr>
   <tr><td><tt>--footer (-%F)</tt></td><td>A footer written into saved pages (on disk, not a network header). See <b>Footer fields</b> below.</td></tr>
-  <tr><td><tt>--cookies (-b), --cookies-file (-%K)</tt></td><td>Accept cookies, and preload a Netscape <tt>cookies.txt</tt>.</td></tr>
+  <tr><td><tt>--cookies (-b), --cookies-file (-%K)</tt></td><td>Accept cookies, and use a Netscape <tt>cookies.txt</tt> as the jar, rewritten at the end. A document.cookie string also works, for the first start URL's domain, and is never rewritten.</td></tr>
 </table>
 
 <p><b>Footer fields.</b> A footer with no <tt>%s</tt> may reference named fields:
@@ -332,6 +334,9 @@ capture the exact request your browser sends and replay it. A few cookie caveats
 to know: expiry is ignored, there is a silent cap of about 8 cookies sent per
 request, and <tt>-b0</tt> disables cookies and the reuse of Basic credentials
 across links at the same time.</p>
+
+<p>The page <a href="login.html">Mirror a site behind a login or a CAPTCHA</a>
+gives the full method, with the User-Agent and the logout filters.</p>
 
 <h3 id="proxy">8. Proxy and network</h3>
 
@@ -492,9 +497,8 @@ embeds it too and the question goes away.<br>
 Reach for this when the file has to open for someone you cannot make assumptions
 about: it is plain HTML and needs no add-on. Reach for <tt>--mime-html</tt>
 instead when a Chromium-family browser is a given and the mirror is large: MIME
-carries text parts without the base64 tax, keeps each resource's original URL,
-and stores a shared asset once rather than re-embedding it in every page that
-uses it.</small></p>
+carries text parts without the base64 tax and stores a shared asset once rather
+than re-embedding it in every page that uses it.</small></p>
 
 <h4>HTTrack as a fetch tool</h4>
 <p><tt>httrack --get https://host/file.bin --path tmp</tt><br>

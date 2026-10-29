@@ -36,6 +36,7 @@ Please visit our Website: http://www.httrack.com
 #define HTS_DEFH
 
 #include "httrack-library.h"
+#include "htsfetch.h"
 
 /* Forward definitions */
 #ifndef HTS_DEF_FWSTRUCT_htsrequest
@@ -238,8 +239,20 @@ hts_boolean hts_file_backdate(const char *file, int seconds);
 /* Library internal definictions */
 #ifdef HTS_INTERNAL_BYTECODE
 
+/** An opt that hts_log_vprint drops every message for. Never dereferenced. */
+extern char hts_log_quiet_tag;
+#define HTS_LOG_QUIET ((httrackp *) (void *) &hts_log_quiet_tag)
+
 // initialize an htsblk structure
 void hts_init_htsblk(htsblk * r);
+
+/* How many seconds should we wait, given a Retry-After value? -1 when it names
+   no usable delay. `now` dates the HTTP-date form, and the caller caps. */
+int hts_parse_retry_after(const char *value, time_t now);
+
+/* Read the HTTP date S as Unix seconds, with a two-digit year up to PIVOT in
+   20xx (see convert_time_rfc822_pivot). -1 when S is not a date. */
+int64_t hts_parse_date(const char *s, int pivot);
 
 // attach specific project log to hachtable logger
 void hts_set_hash_handler(coucal hashtable, httrackp *opt);
@@ -250,27 +263,64 @@ HTSEXT_API const char* hts_version(void);
 // fonctions unix/winsock
 int hts_read(htsblk * r, char *buff, int size);
 
+/* Add to, read and reset the received-byte total, which an FTP worker counts on
+   its own thread while the crawl thread counts the HTTP bytes: a lost += reads
+   low, and -M gives up on that total (back_maxsize_reached()). A lock, not a
+   64-bit atomic add, which needs libatomic where the target has no 8-byte
+   compare-and-swap. hts_stat_recv_publish() copies the total to the
+   HTS_STAT.HTS_TOTAL_RECV a front end reads, on the crawl thread beside every
+   other field engine_stats() refreshes there. */
+void hts_stat_recv_add(LLint bytes);
+LLint hts_stat_recv_get(void);
+void hts_stat_recv_set(LLint bytes);
+void hts_stat_recv_publish(void);
+
 LLint check_downloadable_bytes(int rate);
 
 int hts_uninit_module(void);
 
+/* Client hints a Chromium browser sends by default (Sec-CH-UA*). */
+typedef struct hts_client_hints {
+  char ua[128];       /**< Sec-CH-UA brand list */
+  char platform[16];  /**< Sec-CH-UA-Platform value, quoted */
+  hts_boolean mobile; /**< Sec-CH-UA-Mobile is ?1 */
+} hts_client_hints;
+
+/* Fill ch with the hints the browser named by user_agent sends. Returns
+   HTS_FALSE when that browser sends none: anything but Chrome or Edge from
+   M108. */
+hts_boolean hts_client_hints_of(const char *user_agent, hts_client_hints *ch);
+
+/* Return the browser family whose request headers user_agent names: Chrome
+   and Edge as hts_client_hints_of() tells them, or Firefox. */
+hts_browser_family hts_browser_family_of(const char *user_agent);
+
+/* Return http_header_slot_count() slot numbers: the order in which family
+   sends the reorderable headers of a request to dest. */
+const unsigned char *http_header_order(hts_browser_family family, int dest);
+
+/* Return the header name of slot, or NULL past the last one. */
+const char *http_header_slot_name(int slot);
+int http_header_slot_count(void);
+
 // fonctions principales
 T_SOC http_xfopen(httrackp * opt, int mode, int treat, int waitconnect,
                   const char *xsend, const char *adr, const char *fil, htsblk * retour);
-int http_sendhead(httrackp * opt, t_cookie * cookie, int mode, const char *xsend,
-                  const char *adr, const char *fil,
-                  const char *referer_adr, const char *referer_fil,
-                  htsblk * retour);
+int http_sendhead(httrackp *opt, t_cookie *cookie, int mode, const char *xsend,
+                  const char *adr, const char *fil, const char *referer_adr,
+                  const char *referer_fil, const hts_fetch_meta *fetch,
+                  htsblk *retour);
 /* Build the request "Cookie:" header line for stored cookies matching
-   domain/path into dst (NUL-terminated), wrapping the logic http_sendhead()
-   uses. A port in domain is ignored (see cookie_host). Returns cookies
-   emitted. */
-int http_cookie_header(t_cookie *cookie, const char *domain, const char *path,
+   adr/path into dst (NUL-terminated), wrapping the logic http_sendhead()
+   uses. adr may carry its scheme, and only "https://" gets Secure cookies. A
+   port in adr is ignored (see cookie_host). Returns cookies emitted. */
+int http_cookie_header(t_cookie *cookie, const char *adr, const char *path,
                        char *dst, size_t dst_size);
 
 /* True if the raw CRLF-separated header block, a request one we build or a
    response one we received, starts a line with `field_name`, given without the
-   trailing colon (which is tolerated). headers must be NUL-terminated. */
+   trailing colon (which is tolerated), ignoring case and blanks before the
+   colon. headers must be NUL-terminated. */
 hts_boolean http_headers_have_field(const char *headers,
                                     const char *field_name);
 
@@ -278,8 +328,18 @@ hts_boolean http_headers_have_field(const char *headers,
    follow, or the 412/416 whose stale resume partial the parser re-gets. */
 hts_boolean hts_body_missing_unexpectedly(const htsblk *r);
 
+/* Returns the warning to print for a -%X line, or NULL when it goes out as
+   typed. headers is the block so far. */
+const char *http_custom_header_warning(const char *headers, const char *line);
+
+/* Why a bundle header line is refused, or NULL when allowed. headers is the
+   block so far. */
+const char *http_bundle_header_refusal(const char *headers, const char *line);
+
 /* Append the custom header block to dst (capacity dst_size), dropping any line
-   whose field dst carries plus its folded continuations. Aborts on overflow. */
+   whose field dst carries, a malformed or framing line, an earlier copy of
+   Host, Cookie or Authorization, and a leading folded line. Field names ignore
+   case and blanks before the colon. A line that does not fit is left out. */
 void http_append_custom_headers(char *dst, size_t dst_size,
                                 const char *headers);
 
@@ -335,6 +395,9 @@ hts_boolean hts_is_control_free(const char *str);
    Such a host has no domain structure to reverse or to widen into. */
 hts_boolean hts_host_is_ipv4(const char *host, size_t len);
 
+/* TRUE if host[0..len) is an IPv4 or IPv6 address literal. */
+hts_boolean hts_host_is_address(const char *host, size_t len);
+
 /* TRUE if this -P proxy name (which keeps its scheme) is a SOCKS5 proxy. */
 hts_boolean hts_proxy_is_socks(const char *name);
 
@@ -343,7 +406,17 @@ hts_boolean hts_proxy_is_connect(const char *name);
 
 void treathead(t_cookie * cookie, const char *adr, const char *fil, htsblk * retour,
                char *rcvd);
+/* Run treathead, logging any refused cookie through opt, which may be NULL. */
+void treathead_opt(httrackp *opt, t_cookie *cookie, const char *adr,
+                   const char *fil, htsblk *retour, char *rcvd);
 void treatfirstline(htsblk * retour, const char *rcvd);
+
+/* The three-digit HTTP status code at s, or -1 when s does not start with
+   exactly three digits. */
+int hts_status_code(const char *s);
+
+/* The status code of an "HTTP/x.y NNN reason" line, or -1. */
+int hts_status_line_code(const char *line);
 
 // sous-fonctions
 /* Buffer http_xfread1() fills in its line modes, and so the ceiling on any
@@ -400,6 +473,11 @@ void hts_dns_set_negative_ttl_ms(int ms);
 /* Consecutive failed resolves recorded for host, 0 if it is not cached or
    resolves. Test-only: nothing in the engine reads it back. */
 int hts_dns_negative_failures(httrackp *opt, const char *host);
+/* Milliseconds off a clock NTP cannot step, for an elapsed time or a
+   deadline. Its zero is arbitrary, so it measures an interval and never names
+   a date; anything stored or sent still needs mtime_local(). */
+TStamp mtime_monotonic(void);
+
 /* Test-only: move one cached negative record's stamps by ms, so a self-test
    outlasts a wait (positive) or steps behind them (negative), no sleeps. */
 void hts_dns_test_move_clock(httrackp *opt, const char *host, TStamp ms);
@@ -434,12 +512,11 @@ int binput(const char *buff, char *s, int max);
 hts_boolean binput_line(const char *buff, const char *end, char *s, int max,
                         int *offset);
 hts_boolean finput_line(T_SOC fd, char *s, int max);
+/* Does treathead() read the header that "line" starts with? Keep in step. */
+hts_boolean hts_header_is_read(const char *line);
 int linput(FILE * fp, char *s, int max);
 int linputsoc(T_SOC soc, char *s, int max);
 int linputsoc_t(T_SOC soc, char *s, int max, int timeout);
-int linput_trim(FILE * fp, char *s, int max);
-int linput_cpp(FILE * fp, char *s, int max);
-void rawlinput(FILE * fp, char *s, int max);
 const char *strstrcase(const char *s, const char *o);
 int ident_url_absolute(const char *url, lien_adrfil *adrfil);
 void fil_simplifie(char *f);
@@ -474,16 +551,95 @@ char *convtolower(char *catbuff, size_t catbuffsize, const char *a);
 void hts_lowcase(char *s);
 int multipleStringMatch(const char *s, const char *match);
 
-void fprintfio(FILE * fp, const char *buff, const char *prefix);
+/* Writes a header block to fp, each line after prefix, with the value of a
+   field that carries a login replaced by the fprint_redacted() marker, and
+   each secret opt knows as ***. opt may be NULL. */
+void fprintfio(FILE *fp, const char *buff, const char *prefix, httrackp *opt);
+/* The first line of buff as fprintfio() shows it, written into dst (size
+   bytes, clipped): for one write, which keeps the line whole on a merged
+   stdout and stderr. Returns dst. */
+const char *hts_header_shown(httrackp *opt, const char *line, char *dst,
+                             size_t size);
+
+/* The backstop behind the per-site masking: opt keeps the first
+   HTS_SECRET_MAX passwords and tokens it sees, each up to HTS_SECRET_MAXLEN
+   bytes, and the log writers print each as ***. A URL password is hidden only
+   as a login, before an '@', so a password such as "index" leaves index.html
+   alone. A header token of HTS_SECRET_TOKEN bytes or more is hidden anywhere.
+ */
+#define HTS_SECRET_MAX 64
+#define HTS_SECRET_MAXLEN 1024
+#define HTS_SECRET_TOKEN 8
+
+typedef enum hts_secret_kind {
+  HTS_SECRET_LOGIN, /* a URL password */
+  HTS_SECRET_HEADER /* a header token, kept only from HTS_SECRET_TOKEN bytes */
+} hts_secret_kind;
+
+/* Allocates and frees the set of opt->secrets. */
+void hts_secret_init(httrackp *opt);
+void hts_secret_free(httrackp *opt);
+
+/* Adds the len bytes at s to the set of opt. Thread-safe. Once the set is
+   full, or for a secret over HTS_SECRET_MAXLEN bytes, logs one warning and
+   adds nothing. */
+void hts_secret_add(httrackp *opt, const char *s, size_t len,
+                    hts_secret_kind kind);
+
+/* Adds the password of the login of url, in any scheme or none, raw and
+   unescaped. A user alone is not added. url may be NULL. */
+void hts_secret_add_login(httrackp *opt, const char *url);
+
+/* Adds the values of the Authorization, Proxy-Authorization and Cookie lines
+   of a -%X header block, which may be NULL. */
+void hts_secret_add_headers(httrackp *opt, const char *headers);
+
+/* Writes the len bytes at s to fp, with each secret of opt as ***. */
+void hts_secret_fwrite(httrackp *opt, FILE *fp, const char *s, size_t len);
+
+/* fprintf() to fp, with each secret of opt as ***. */
+void hts_secret_fprintf(httrackp *opt, FILE *fp, const char *format, ...)
+    HTS_PRINTF_FUN(3, 4);
+
+/* What hts_mask_passwords() reads: */
+typedef enum {
+  HTS_MASK_LIST, /* blank-separated start URLs and filters */
+  HTS_MASK_ADDR  /* one start URL, or a -P value */
+} hts_mask_mode;
+
+/* Returns a copy of s, allocated with malloct, in which the password, or the
+   user alone, of every start URL or proxy address in s is *** . The rest stays
+   byte for byte. NULL when out of memory. */
+char *hts_mask_passwords(const char *s, hts_mask_mode mode);
+
+/* Log calls never print an address raw: pass adr_nologin() or url_nologin(),
+   which test 660 checks. */
+
+/* Returns adr with its login masked as user:*** or ***, for log lines: adr
+   itself when it has no login, else a copy clipped to size bytes in buf. */
+const char *adr_nologin_r(char *buf, size_t size, const char *adr);
+
+/* Same as adr_nologin_r(), but only a URL with a scheme or "//" has a login.
+   Any "scheme://" counts, not only the ones the engine fetches. */
+const char *url_nologin_r(char *buf, size_t size, const char *url);
+
+/* adr_nologin_r() and url_nologin_r() into a rotating buffer of opt, which
+   they take only when there is a login. A NULL opt drops the login. */
+const char *adr_nologin(httrackp *opt, const char *adr);
+const char *url_nologin(httrackp *opt, const char *url);
+
+/* Writes the marker that stands for a hidden secret of len bytes. */
+void fprint_redacted(FILE *fp, size_t len);
 
 /* A write to a socket whose peer is gone raises SIGPIPE, and the default
    action kills the process. The library must not install a handler, because
    the process belongs to whoever embedded us. Three steps leave the host's
    signals alone, and each covers what the others cannot:
-     - HTS_MSG_NOSIGNAL on every send() we issue. Absent on macOS.
+     - HTS_MSG_NOSIGNAL on every send() we issue. Absent on macOS, and
+       defined but ignored on GNU/Hurd, where the signal still arrives.
      - SO_NOSIGPIPE on every socket we write to. Absent on Linux, and the only
        one that reaches OpenSSL, which writes with write(2).
-     - the mask below, around the OpenSSL calls that write. */
+     - the mask below, around every write the other two may not cover. */
 #ifdef MSG_NOSIGNAL
 #define HTS_MSG_NOSIGNAL MSG_NOSIGNAL
 #else
@@ -491,6 +647,40 @@ void fprintfio(FILE * fp, const char *buff, const char *prefix);
 #endif
 
 void socket_set_nosigpipe(T_SOC soc);
+
+/* Multipath TCP (RFC 8684). On Linux it is a protocol on an ordinary stream
+   socket; on macOS it is an AF_MULTIPATH socket connected with connectx().
+   configure decides this, and a build without it, such as MSVC, has none. */
+#if !defined(HTS_INET_MPTCP) || defined(_WIN32)
+#undef HTS_INET_MPTCP
+#define HTS_INET_MPTCP 0
+#endif
+
+/* Create a stream socket for an outgoing connection, with SIGPIPE disarmed.
+   Uses Multipath TCP when `opt` asks for it and the system has it, and plain
+   TCP otherwise. Pass `will_bind` when the caller pins a source address, which
+   rules Multipath TCP out. Returns INVALID_SOCKET on failure. */
+T_SOC hts_socket_client(int family, const httrackp *opt, hts_boolean will_bind);
+
+/* Can this build, on this system, open a Multipath TCP socket at all? */
+hts_boolean hts_mptcp_available(void);
+
+/* Can this build tell a negotiated connection from a fallen-back one? */
+hts_boolean hts_mptcp_reports(void);
+
+/* Connect a socket hts_socket_client() returned. macOS reaches Multipath TCP
+   through connectx() rather than a protocol, so the connect differs there too.
+   Returns 0, or -1 with errno set, exactly as connect() does. */
+int hts_socket_connect(T_SOC soc, const struct sockaddr *addr, SOClen len,
+                       const httrackp *opt);
+
+/* Did Multipath TCP survive this established connection's handshake? */
+hts_boolean hts_socket_is_mptcp(T_SOC soc);
+
+/* Count an established connection as MPTCP or as fallen back to TCP. Counts
+   nothing when this run did not ask for MPTCP, and covers the HTTP backend
+   only, because an FTP socket is established on its own worker thread. */
+void hts_mptcp_account(httrackp *opt, T_SOC soc);
 
 /* Windows raises no SIGPIPE. Elsewhere this arm is Darwin, which has no
    sigtimedwait and does have SO_NOSIGPIPE, so the socket already covers it. */
@@ -542,6 +732,26 @@ static HTS_INLINE HTS_UNUSED void sigpipe_release(sigpipe_mask *m) {
   (void) HTS_SIGMASK(SIG_SETMASK, &m->mask, NULL);
 }
 #endif
+
+/* A send() carrying whatever protection this platform actually applies. The
+   flag alone is not enough: GNU/Hurd defines MSG_NOSIGNAL and still kills the
+   process, which is how a library takes down whoever embedded it (#1689). */
+static HTS_INLINE HTS_UNUSED int hts_send_nosignal(T_SOC soc, const char *s,
+                                                   int len) {
+  sigpipe_mask m;
+  int n, err;
+
+  sigpipe_hold(&m);
+  n = (int) send(soc, s, len, HTS_MSG_NOSIGNAL);
+  /* Saved across the release, whose sigtimedwait() reports EAGAIN whenever
+     nothing was pending. Callers read errno on the next line to tell a would
+     block from a dead socket, and EAGAIN is the answer that means keep going.
+   */
+  err = errno;
+  sigpipe_release(&m);
+  errno = err;
+  return n;
+}
 
 void cut_path(char *fullpath, char *path, size_t path_size, char *pname,
               size_t pname_size);
@@ -657,10 +867,12 @@ void *hts_get_callback(t_hts_htmlcheck_callbacks * callbacks,
 #define PATH_SEPARATOR '/'
 #endif
 
+     /* clang-format off */
+/* One byte per column, so the four classes read side by side. Nothing down
+   to the next marker survives clang-format either. */
 #define  is_space(c)      ( ((c)==' ') || ((c)=='\"') || ((c)==10) || ((c)==13) || ((c)==9) || ((c)==12) || ((c)==11) || ((c)=='\'') )
 #define  is_realspace(c)  ( ((c)==' ')                || ((c)==10) || ((c)==13) || ((c)==9) || ((c)==12) || ((c)==11)                )
 #define  is_taborspace(c) ( ((c)==' ')                                          || ((c)==9)                             )
-#define  is_quote(c)      (               ((c)=='\"')                                                    || ((c)=='\'') )
 #define  is_retorsep(c)   (                              ((c)==10) || ((c)==13) || ((c)==9)                                          )
 //HTS_INLINE int is_space(char);
 //HTS_INLINE int is_realspace(char);
@@ -678,8 +890,8 @@ void *hts_get_callback(t_hts_htmlcheck_callbacks * callbacks,
 #define HTTP_IS_OK(code) ( ( (code) / 100 ) == 2 )
 #define HTTP_IS_ERROR(code) ( !HTTP_IS_OK(code) && !HTTP_IS_REDIRECT(code) && !HTTP_IS_NOTMODIFIED(code) )
 
-// compare le début de f avec s et retourne la position de la fin
-// 'A=a' (case insensitive)
+// 0 when f does not start with s, else the index in f just past the match.
+// Compares without regard to case.
 HTS_STATIC int strfield(const char *f, const char *s) {
   int r = 0;
 
@@ -693,6 +905,8 @@ HTS_STATIC int strfield(const char *f, const char *s) {
   else
     return 0;
 }
+
+/* clang-format on */
 
 HTS_STATIC int strcmpnocase(const char *a, const char *b) {
   while(*a) {
@@ -709,7 +923,7 @@ HTS_STATIC int strcmpnocase(const char *a, const char *b) {
 #ifdef _WIN32
 #define strcasecmp(a,b) stricmp(a,b)
 #define strncasecmp(a,b,n) strnicmp(a,b,n)
-#define snprintf _snprintf
+/* No snprintf alias: _snprintf leaves a truncated string unterminated. */
 #endif
 
 /* MSVC ships these POSIX functions under other names. Kept out of the installed
@@ -717,7 +931,6 @@ HTS_STATIC int strcmpnocase(const char *a, const char *b) {
 #ifdef _MSC_VER
 #define fseeko _fseeki64
 #define ftello _ftelli64
-#define timegm _mkgmtime
 #endif
 
 #define strfield2(f,s) ( (strlen(f)!=strlen(s)) ? 0 : (strfield(f,s)) )

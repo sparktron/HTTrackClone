@@ -415,7 +415,7 @@ Max antal förbindelser/sekund (för att undvika överbelastning på servern)
 Maximum number of links that can be tested (not saved!)
 Max antal länkar som kan bli testade (inte sparat!)
 Browser identity
-Webbläsare identitet
+Webbläsaridentitet
 Comment to be placed in each HTML file
 Kommentarer för infogas i varje HTML fil
 Languages accepted by the browser
@@ -597,7 +597,7 @@ Flödeskontroll
 Limits
 Begränsningar
 Browser ID
-Webbläsare Identitet
+Webbläsaridentitet
 Scan Rules
 Sökregler
 Spider
@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Proxyprotokoll. HTTP: standardproxy. HTTP (CONNECT-tunnel): skickar varje begäran genom en CONNECT-tunnel, för proxyservrar som bara stöder CONNECT som Tors HTTPTunnelPort. SOCKS5: standardport 1080.
 Load cookies from file:
 Läs in cookies från fil:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Läs in cookies från en Netscape cookies.txt-fil innan crawlningen börjar.
 Pause between files:
 Paus mellan filer:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 Ignorera %s och alla värdar under den
 Manual
 Handbok
+Max Retry-After(s)
+Max Retry-After (s)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Längsta väntetid som följs när en server skickar ett Retry-After-huvud. Ange 0 för att försöka igen utan att vänta.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+Reglerna som du anger här gäller för kopieringen som pågår nu. Tar du bort en regel släpps nya länkar igenom igen, men en länk som regeln redan har avvisat kommer inte tillbaka under den här kopieringen.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Den här sökregeln kan inte användas. En regel börjar med + eller -, följt av ett mönster, och måste rymmas på en kort rad.
+Theme:
+Tema:
+Classic
+Klassiskt
+Accept headers
+Accept-huvuden
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+Accept-huvudet som skickas för varje typ av länk. Automatiskt skickar det som den valda webbläsaren skickar.
+Automatic
+Automatiskt
+Old HTTrack value
+Gammalt HTTrack-värde
+Default
+Standard
+Pages
+Sidor
+Inline frames
+Inbäddade ramar
+Frames
+Ramar
+Images
+Bilder
+Style sheets
+Formatmallar
+Scripts
+Skript
+Fonts
+Teckensnitt
+Audio
+Ljud
+Video
+Video
+Objects
+Objekt
+Embedded content
+Inbäddat innehåll
+Log in with a browser...
+Logga in med en webbläsare...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Logga in på webbplatsen i en webbläsare, och crawla med de cookies och den webbläsaridentitet som den fick
+No Microsoft Edge WebView2 runtime is installed on this computer
+Det finns ingen Microsoft Edge WebView2-runtime installerad på den här datorn
+Log in with a browser
+Logga in med en webbläsare
+Go
+Gå
+Done
+Klar
+Clear login
+Logga ut
+The browser did not open: %s.
+Webbläsaren öppnades inte: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+Webbläsaren kom tillbaka utan cookies. Adressen och webbläsaridentiteten sparas med projektet när assistenten är klar.
+Cookies collected: %d. They are used when you press OK.
+Insamlade cookies: %d. De används när du trycker på OK.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Insamlade cookies: %d. De sparas med projektet när assistenten är klar.
+The login could not be written to %s.
+Det gick inte att skriva inloggningen till %s.
+%d of the browser's cookies were left out, because the engine would not read them.
+%d av webbläsarens cookies utelämnades, eftersom HTTrack inte kunde läsa dem.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Logga in på webbplatsen i en annan flik i den här webbläsaren. Öppna utvecklarverktygen (F12) och sedan fliken Nätverk, ladda om sidan, högerklicka på den första begäran och välj Copy as cURL (bash). Klistra in texten här. En cookies.txt-export fungerar också, för den första adressen i listan.
+Cookies for: %s. Browser identity: %s.
+Cookies för: %s. Webbläsaridentitet: %s.
+A login cannot be saved for this address, so nothing was kept.
+En inloggning kan inte sparas för den här adressen, så ingenting sparades.
+Yes
+Ja

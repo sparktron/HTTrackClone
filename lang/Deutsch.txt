@@ -978,7 +978,7 @@ Proxy protocol. HTTP: standard proxy. HTTP (CONNECT tunnel): sends every request
 Proxy-Protokoll. HTTP: normaler Proxy. HTTP (CONNECT-Tunnel): sendet jede Anfrage durch einen CONNECT-Tunnel, für Proxys, die nur CONNECT unterstützen, wie Tors HTTPTunnelPort. SOCKS5: Standardport 1080.
 Load cookies from file:
 Cookies aus Datei laden:
-Preload cookies from a Netscape cookies.txt file before crawling.
+Use a Netscape cookies.txt file as the cookie jar. HTTrack loads it before crawling, and writes it back at the end unless a line in it could not be loaded.
 Cookies aus einer Netscape-cookies.txt-Datei laden, bevor das Crawlen beginnt.
 Pause between files:
 Pause zwischen Dateien:
@@ -1050,3 +1050,81 @@ Ignore %s and every host below it
 %s und alle darunter liegenden Hosts ignorieren
 Manual
 Handbuch
+Max Retry-After(s)
+Max. Retry-After (s)
+Longest delay to obey when a server sends a Retry-After header. Use 0 to retry without waiting.
+Längste Wartezeit, die befolgt wird, wenn ein Server einen Retry-After-Header sendet. Mit 0 wird ohne Wartezeit erneut versucht.
+The rules you set here apply to the mirror now running. Removing a rule lets new links through again, but a link it already refused will not come back in this run.
+Die hier festgelegten Regeln gelten für die laufende Site-Kopie. Das Entfernen einer Regel lässt neue Links wieder durch, aber ein bereits abgewiesener Link kommt in dieser Kopie nicht zurück.
+This scan rule cannot be used. A rule starts with + or -, then a pattern, and holds one short line.
+Diese Filterregel kann nicht verwendet werden. Eine Regel beginnt mit + oder -, gefolgt von einem Muster, und muss in eine kurze Zeile passen.
+Theme:
+Design:
+Classic
+Klassisch
+Accept headers
+Accept-Header
+The Accept header sent for each kind of link. Automatic sends what the chosen browser sends.
+Der Accept-Header, der für jede Art von Link gesendet wird. Automatisch sendet, was der gewählte Browser sendet.
+Automatic
+Automatisch
+Old HTTrack value
+Alter HTTrack-Wert
+Default
+Standard
+Pages
+Seiten
+Inline frames
+Inline-Frames
+Frames
+Frames
+Images
+Bilder
+Style sheets
+Stylesheets
+Scripts
+Skripte
+Fonts
+Schriftarten
+Audio
+Audio
+Video
+Video
+Objects
+Objekte
+Embedded content
+Eingebettete Inhalte
+Log in with a browser...
+Mit einem Browser anmelden...
+Log in to the site in a browser, and crawl with the cookies and the browser identity it was given
+Melden Sie sich mit einem Browser bei der Website an und crawlen Sie dann mit den Cookies und der Browser-Kennung, die er erhalten hat
+No Microsoft Edge WebView2 runtime is installed on this computer
+Auf diesem Computer ist keine Microsoft Edge WebView2-Runtime installiert
+Log in with a browser
+Mit einem Browser anmelden
+Go
+Los
+Done
+Fertig
+Clear login
+Abmelden
+The browser did not open: %s.
+Der Browser wurde nicht geöffnet: %s.
+The browser came back with no cookies. The address and the browser identity are saved with the project when the wizard finishes.
+Der Browser hat keine Cookies geliefert. Die Adresse und die Browser-Kennung werden mit dem Projekt gespeichert, wenn der Assistent abgeschlossen ist.
+Cookies collected: %d. They are used when you press OK.
+Übernommene Cookies: %d. Sie werden verwendet, wenn Sie auf OK klicken.
+Cookies collected: %d. They are saved with the project when the wizard finishes.
+Übernommene Cookies: %d. Sie werden mit dem Projekt gespeichert, wenn der Assistent abgeschlossen ist.
+The login could not be written to %s.
+Die Anmeldung konnte nicht in %s geschrieben werden.
+%d of the browser's cookies were left out, because the engine would not read them.
+%d Cookies des Browsers wurden ausgelassen, weil HTTrack sie nicht lesen konnte.
+Log in to the site in another tab of this browser. Open the developer tools (F12), then the Network tab, reload the page, right-click the first request and choose Copy as cURL (bash). Paste the text here. A cookies.txt export also works, for the first address in the list.
+Melden Sie sich in einem anderen Tab dieses Browsers bei der Website an. Öffnen Sie die Entwicklertools (F12) und dort den Tab Netzwerk, laden Sie die Seite neu, klicken Sie mit der rechten Maustaste auf die erste Anfrage und wählen Sie Copy as cURL (bash). Fügen Sie den Text hier ein. Ein cookies.txt-Export funktioniert auch, für die erste Adresse der Liste.
+Cookies for: %s. Browser identity: %s.
+Cookies für: %s. Browser-Kennung: %s.
+A login cannot be saved for this address, so nothing was kept.
+Für diese Adresse kann keine Anmeldung gespeichert werden, daher wurde nichts übernommen.
+Yes
+Ja

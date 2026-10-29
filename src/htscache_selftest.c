@@ -42,11 +42,7 @@ Please visit our Website: http://www.httrack.com
 
 #include "htscache_selftest.h"
 
-#include "htscache.h"
-#include "htscore.h"
-#include "htslib.h"
-#include "htsio.h"
-#include "htszlib.h"
+#include "htsselftest_int.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -1117,10 +1113,12 @@ int cache_golden_selftest(httrackp *opt, const char *dir, int regen) {
 
 /* All reconcile inputs/outputs, wiped between cases. */
 static const char *const reconcile_files[] = {
-    "hts-cache/new.zip", "hts-cache/old.zip",   "hts-cache/new.dat",
-    "hts-cache/old.dat", "hts-cache/new.ndx",   "hts-cache/old.ndx",
-    "hts-cache/new.lst", "hts-cache/old.lst",   "hts-cache/new.txt",
-    "hts-cache/old.txt", "hts-in_progress.lock"};
+    "hts-cache/new.zip",     "hts-cache/old.zip",     "hts-cache/new.dat",
+    "hts-cache/old.dat",     "hts-cache/new.ndx",     "hts-cache/old.ndx",
+    "hts-cache/new.lst",     "hts-cache/old.lst",     "hts-cache/new.txt",
+    "hts-cache/old.txt",     "hts-in_progress.lock",  "hts-cache/damaged.zip",
+    "hts-cache/damaged.lst", "hts-cache/damaged.txt", "hts-cache/repair.zip",
+    "hts-cache/repair.tmp"};
 
 static char *reconcile_st_path(httrackp *opt, const char *name) {
   return fconcat(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
@@ -1237,6 +1235,111 @@ static int reconcile_expect(httrackp *opt, const char *name, LLint size,
     return 1;
   }
   return 0;
+}
+
+/* Run cache_init's rotation for write, then release what it opened. */
+static void reconcile_rotate(httrackp *opt) {
+  cache_back cache;
+  const int was_cache = opt->cache;
+  const hts_log_type was_debug = opt->debug;
+
+  opt->cache = 1;
+  opt->debug = LOG_ERROR; /* the expected repair warnings would reach stdout */
+  selftest_open_for_write(&cache, opt);
+  if (cache.lst != NULL)
+    fclose(cache.lst);
+  if (cache.txt != NULL)
+    fclose(cache.txt);
+  selftest_close(&cache);
+  opt->cache = was_cache;
+  opt->debug = was_debug;
+}
+
+/* cache_init must never rotate an unrepairable new.zip over a good old.zip,
+   and old.zip, old.lst and old.txt must stay one generation. */
+static int reconcile_rotation_cases(httrackp *opt, LLint partial,
+                                    LLint complete, LLint damaged, LLint small,
+                                    LLint medium, LLint directory_end) {
+  int failures = 0;
+
+  /* unrepairable new.zip: the old generation survives whole */
+  reconcile_wipe(opt);
+  reconcile_put_zip(opt, "hts-cache/old.zip", complete, 0);
+  reconcile_put(opt, "hts-cache/old.lst", small);
+  reconcile_put(opt, "hts-cache/old.txt", small);
+  reconcile_put(opt, "hts-cache/new.zip", damaged);
+  reconcile_put(opt, "hts-cache/new.lst", medium);
+  reconcile_put(opt, "hts-cache/new.txt", medium);
+  reconcile_rotate(opt);
+  failures += reconcile_expect_zip(opt, "hts-cache/old.zip", complete,
+                                   "rotate-damaged");
+  failures +=
+      reconcile_expect(opt, "hts-cache/old.lst", small, "rotate-damaged");
+  failures +=
+      reconcile_expect(opt, "hts-cache/old.txt", small, "rotate-damaged");
+  failures +=
+      reconcile_expect(opt, "hts-cache/damaged.zip", damaged, "rotate-damaged");
+  failures +=
+      reconcile_expect(opt, "hts-cache/damaged.lst", medium, "rotate-damaged");
+  failures +=
+      reconcile_expect(opt, "hts-cache/damaged.txt", medium, "rotate-damaged");
+
+  /* a set-aside that fails must still leave old.lst alone */
+  reconcile_wipe(opt);
+#ifdef _WIN32
+  mkdir(reconcile_st_path(opt, "hts-cache/damaged.lst"));
+#else
+  mkdir(reconcile_st_path(opt, "hts-cache/damaged.lst"), HTS_PROTECT_FOLDER);
+#endif
+  reconcile_put(opt, "hts-cache/damaged.lst/blocker", small);
+  reconcile_put_zip(opt, "hts-cache/old.zip", complete, 0);
+  reconcile_put(opt, "hts-cache/old.lst", small);
+  reconcile_put(opt, "hts-cache/new.zip", damaged);
+  reconcile_put(opt, "hts-cache/new.lst", medium);
+  reconcile_rotate(opt);
+  failures +=
+      reconcile_expect(opt, "hts-cache/old.lst", small, "rotate-asidefail");
+  remove(reconcile_st_path(opt, "hts-cache/damaged.lst/blocker"));
+  (void) RMDIR(reconcile_st_path(opt, "hts-cache/damaged.lst"));
+
+  /* repairable new.zip: repaired, then rotated as usual */
+  reconcile_wipe(opt);
+  reconcile_put_zip(opt, "hts-cache/old.zip", complete, 0);
+  reconcile_put(opt, "hts-cache/old.lst", small);
+  reconcile_put(opt, "hts-cache/old.txt", small);
+  reconcile_put_zip(opt, "hts-cache/new.zip", partial, 0);
+  reconcile_truncate(opt, "hts-cache/new.zip", directory_end);
+  reconcile_put(opt, "hts-cache/new.lst", medium);
+  reconcile_put(opt, "hts-cache/new.txt", medium);
+  reconcile_rotate(opt);
+  failures +=
+      reconcile_expect(opt, "hts-cache/old.txt", medium, "rotate-repairable");
+  failures += reconcile_expect_zip(opt, "hts-cache/old.zip", partial,
+                                   "rotate-repairable");
+  failures +=
+      reconcile_expect(opt, "hts-cache/old.lst", medium, "rotate-repairable");
+  failures +=
+      reconcile_expect(opt, "hts-cache/damaged.zip", -1, "rotate-repairable");
+
+  /* unrepairable new.zip and no old.zip: nothing to protect, rotate */
+  reconcile_wipe(opt);
+  reconcile_put(opt, "hts-cache/new.zip", damaged);
+  reconcile_rotate(opt);
+  failures +=
+      reconcile_expect(opt, "hts-cache/old.zip", damaged, "rotate-noold");
+  failures +=
+      reconcile_expect(opt, "hts-cache/damaged.zip", -1, "rotate-noold");
+
+  /* an empty old.zip holds no generation either */
+  reconcile_wipe(opt);
+  reconcile_put(opt, "hts-cache/old.zip", 0);
+  reconcile_put(opt, "hts-cache/new.zip", damaged);
+  reconcile_rotate(opt);
+  failures +=
+      reconcile_expect(opt, "hts-cache/old.zip", damaged, "rotate-emptyold");
+  failures +=
+      reconcile_expect(opt, "hts-cache/damaged.zip", -1, "rotate-emptyold");
+  return failures;
 }
 
 int cache_reconcile_selftest(httrackp *opt, const char *dir) {
@@ -1522,6 +1625,8 @@ int cache_reconcile_selftest(httrackp *opt, const char *dir) {
   failures +=
       reconcile_expect(opt, "hts-cache/new.zip", SMALL, "rollback-noop");
 
+  failures += reconcile_rotation_cases(opt, PARTIAL, COMPLETE, DAMAGED, SMALL,
+                                       MEDIUM, ZIP_DIRECTORY_END);
   reconcile_wipe(opt);
   return failures;
 }
@@ -1635,8 +1740,10 @@ int cache_legacy_refused_selftest(httrackp *opt, const char *dir) {
 static char corrupt_body_a[33 + 1];
 static char corrupt_body_b[44 + 1];
 
-/* Write a fresh two-entry cache: /canary.html then /victim.html. */
-static void corrupt_build(httrackp *opt) {
+/* Write a fresh two-entry cache: /canary.html then /victim.html. The victim
+   carries `etag`, whose byte length is what a forged same-length header line
+   overwriting it must match. */
+static void corrupt_build(httrackp *opt, const char *etag) {
   cache_back cache;
 
   memset(corrupt_body_a, 'a', sizeof(corrupt_body_a) - 1);
@@ -1648,50 +1755,14 @@ static void corrupt_build(httrackp *opt) {
               "OK", "text/html", "utf-8", "", "", "", "", corrupt_body_a,
               strlen(corrupt_body_a));
   store_entry(opt, &cache, CORRUPT_ADR, "/victim.html", "victim.html", 200,
-              "OK", "text/html", "utf-8", "", "", "", "", corrupt_body_b,
+              "OK", "text/html", "utf-8", "", etag, "", "", corrupt_body_b,
               strlen(corrupt_body_b));
   selftest_close(&cache);
 }
 
-/* Like corrupt_build, but the victim carries a 100-char Etag placeholder. */
-static void corrupt_build_longetag(httrackp *opt) {
-  cache_back cache;
-
-  memset(corrupt_body_a, 'a', sizeof(corrupt_body_a) - 1);
-  memset(corrupt_body_b, 'b', sizeof(corrupt_body_b) - 1);
-  remove(reconcile_st_path(opt, "hts-cache/new.zip"));
-  remove(reconcile_st_path(opt, "hts-cache/old.zip"));
-  selftest_open_for_write(&cache, opt);
-  store_entry(opt, &cache, CORRUPT_ADR, "/canary.html", "canary.html", 200,
-              "OK", "text/html", "utf-8", "", "", "", "", corrupt_body_a,
-              strlen(corrupt_body_a));
-  store_entry(opt, &cache, CORRUPT_ADR, "/victim.html", "victim.html", 200,
-              "OK", "text/html", "utf-8", "", CORRUPT_LONG_ETAG, "", "",
-              corrupt_body_b, strlen(corrupt_body_b));
-  selftest_close(&cache);
-}
-
-/* Like corrupt_build, but the victim carries a 20-char Etag whose header line
-   is later overwritten with a forged oversized X-Size (same byte length). */
-static void corrupt_build_etag(httrackp *opt) {
-  cache_back cache;
-
-  memset(corrupt_body_a, 'a', sizeof(corrupt_body_a) - 1);
-  memset(corrupt_body_b, 'b', sizeof(corrupt_body_b) - 1);
-  remove(reconcile_st_path(opt, "hts-cache/new.zip"));
-  remove(reconcile_st_path(opt, "hts-cache/old.zip"));
-  selftest_open_for_write(&cache, opt);
-  store_entry(opt, &cache, CORRUPT_ADR, "/canary.html", "canary.html", 200,
-              "OK", "text/html", "utf-8", "", "", "", "", corrupt_body_a,
-              strlen(corrupt_body_a));
-  store_entry(opt, &cache, CORRUPT_ADR, "/victim.html", "victim.html", 200,
-              "OK", "text/html", "utf-8", "", "AAAAAAAAAAAAAAAAAAAA", "", "",
-              corrupt_body_b, strlen(corrupt_body_b));
-  selftest_close(&cache);
-}
-
-/* Like corrupt_build_etag, but the victim is headers-only (X-In-Cache: 0,
-   body on disk): the shape every non-html file is stored with. */
+/* Like corrupt_build with a 20-char Etag, but the victim is headers-only
+   (X-In-Cache: 0, body on disk): the shape every non-html file is stored
+   with. */
 static void corrupt_build_disk(httrackp *opt) {
   cache_back cache;
   htsblk w;
@@ -1731,9 +1802,12 @@ static void corrupt_build_disk(httrackp *opt) {
   fclose(fp);
 }
 
-/* Patch the nth of total occurrences of pat (same-length rep) in new.zip. */
-static void corrupt_patch(httrackp *opt, const char *pat, size_t patlen,
-                          const char *rep, size_t nth, size_t total) {
+/* Patch the nth of total occurrences of pat in new.zip. `line` demands the
+   match span a whole header line, so a placeholder longer than the forged
+   replacement cannot leave its tail on the value. */
+static void corrupt_patch_bytes(httrackp *opt, const char *pat, size_t patlen,
+                                const char *rep, size_t nth, size_t total,
+                                hts_boolean line) {
   LLint fsz = 0;
   char *data = readfile2(reconcile_st_path(opt, "hts-cache/new.zip"), &fsz);
   const size_t n = (size_t) fsz;
@@ -1749,12 +1823,26 @@ static void corrupt_patch(httrackp *opt, const char *pat, size_t patlen,
     }
   }
   assertf(hits == total);
+  /* either literal short of patlen would be read past its end */
+  assertf(strlen(pat) == patlen);
+  assertf(strlen(rep) == patlen);
+  if (line) {
+    assertf(at > 0 && data[at - 1] == '\n');
+    assertf(at + patlen + 2 <= n);
+    assertf(memcmp(data + at + patlen, "\r\n", 2) == 0);
+  }
   memcpy(data + at, rep, patlen);
   fp = fopen(reconcile_st_path(opt, "hts-cache/new.zip"), "wb");
   assertf(fp != NULL);
   assertf(hts_fwrite_exact(data, n, fp));
   fclose(fp);
   freet(data);
+}
+
+/* Forge one whole header line, same byte length, so the zip offsets hold. */
+static void corrupt_patch(httrackp *opt, const char *pat, size_t patlen,
+                          const char *rep, size_t nth, size_t total) {
+  corrupt_patch_bytes(opt, pat, patlen, rep, nth, total, HTS_TRUE);
 }
 
 /* Garbage the first bytes of the victim's deflated data (2nd local header). */
@@ -1916,7 +2004,9 @@ static int corrupt_expect_victim_clipped(httrackp *opt, size_t wantmsg,
     fail++;
   }
   c = cache_readex(opt, &cache, CORRUPT_ADR, "/canary.html", "", lc, NULL, 1);
-  if (c.statuscode != 200) {
+  if (c.statuscode != 200 || c.adr == NULL ||
+      c.size != (LLint) strlen(corrupt_body_a) ||
+      memcmp(c.adr, corrupt_body_a, strlen(corrupt_body_a)) != 0) {
     fprintf(stderr, "%s: %s: canary tainted (status %d)\n", selftest_tag, what,
             c.statuscode);
     fail++;
@@ -1934,7 +2024,7 @@ static int corrupt_expect_victim_clipped(httrackp *opt, size_t wantmsg,
 static int corrupt_case_zip(httrackp *opt, const char *pat, const char *rep,
                             size_t nth, size_t total, const char *wantmsg,
                             const char *what) {
-  corrupt_build(opt);
+  corrupt_build(opt, "");
   corrupt_patch(opt, pat, strlen(pat), rep, nth, total);
   return corrupt_expect_victim(opt, wantmsg, what);
 }
@@ -1955,17 +2045,29 @@ int cache_corruption_selftest(httrackp *opt, const char *dir) {
   failures += corrupt_case_zip(opt, "X-In-Cache: 1", "X-In-Cache: 0", 2, 2,
                                "Previous cache file not found (empty filename)",
                                "blanked X-In-Cache");
+  /* X-Save is a filename the reader opens and renames, so a ".." in it would
+     reach outside the mirror. Same length, as corrupt_patch requires. */
+  failures += corrupt_case_zip(
+      opt, "X-Save: victim.html", "X-Save: ../vic.html", 1, 1,
+      "Cache Read Error : Bad Filename", "X-Save escaping the mirror");
+  /* An ABSOLUTE name needs refusing too, and ".." is not how it escapes: with
+     no -O the root is "" and the cached name would be used verbatim. Eleven
+     bytes either way, which is what lets corrupt_patch swap them. */
+  failures += corrupt_case_zip(
+      opt, "X-Save: victim.html", "X-Save: /etc/passwd", 1, 1,
+      "Cache Read Error : Bad Filename", "X-Save naming an absolute path");
   /* smashed local file header: the entry is dropped at index load */
-  failures +=
-      corrupt_case_zip(opt, "PK\x03\x04", "XK\x03\x04", 2, 2,
-                       "File Cache Entry Not Found", "smashed local header");
+  corrupt_build(opt, "");
+  corrupt_patch_bytes(opt, "PK\x03\x04", 4, "XK\x03\x04", 2, 2, HTS_FALSE);
+  failures += corrupt_expect_victim(opt, "File Cache Entry Not Found",
+                                    "smashed local header");
 
-  corrupt_build(opt);
+  corrupt_build(opt, "");
   corrupt_victim_body(opt);
   failures += corrupt_expect_victim(opt, "Cache Read Error : Read Data",
                                     "garbled deflate stream");
 
-  corrupt_build(opt);
+  corrupt_build(opt, "");
   corrupt_victim_crc(opt);
   failures += corrupt_expect_victim(opt, "Cache Read Error : CRC",
                                     "body inflates, CRC does not match");
@@ -1973,7 +2075,7 @@ int cache_corruption_selftest(httrackp *opt, const char *dir) {
   /* A corrupt cache can hold a field wider than ours. Clipping keeps the
      entry; aborting would take the crawl down. Overwrite the placeholder Etag
      line in place, same byte length, so the zip offsets stay intact. */
-  corrupt_build_longetag(opt);
+  corrupt_build(opt, CORRUPT_LONG_ETAG);
   corrupt_patch(opt, "Etag: " CORRUPT_LONG_ETAG, 106,
                 "X-StatusMessage: " /* 17 + 89 = 106 */
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -1985,7 +2087,7 @@ int cache_corruption_selftest(httrackp *opt, const char *dir) {
 
   /* lastmodified[64] is narrower than msg[80]: one hardcoded clip length
      cannot satisfy both. */
-  corrupt_build_longetag(opt);
+  corrupt_build(opt, CORRUPT_LONG_ETAG);
   corrupt_patch(opt, "Etag: " CORRUPT_LONG_ETAG, 106,
                 "Last-Modified: " /* 15 + 91 = 106 */
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -2001,7 +2103,7 @@ int cache_corruption_selftest(httrackp *opt, const char *dir) {
      from a corrupt/foreign cache; inject it by overwriting the victim's long
      Etag line with a same-length forged X-Size line (the parser keeps the last
      X-Size it sees), keeping the zip byte-length and offsets intact. */
-  corrupt_build_etag(opt);
+  corrupt_build(opt, "AAAAAAAAAAAAAAAAAAAA");
   corrupt_patch(opt, "Etag: AAAAAAAAAAAAAAAAAAAA", 26,
                 "X-Size: 2147483648AAAAAAAA", 1, 1);
   failures += corrupt_expect_victim(opt, "Cache Read Error : Bad Size",
@@ -3358,13 +3460,16 @@ int ref_portable_selftest(httrackp *opt, const char *dir) {
     const size_t blit = sizeof(lien_back);
     const size_t size = sizeof(blit) * 3 + blit;
     unsigned char *legacy = calloct(1, size);
-    lien_back *const old = (lien_back *) (legacy + sizeof(blit));
+    /* blitted from its own allocation: the record is not struct-aligned here */
+    lien_back *old = calloct(1, sizeof(lien_back));
 
     memcpy(legacy, &blit, sizeof(blit));
     strcpybuff(old->url_adr, REF_ST_ADR);
     strcpybuff(old->url_fil, REF_ST_FIL);
     strcpybuff(old->url_sav, REF_ST_SAV);
     old->r.statuscode = 206;
+    memcpy(legacy + sizeof(blit), old, sizeof(lien_back));
+    freet(old);
     fail +=
         ref_st_refuse(opt, path, legacy, size, "a legacy host-native record");
     freet(legacy);
@@ -3461,3 +3566,944 @@ int ref_portable_selftest(httrackp *opt, const char *dir) {
   UNLINK(path);
   return fail;
 }
+
+static int st_cache(httrackp *opt, int argc, char **argv) {
+  int err;
+
+  if (argc < 1) {
+    fprintf(stderr, "cache: needs a directory\n");
+    return 1;
+  }
+  err = cache_selftests(opt, argv[0]);
+  printf("cache-selftest: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+/* A corrupt cache index (.ndx) must not walk the length-prefixed scan past
+   the buffer. Checks the two primitives the loader is built from. */
+static int st_cacheindex(httrackp *opt, int argc, char **argv) {
+  int fail = 0;
+
+  (void) opt;
+  (void) argc;
+  (void) argv;
+
+  /* A length prefix that overstates the bytes present must bound the advance
+     to the buffer, not trust the declared length. */
+  {
+    static const char src[] = "32768\nCACHE-1.1";
+    const size_t len = sizeof(src) - 1;
+    char *buf = malloct(len + 1);
+    char s[256];
+    int off;
+
+    memcpy(buf, src, len + 1);
+    off = cache_brstr(buf, s, sizeof(s));
+    if (off > (int) len) {
+      printf("cacheindex: over-advance off=%d len=%d\n", off, (int) len);
+      fail = 1;
+    }
+    if (strcmp(s, "CACHE-1.1") != 0) {
+      printf("cacheindex: value=%s\n", s);
+      fail = 1;
+    }
+    freet(buf);
+  }
+
+  /* binput_line reads a field while in bounds, but refuses one starting at
+     or past end-of-buffer. */
+  {
+    char buf[8] = "ab\ncd";
+    const char *const end = buf + 5;
+    char s[16];
+    int adv;
+
+    (void) binput_line(buf, end, s, sizeof(s), &adv);
+    if (adv != 3 || strcmp(s, "ab") != 0)
+      fail = 1; /* normal read: "ab" then the '\n', 3 bytes consumed */
+    (void) binput_line(end, end, s, sizeof(s), &adv);
+    if (adv != 0 || s[0] != '\0')
+      fail = 1;
+  }
+
+  /* Drive the full loader scan over a truncated index: a declared length that
+     overshoots plus a half-written entry. ASan aborts here on the pre-fix
+     scan; the cursor must never leave the buffer. */
+  {
+    static const char src[] = "9\nCACHE-1.1\n99\nwww.example.com\n/a";
+    const size_t len = sizeof(src) - 1;
+    char *buf = malloct(len + 1);
+    const char *const end = buf + len;
+    char line[256];
+    char *a = buf;
+
+    memcpy(buf, src, len + 1);
+    a += cache_brstr(a, line, sizeof(line));
+    a += cache_brstr(a, line, sizeof(line));
+    while (a != NULL && a < end) {
+      int adv;
+
+      a = strchr(a + 1, '\n');
+      if (a == NULL)
+        break;
+      a++;
+      (void) binput_line(a, end, line, sizeof(line), &adv);
+      a += adv;
+    }
+    freet(buf);
+  }
+
+  printf("cacheindex: %s\n", fail ? "FAIL" : "OK");
+  return fail;
+}
+
+static int st_cache_golden(httrackp *opt, int argc, char **argv) {
+  int regen, err;
+
+  if (argc < 1) {
+    fprintf(stderr, "cache-golden: needs a directory\n");
+    return 1;
+  }
+  regen = (argc >= 2 && strcmp(argv[1], "regen") == 0);
+  err = cache_golden_selftest(opt, argv[0], regen);
+  printf("cache-golden: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+static int st_cache_writefail(httrackp *opt, int argc, char **argv) {
+  int err;
+
+  if (argc < 1) {
+    fprintf(stderr, "cache-writefail: needs a directory\n");
+    return 1;
+  }
+  err = cache_write_failure_selftest(opt, argv[0]);
+  printf("cache-writefail: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+static int st_cache_hdrbounds(httrackp *opt, int argc, char **argv) {
+  int err;
+
+  if (argc < 1) {
+    fprintf(stderr, "cache-hdrbounds: needs a directory\n");
+    return 1;
+  }
+  err = cache_header_bounds_selftest(opt, argv[0]);
+  printf("cache-hdrbounds: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+static int st_cache_urlbounds(httrackp *opt, int argc, char **argv) {
+  int err;
+
+  if (argc < 1) {
+    fprintf(stderr, "cache-urlbounds: needs a directory\n");
+    return 1;
+  }
+  err = cache_url_bounds_selftest(opt, argv[0]);
+  printf("cache-urlbounds: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+static int st_cache_savebounds(httrackp *opt, int argc, char **argv) {
+  int err;
+
+  if (argc < 1) {
+    fprintf(stderr, "cache-savebounds: needs a directory\n");
+    return 1;
+  }
+  err = cache_savename_bounds_selftest(opt, argv[0]);
+  printf("cache-savebounds: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+static int st_cache_corrupt(httrackp *opt, int argc, char **argv) {
+  int err;
+
+  if (argc < 1) {
+    fprintf(stderr, "cache-corrupt: needs a directory\n");
+    return 1;
+  }
+  err = cache_corruption_selftest(opt, argv[0]);
+  printf("cache-corrupt: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+static int st_cache_readfail(httrackp *opt, int argc, char **argv) {
+  int err;
+
+  if (argc < 1) {
+    fprintf(stderr, "cache-readfail: needs a directory\n");
+    return 1;
+  }
+  err = cache_readfail_selftest(opt, argv[0]);
+  printf("cache-readfail: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+/* Drives unzRepair over a damaged local file header whose CRC field's high
+   16-bit word has bit 15 set. Before the READ_32 fix that shifted an int and
+   overflowed, so UBSan aborts here; after it, repair recovers the one entry. */
+static int st_zip_repair_shift(httrackp *opt, int argc, char **argv) {
+  static const unsigned char zip[] = {
+      0x50, 0x4b, 0x03, 0x04, /* local file header signature */
+      0x14, 0x00,             /* version needed */
+      0x00, 0x00,             /* general purpose flag */
+      0x00, 0x00,             /* method */
+      0x00, 0x00,             /* time */
+      0x00, 0x00,             /* date */
+      0x00, 0x00, 0xe8, 0x8a, /* crc: high word 0x8ae8, bit 15 set */
+      0x00, 0x00, 0x00, 0x00, /* compressed size */
+      0x00, 0x00, 0x00, 0x00, /* uncompressed size */
+      0x01, 0x00,             /* filename length */
+      0x00, 0x00,             /* extra field length */
+      0x61                    /* filename "a" */
+  };
+  char in[HTS_URLMAXSIZE], out[HTS_URLMAXSIZE], tmp[HTS_URLMAXSIZE];
+  uLong nrec = 0, bytes = 0;
+  FILE *fp;
+  int err;
+
+  (void) opt;
+  if (argc < 1) {
+    fprintf(stderr, "zip-repair-shift: needs a directory\n");
+    return 1;
+  }
+  snprintf(in, sizeof(in), "%s/damaged.zip", argv[0]);
+  snprintf(out, sizeof(out), "%s/repair.zip", argv[0]);
+  snprintf(tmp, sizeof(tmp), "%s/repair.tmp", argv[0]);
+  fp = fopen(in, "wb");
+  if (fp == NULL || !hts_fwrite_exact(zip, sizeof(zip), fp)) {
+    if (fp != NULL)
+      fclose(fp);
+    fprintf(stderr, "zip-repair-shift: cannot write %s\n", in);
+    return 1;
+  }
+  fclose(fp);
+  err = unzRepair(in, out, tmp, &nrec, &bytes);
+  printf("zip-repair-shift: %s (recovered %lu entr%s)\n",
+         (err == Z_OK && nrec == 1) ? "OK" : "FAIL", (unsigned long) nrec,
+         nrec == 1 ? "y" : "ies");
+  return (err == Z_OK && nrec == 1) ? 0 : 1;
+}
+
+/* Repairs one local file header claiming CPSIZE, or UNCPSIZE when CPSIZE is 0,
+   followed by PAYLOAD bytes of data, writing to OUT_OVERRIDE if not NULL. */
+static int zip_repair_size_case(const char *dir, const char *out_override,
+                                uLong cpsize, uLong uncpsize, size_t payload,
+                                uLong *nrec, uLong *bytes) {
+  unsigned char header[31] = {0x50, 0x4b, 0x03, 0x04, 0x14};
+  char in[HTS_URLMAXSIZE], out[HTS_URLMAXSIZE], tmp[HTS_URLMAXSIZE];
+  hts_boolean ok;
+  size_t i;
+  FILE *fp;
+
+  for (i = 0; i < 4; i++) {
+    header[18 + i] = (unsigned char) (cpsize >> (8 * i)); /* compressed size */
+    header[22 + i] = (unsigned char) (uncpsize >> (8 * i)); /* uncompressed */
+  }
+  header[26] = 1; /* filename length */
+  header[30] = 'a';
+  snprintf(in, sizeof(in), "%s/damaged.zip", dir);
+  snprintf(out, sizeof(out), "%s/repair.zip", dir);
+  snprintf(tmp, sizeof(tmp), "%s/repair.tmp", dir);
+  fp = fopen(in, "wb");
+  if (fp == NULL)
+    return Z_ERRNO;
+  ok = hts_fwrite_exact(header, sizeof(header), fp);
+  for (i = 0; ok && i < payload; i++)
+    ok = fputc('x', fp) != EOF;
+  fclose(fp);
+  if (!ok)
+    return Z_ERRNO;
+  /* unzRepair removes its output when the temp file fails to open. */
+  if ((fp = fopen(tmp, "wb")) == NULL)
+    return Z_ERRNO;
+  fclose(fp);
+  *nrec = 0;
+  *bytes = 0;
+  return unzRepair(in, out_override != NULL ? out_override : out, tmp, nrec,
+                   bytes);
+}
+
+/* A truncated entry fails with Z_ERRNO whatever size its header claims. */
+static int st_zip_repair_size(httrackp *opt, int argc, char **argv) {
+  static const struct {
+    uLong cpsize, uncpsize;
+    size_t payload;
+    int err;
+    uLong bytes;
+  } cases[] = {
+      {20000, 0, 20000, Z_OK, 20000},    /* more than one copy chunk */
+      {0, 20000, 20000, Z_OK, 20000},    /* size taken from uncpsize */
+      {0x7fffffffUL, 0, 16, Z_ERRNO, 0}, /* INT_MAX */
+      {0x80000010UL, 0, 16, Z_ERRNO, 0}, /* negative as an int */
+  };
+
+  size_t i;
+  int fails = 0;
+  FILE *fp;
+
+  (void) opt;
+  if (argc < 1) {
+    fprintf(stderr, "zip-repair-size: needs a directory\n");
+    return 1;
+  }
+  for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    uLong nrec, bytes;
+    const int err =
+        zip_repair_size_case(argv[0], NULL, cases[i].cpsize, cases[i].uncpsize,
+                             cases[i].payload, &nrec, &bytes);
+
+    if (err != cases[i].err ||
+        (err == Z_OK && (nrec != 1 || bytes != cases[i].bytes))) {
+      printf("zip-repair-size: FAIL row %lu err=%d nrec=%lu bytes=%lu\n",
+             (unsigned long) i, err, (unsigned long) nrec,
+             (unsigned long) bytes);
+      fails++;
+    }
+  }
+  /* A write that fails only at close (/dev/full) must fail the repair. */
+  if ((fp = fopen("/dev/full", "wb")) != NULL) {
+    uLong nrec, bytes;
+
+    fclose(fp);
+    if (zip_repair_size_case(argv[0], "/dev/full", 16, 0, 16, &nrec, &bytes) !=
+        Z_ERRNO) {
+      printf("zip-repair-size: FAIL a close error was not reported\n");
+      fails++;
+    }
+  }
+  if (fails == 0)
+    printf("zip-repair-size: OK\n");
+  return fails != 0;
+}
+
+#ifdef _WIN32
+#define HTS_FILENO(fp) _fileno(fp)
+#else
+#define HTS_FILENO(fp) fileno(fp)
+#endif
+
+/* Grades one unzRepair call whose `which` file cannot be opened: it must leave
+   neither `out` nor `tmp` behind, and must give back every descriptor it took.
+   fopen hands out the lowest free descriptor, so a leak pushes the probe past
+   `fd0`, the number a fresh open returned before any repair ran. */
+static int zip_repair_openfail_case(const char *which, const char *file,
+                                    const char *fileOut, const char *fileOutTmp,
+                                    const char *out, const char *tmp,
+                                    const char *probe, int fd0) {
+  hts_boolean leaked;
+  FILE *fp;
+
+  unzRepair(file, fileOut, fileOutTmp, NULL, NULL);
+  if (fexist(out) || fexist(tmp)) {
+    printf("zip-repair-openfail: FAIL (%s: output left behind)\n", which);
+    return 1;
+  }
+  fp = fopen(probe, "rb");
+  if (fp == NULL) {
+    printf("zip-repair-openfail: FAIL (%s: cannot probe descriptors)\n", which);
+    return 1;
+  }
+  leaked = HTS_FILENO(fp) != fd0 ? HTS_TRUE : HTS_FALSE;
+  fclose(fp);
+  if (leaked) {
+    printf("zip-repair-openfail: FAIL (%s: descriptor not given back)\n",
+           which);
+    return 1;
+  }
+  return 0;
+}
+
+/* unzRepair must write no output and give back every descriptor it took when
+   any one of its three files fails to open. Before the fix a failed temporary
+   open sent the central-directory writes through a NULL FILE*, and none of the
+   three cases closed the handles that did open. */
+static int st_zip_repair_openfail(httrackp *opt, int argc, char **argv) {
+  char in[HTS_URLMAXSIZE], out[HTS_URLMAXSIZE], tmp[HTS_URLMAXSIZE];
+  char nodir[HTS_URLMAXSIZE];
+  FILE *fp;
+  int fd0;
+
+  (void) opt;
+  if (argc < 1) {
+    fprintf(stderr, "zip-repair-openfail: needs a directory\n");
+    return 1;
+  }
+  snprintf(in, sizeof(in), "%s/damaged.zip", argv[0]);
+  snprintf(out, sizeof(out), "%s/repair.zip", argv[0]);
+  snprintf(tmp, sizeof(tmp), "%s/repair.tmp", argv[0]);
+  /* Under a directory that does not exist, so this is the open that fails. */
+  snprintf(nodir, sizeof(nodir), "%s/nodir/unopenable", argv[0]);
+  /* One byte: every case fails an open before anything parses the archive. */
+  fp = fopen(in, "wb");
+  if (fp == NULL || !hts_fwrite_exact("P", 1, fp)) {
+    if (fp != NULL)
+      fclose(fp);
+    fprintf(stderr, "zip-repair-openfail: cannot write %s\n", in);
+    return 1;
+  }
+  fd0 = HTS_FILENO(fp);
+  fclose(fp);
+
+  if (zip_repair_openfail_case("input", nodir, out, tmp, out, tmp, in, fd0) ||
+      zip_repair_openfail_case("output", in, nodir, tmp, out, tmp, in, fd0) ||
+      zip_repair_openfail_case("temporary", in, out, nodir, out, tmp, in,
+                               fd0)) {
+    return 1;
+  }
+  printf("zip-repair-openfail: OK\n");
+  return 0;
+}
+
+/* Members kept on either side of the abandoned one. */
+static const char *const zip_abandon_kept[] = {"before.bin", "after1.bin",
+                                               "after2.bin"};
+static const char zip_abandon_body[] = "zip-abandon kept member body";
+
+/* Fill `zf` with the kept members, opening a `doomed`-byte member after the
+   first one and abandoning it mid-write (0: never open it, the reference). The
+   doomed member is stored, so its body reaches the file byte for byte. What the
+   abandon returned lands in *abandon_err. */
+static int zip_abandon_fill(zipFile zf, size_t doomed, int *abandon_err) {
+  char chunk[4096];
+  zip_fileinfo fi;
+  size_t i;
+
+  memset(&fi, 0, sizeof(fi));
+  memset(chunk, 'Z', sizeof(chunk));
+  for (i = 0; i < sizeof(zip_abandon_kept) / sizeof(zip_abandon_kept[0]); i++) {
+    size_t left;
+
+    if (zipOpenNewFileInZip(zf, zip_abandon_kept[i], &fi, NULL, 0, NULL, 0,
+                            NULL, Z_DEFLATED,
+                            Z_DEFAULT_COMPRESSION) != ZIP_OK ||
+        zipWriteInFileInZip(zf, zip_abandon_body,
+                            (unsigned) (sizeof(zip_abandon_body) - 1)) !=
+            ZIP_OK ||
+        zipCloseFileInZip(zf) != ZIP_OK)
+      goto fail;
+    if (i != 0 || doomed == 0)
+      continue;
+    if (zipOpenNewFileInZip(zf, "doomed.bin", &fi, NULL, 0, NULL, 0, NULL,
+                            0 /* stored */, Z_NO_COMPRESSION) != ZIP_OK)
+      goto fail;
+    for (left = doomed; left != 0;) {
+      const size_t n = left < sizeof(chunk) ? left : sizeof(chunk);
+
+      if (zipWriteInFileInZip(zf, chunk, (unsigned) n) != ZIP_OK)
+        goto fail;
+      left -= n;
+    }
+    *abandon_err = zipAbandonFileInZip(zf);
+  }
+  return 0;
+
+fail:
+  return -1;
+}
+
+/* zip_abandon_fill() through a private filefunc table, `truncatable` telling
+   whether it carries a truncate entry: without one, as the Win32 tables were
+   before #1402, a rollback can only rewind. */
+static int zip_abandon_build_table(const char *path, size_t doomed,
+                                   hts_boolean truncatable, int *abandon_err) {
+  char catbuff[CATBUFF_SIZE];
+  zlib_filefunc64_def ff;
+  zipFile zf;
+  int ret;
+
+  hts_zip_filefunc64(&ff);
+  if (!truncatable)
+    ff.ztruncate64_file = NULL;
+  zf = zipOpen2_64(fconv(catbuff, sizeof(catbuff), path), APPEND_STATUS_CREATE,
+                   NULL, &ff);
+  if (zf == NULL)
+    return -1;
+  ret = zip_abandon_fill(zf, doomed, abandon_err);
+  return zipClose(zf, NULL) == ZIP_OK ? ret : -1;
+}
+
+static int zip_abandon_build(const char *path, size_t doomed) {
+  int abandon_err = ZIP_OK;
+
+  if (zip_abandon_build_table(path, doomed, HTS_TRUE, &abandon_err) != 0)
+    return -1;
+  return abandon_err == ZIP_OK ? 0 : -1;
+}
+
+/* Whole file into a malloct'd buffer: binary, not terminated. */
+static int zip_abandon_slurp(const char *path, char **out, size_t *len) {
+  char catbuff[CATBUFF_SIZE];
+  const LLint size = fsize_utf8(fconv(catbuff, sizeof(catbuff), path));
+  FILE *fp;
+
+  *out = NULL;
+  *len = 0;
+  if (size < 0)
+    return -1;
+  fp = FOPEN(fconv(catbuff, sizeof(catbuff), path), "rb");
+  if (fp == NULL)
+    return -1;
+  *out = malloct((size_t) size + 1);
+  if (*out == NULL ||
+      (size != 0 && !hts_fread_exact(*out, (size_t) size, fp))) {
+    freet(*out);
+    fclose(fp);
+    return -1;
+  }
+  fclose(fp);
+  *len = (size_t) size;
+  return 0;
+}
+
+/* Every kept member is readable and holds its body. */
+static int zip_abandon_check_members(unzFile uf) {
+  char got[sizeof(zip_abandon_body)];
+  size_t i;
+
+  for (i = 0; i < sizeof(zip_abandon_kept) / sizeof(zip_abandon_kept[0]); i++) {
+    const int want = (int) sizeof(zip_abandon_body) - 1;
+    int n;
+
+    if (unzLocateFile(uf, zip_abandon_kept[i], 1) != UNZ_OK ||
+        unzOpenCurrentFile(uf) != UNZ_OK) {
+      fprintf(stderr, "zip-abandon: '%s' is missing\n", zip_abandon_kept[i]);
+      return -1;
+    }
+    n = unzReadCurrentFile(uf, got, (unsigned) sizeof(got));
+    unzCloseCurrentFile(uf);
+    if (n != want || memcmp(got, zip_abandon_body, (size_t) want) != 0) {
+      fprintf(stderr, "zip-abandon: '%s' read back %d byte(s), want %d\n",
+              zip_abandon_kept[i], n, want);
+      return -1;
+    }
+  }
+  return 0;
+}
+
+/* A member abandoned mid-write must leave the archive byte-identical to one
+   that never opened it: a rewind that does not truncate keeps what the member
+   flushed past the end-of-central-directory written later, which readers stop
+   finding once that tail outgrows their 64KB backscan (unzip.c uMaxBack). */
+static int st_zip_abandon(httrackp *opt, int argc, char **argv) {
+  static const size_t doomed[] = {
+      70000,  /* one 64KB flush: a leftover tail a reader still scans past */
+      200000, /* three of them: a tail that buries the directory for good */
+  };
+  char refpath[HTS_URLMAXSIZE], path[HTS_URLMAXSIZE], name[64];
+  char *ref = NULL;
+  size_t reflen = 0;
+  size_t i;
+  int fail = 0;
+
+  (void) opt;
+  if (argc < 1) {
+    fprintf(stderr, "zip-abandon: needs a writable directory\n");
+    return 1;
+  }
+  fconcat(refpath, sizeof(refpath), argv[0], "zip-abandon-ref.zip");
+  if (zip_abandon_build(refpath, 0) != 0 ||
+      zip_abandon_slurp(refpath, &ref, &reflen) != 0 || reflen == 0) {
+    fprintf(stderr, "zip-abandon: cannot build the reference archive\n");
+    freet(ref);
+    return 1;
+  }
+  for (i = 0; i < sizeof(doomed) / sizeof(doomed[0]); i++) {
+    unz_global_info64 gi;
+    unzFile uf;
+    char *got = NULL;
+    size_t gotlen = 0;
+
+    snprintf(name, sizeof(name), "zip-abandon-%d.zip", (int) doomed[i]);
+    fconcat(path, sizeof(path), argv[0], name);
+    if (zip_abandon_build(path, doomed[i]) != 0 ||
+        zip_abandon_slurp(path, &got, &gotlen) != 0) {
+      fprintf(stderr, "zip-abandon: cannot build '%s'\n", path);
+      fail++;
+      freet(got);
+      continue;
+    }
+    if (gotlen != reflen || memcmp(got, ref, reflen) != 0) {
+      fprintf(stderr,
+              "zip-abandon: %d abandoned byte(s) left a %d-byte archive, want "
+              "%d byte(s) identical to the reference\n",
+              (int) doomed[i], (int) gotlen, (int) reflen);
+      fail++;
+    }
+    freet(got);
+    uf = hts_unzOpen_utf8(path);
+    if (uf == NULL) {
+      fprintf(stderr,
+              "zip-abandon: '%s' does not open: no directory found within the "
+              "backscan\n",
+              path);
+      fail++;
+      continue;
+    }
+    if (unzGetGlobalInfo64(uf, &gi) != UNZ_OK ||
+        gi.number_entry !=
+            sizeof(zip_abandon_kept) / sizeof(zip_abandon_kept[0])) {
+      fprintf(stderr,
+              "zip-abandon: '%s' holds %" PRIu64 " entr(ies), want %d\n", path,
+              (uint64_t) gi.number_entry,
+              (int) (sizeof(zip_abandon_kept) / sizeof(zip_abandon_kept[0])));
+      fail++;
+    } else if (zip_abandon_check_members(uf) != 0)
+      fail++;
+    unzClose(uf);
+  }
+  freet(ref);
+  printf("zip-abandon: %s\n", fail ? "FAIL" : "OK");
+  return fail;
+}
+
+/* A rollback that could only rewind must say so (#1402): reporting ZIP_OK for
+   it hands the caller an archive whose directory no reader finds, the very
+   damage the truncate is there to prevent. */
+static int st_zip_abandon_notrunc(httrackp *opt, int argc, char **argv) {
+  static const size_t doomed = 200000; /* a tail past unzip.c's 64KB backscan */
+  char refpath[HTS_URLMAXSIZE], path[HTS_URLMAXSIZE];
+  char *ref = NULL, *got = NULL;
+  size_t reflen = 0, gotlen = 0;
+  int abandon_err = ZIP_OK;
+  int fail = 0;
+  unzFile uf;
+
+  (void) opt;
+  if (argc < 1) {
+    fprintf(stderr, "zip-abandon-notrunc: needs a writable directory\n");
+    return 1;
+  }
+  fconcat(refpath, sizeof(refpath), argv[0], "zip-notrunc-ref.zip");
+  fconcat(path, sizeof(path), argv[0], "zip-notrunc.zip");
+
+  /* control: the table the cache opens with truncates, and reports ZIP_OK */
+  if (zip_abandon_build_table(refpath, doomed, HTS_TRUE, &abandon_err) != 0 ||
+      zip_abandon_slurp(refpath, &ref, &reflen) != 0 || reflen == 0) {
+    fprintf(stderr, "zip-abandon-notrunc: cannot build the reference\n");
+    freet(ref);
+    return 1;
+  }
+  freet(ref);
+  if (abandon_err != ZIP_OK) {
+    fprintf(stderr,
+            "zip-abandon-notrunc: a truncating backend returned %d, want %d\n",
+            abandon_err, ZIP_OK);
+    fail++;
+  }
+  /* a flushed-but-kept member shows up as more than a backscan of leftovers,
+     which is the size that matters, not the member's nominal one */
+  if (reflen > 65535) {
+    fprintf(stderr,
+            "zip-abandon-notrunc: the reference kept %d byte(s), so the "
+            "abandoned member was not truncated away\n",
+            (int) reflen);
+    fail++;
+  }
+
+  abandon_err = ZIP_OK;
+  if (zip_abandon_build_table(path, doomed, HTS_FALSE, &abandon_err) != 0 ||
+      zip_abandon_slurp(path, &got, &gotlen) != 0) {
+    fprintf(stderr, "zip-abandon-notrunc: cannot build '%s'\n", path);
+    freet(got);
+    return fail + 1;
+  }
+  freet(got);
+  if (abandon_err == ZIP_OK) {
+    fprintf(stderr, "zip-abandon-notrunc: a backend with no truncate reported "
+                    "the rollback as done\n");
+    fail++;
+  }
+  /* only what the member had flushed stays, and it takes more than a reader's
+     64KB backscan (unzip.c uMaxBack) to bury the directory behind it */
+  if (gotlen <= reflen + 65535) {
+    fprintf(stderr,
+            "zip-abandon-notrunc: %d byte(s) left over the reference's %d, too "
+            "few to outgrow a 64KB backscan\n",
+            (int) gotlen, (int) reflen);
+    fail++;
+  }
+  /* what the wrong return hides: the tail buries the directory written after */
+  uf = hts_unzOpen_utf8(path);
+  if (uf != NULL) {
+    fprintf(stderr,
+            "zip-abandon-notrunc: '%s' still opens, so the case proves "
+            "nothing\n",
+            path);
+    unzClose(uf);
+    fail++;
+  }
+  printf("zip-abandon-notrunc: %s\n", fail ? "FAIL" : "OK");
+  return fail;
+}
+
+static int st_cache_legacy(httrackp *opt, int argc, char **argv) {
+  int err;
+
+  if (argc < 1) {
+    fprintf(stderr, "cache-legacy: needs a directory\n");
+    return 1;
+  }
+  err = cache_legacy_refused_selftest(opt, argv[0]);
+  printf("cache-legacy: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+static int st_ref_portable(httrackp *opt, int argc, char **argv) {
+  int err;
+
+  if (argc < 1) {
+    fprintf(stderr, "ref-portable: needs a directory\n");
+    return 1;
+  }
+  err = ref_portable_selftest(opt, argv[0]);
+  printf("ref-portable: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+static int st_reconcile(httrackp *opt, int argc, char **argv) {
+  int err;
+
+  if (argc < 1) {
+    fprintf(stderr, "reconcile: needs a directory\n");
+    return 1;
+  }
+  err = cache_reconcile_selftest(opt, argv[0]);
+  printf("cache-reconcile: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+/* --changes bucket accounting and JSON escaping (#714). */
+static int st_changes(httrackp *opt, int argc, char **argv) {
+  String out = STRING_EMPTY;
+  int err = 0;
+
+  (void) opt;
+  (void) argc;
+  (void) argv;
+
+  /* A file the crawl did not rewrite is unchanged whatever the wire said. */
+  assertf(hts_changes_classify(HTS_FALSE, HTS_TRUE, HTS_FALSE, HTS_FALSE,
+                               HTS_FALSE) == HTS_CHANGE_UNCHANGED);
+  /* Rewritten with no previous copy: new, digests or not. */
+  assertf(hts_changes_classify(HTS_TRUE, HTS_FALSE, HTS_FALSE, HTS_TRUE,
+                               HTS_FALSE) == HTS_CHANGE_NEW);
+  /* Digests decide, and outrank the transfer signal both ways: a server with
+     no validators answers 200 with the same bytes, and a 304 can still sit in
+     front of a locally damaged copy. */
+  assertf(hts_changes_classify(HTS_TRUE, HTS_TRUE, HTS_FALSE, HTS_TRUE,
+                               HTS_TRUE) == HTS_CHANGE_UNCHANGED);
+  assertf(hts_changes_classify(HTS_TRUE, HTS_TRUE, HTS_TRUE, HTS_TRUE,
+                               HTS_FALSE) == HTS_CHANGE_CHANGED);
+  /* Only with no digest at all does the transfer signal get a say. */
+  assertf(hts_changes_classify(HTS_TRUE, HTS_TRUE, HTS_TRUE, HTS_FALSE,
+                               HTS_FALSE) == HTS_CHANGE_UNCHANGED);
+  assertf(hts_changes_classify(HTS_TRUE, HTS_TRUE, HTS_FALSE, HTS_FALSE,
+                               HTS_FALSE) == HTS_CHANGE_CHANGED);
+
+#define JSON_IS(SRC, WANT)                                                     \
+  do {                                                                         \
+    StringClear(out);                                                          \
+    hts_changes_json_string(&out, SRC);                                        \
+    if (strcmp(StringBuff(out), WANT) != 0) {                                  \
+      fprintf(stderr, "changes: %s -> %s, expected %s\n", #SRC,                \
+              StringBuff(out), WANT);                                          \
+      err = 1;                                                                 \
+    }                                                                          \
+  } while (0)
+
+  JSON_IS("/a/b.html", "\"/a/b.html\"");
+  JSON_IS("a\"b\\c", "\"a\\\"b\\\\c\"");
+  JSON_IS("tab\there", "\"tab\\u0009here\"");
+  /* Valid UTF-8 rides through; a lone Latin-1 byte, a truncated sequence and
+     an overlong encoding of '/' each become U+FFFD rather than invalid JSON. */
+  JSON_IS("caf\xc3\xa9", "\"caf\xc3\xa9\"");
+  JSON_IS("caf\xe9", "\"caf\\ufffd\"");
+  JSON_IS("\xc3", "\"\\ufffd\"");
+  JSON_IS("\xc0\xaf", "\"\\ufffd\\ufffd\"");
+  /* A UTF-16 surrogate half is well-formed UTF-8 by shape only. */
+  JSON_IS("\xed\xa0\x80", "\"\\ufffd\\ufffd\\ufffd\"");
+
+#undef JSON_IS
+  StringFree(out);
+  printf("changes self-test: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+#define CHANGES_RACE_FILES 8
+#define CHANGES_RACE_ROUNDS 400
+
+static void changes_race_notify(httrackp *opt, int n) {
+  char fil[64];
+  char BIGSTK save[HTS_URLMAXSIZE * 2];
+
+  snprintf(fil, sizeof(fil), "/f%d.bin", n);
+  strlcpybuff(save, StringBuff(opt->path_html), sizeof(save));
+  strlcatbuff(save, "race.example", sizeof(save));
+  strlcatbuff(save, fil, sizeof(save));
+  hts_changes_notify(opt, "race.example", fil, save, HTS_TRUE, HTS_FALSE);
+}
+
+static htsmutex changes_race_lock = HTSMUTEX_INIT;
+static int changes_race_started = 0;
+
+static int changes_race_count(int *which) {
+  int n;
+
+  hts_mutexlock(&changes_race_lock);
+  n = *which;
+  hts_mutexrelease(&changes_race_lock);
+  return n;
+}
+
+static void changes_race_thread(void *arg) {
+  httrackp *const opt = (httrackp *) arg;
+  int i;
+
+  hts_mutexlock(&changes_race_lock);
+  changes_race_started++;
+  hts_mutexrelease(&changes_race_lock);
+  for (i = 0; i < CHANGES_RACE_ROUNDS; i++)
+    changes_race_notify(opt, i % CHANGES_RACE_FILES);
+}
+
+/* A transfer thread the crawl never joins (FTP) reaches hts_changes_notify()
+   while the report is being resolved and written. Run it under TSan. */
+static int st_changes_race(httrackp *opt, int argc, char **argv) {
+  String out = STRING_EMPTY;
+  char base[HTS_URLMAXSIZE];
+  int err = 0;
+  int i;
+
+  if (argc < 1) {
+    fprintf(stderr, "usage: -#test=changes-race <writable directory>\n");
+    return 1;
+  }
+  strcpybuff(base, argv[0]);
+  if (base[0] != '\0' && hts_lastchar(base) != '/')
+    strcatbuff(base, "/");
+  StringCopy(opt->path_html, base);
+  StringCopy(opt->path_html_utf8, base);
+  StringCopy(opt->path_log, base);
+  opt->changes = HTS_TRUE;
+  hts_changes_free_opt(opt);
+
+  /* Real files, so the reader hashes and stats them for as long as it takes. */
+  {
+    char BIGSTK dir[HTS_URLMAXSIZE * 2];
+
+    strlcpybuff(dir, base, sizeof(dir));
+    strlcatbuff(dir, "race.example", sizeof(dir));
+    for (i = 0; i < CHANGES_RACE_FILES; i++) {
+      char BIGSTK path[HTS_URLMAXSIZE * 2];
+      char name[64];
+      FILE *fp;
+      int n;
+
+      snprintf(name, sizeof(name), "/f%d.bin", i);
+      strlcpybuff(path, dir, sizeof(path));
+      strlcatbuff(path, name, sizeof(path));
+      structcheck(path);
+      fp = FOPEN(path, "wb");
+      if (fp == NULL) {
+        fprintf(stderr, "changes-race: cannot write %s\n", path);
+        return 1;
+      }
+      for (n = 0; n < 16384; n++)
+        (void) hts_fwrite_exact("0123456789abcdef", 16, fp);
+      fclose(fp);
+    }
+  }
+
+  /* Take both locks once here: hts_mutexlock() initializes lazily, and two
+     threads reaching a fresh one together race on the init itself. */
+  hts_mutexlock(&changes_race_lock);
+  changes_race_started = 0;
+  hts_mutexrelease(&changes_race_lock);
+  for (i = 0; i < 4; i++) {
+    if (hts_newthread(changes_race_thread, opt) != 0) {
+      fprintf(stderr, "changes-race: cannot spawn a notifier thread\n");
+      return 1;
+    }
+  }
+  /* Report only once they are all notifying, or there is nothing to race. */
+  while (changes_race_count(&changes_race_started) < 4)
+    Sleep(10);
+  for (i = 0; i < 64; i++)
+    hts_changes_report(opt, &out);
+  hts_changes_close_opt(opt);
+  htsthread_wait();
+
+  /* Sealed: a straggler must be dropped, not start a report nobody writes. */
+  changes_race_notify(opt, CHANGES_RACE_FILES + 1);
+  hts_changes_report(opt, &out);
+  if (StringLength(out) == 0) {
+    fprintf(stderr, "changes-race: the report was lost after close\n");
+    err = 1;
+  } else if (strstr(StringBuff(out), "f9.bin") != NULL) {
+    fprintf(stderr, "changes-race: a post-close notify reached the report\n");
+    err = 1;
+  }
+
+  StringFree(out);
+  hts_changes_free_opt(opt);
+  printf("changes-race self-test: %s\n", err ? "FAIL" : "OK");
+  return err;
+}
+
+/* ------------------------------------------------------------ */
+/* Registry: this module's tests, in the order -#test lists them. */
+/* ------------------------------------------------------------ */
+
+const struct selftest_entry selftests_cache[] = {
+    {"changes", "", "--changes bucket accounting and JSON escaping (#714)",
+     st_changes},
+    {"changes-race", "<dir>", "--changes under a late transfer thread (#714)",
+     st_changes_race},
+    {"cache", "<dir>", "cache read/write round-trip self-test", st_cache},
+    {"cacheindex", "", "cache-index (.ndx) parse must stay in bounds",
+     st_cacheindex},
+    {"cache-golden", "<dir> [regen]", "frozen cache-format read self-test",
+     st_cache_golden},
+    {"cache-writefail", "<dir>", "cache write-failure handling self-test",
+     st_cache_writefail},
+    {"reconcile", "<dir>", "cache generation reconcile policy self-test",
+     st_reconcile},
+    {"cache-legacy", "<dir>", "pre-3.31 legacy cache refusal self-test",
+     st_cache_legacy},
+    {"ref-portable", "<dir>",
+     "the .ref resume state is host-independent, and refuses a legacy one",
+     st_ref_portable},
+    {"cache-corrupt", "<dir>", "cache read-side corruption self-test",
+     st_cache_corrupt},
+    {"cache-readfail", "<dir>",
+     "a failed source read abandons the entry, never truncates it",
+     st_cache_readfail},
+    {"cache-hdrbounds", "<dir>",
+     "cache header block must stay bounded at max-length fields",
+     st_cache_hdrbounds},
+    {"cache-urlbounds", "<dir>",
+     "cache store and lookup at max-length URLs must not abort or alias",
+     st_cache_urlbounds},
+    {"cache-savebounds", "<dir>",
+     "cached save name rebuilt under a deeper html path must fit or be refused",
+     st_cache_savebounds},
+    {"zip-repair-shift", "<dir>",
+     "cache zip-repair header read must not overflow a signed shift",
+     st_zip_repair_shift},
+    {"zip-repair-size", "<dir>",
+     "cache zip-repair must copy an untrusted entry size, never allocate it",
+     st_zip_repair_size},
+    {"zip-repair-openfail", "<dir>",
+     "cache zip-repair must not write through an output it failed to open",
+     st_zip_repair_openfail},
+    {"zip-abandon", "<dir>",
+     "an abandoned member leaves the archive byte-identical", st_zip_abandon},
+    {"zip-abandon-notrunc", "<dir>",
+     "a rollback that could only rewind reports a failure",
+     st_zip_abandon_notrunc},
+    {NULL, NULL, NULL, NULL},
+};

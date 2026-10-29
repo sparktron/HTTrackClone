@@ -36,10 +36,13 @@ Please visit our Website: http://www.httrack.com
 // Fichier librairie .c
 
 #include "htscore.h"
+#include "htsbundle.h"
 #include "htssitemap.h"
 #include "htswarc.h"
 #include "htschanges.h"
 #include "htssinglefile.h"
+#include "htsfetch.h"
+#include "htspsl.h"
 
 /* specific definitions */
 #include "htsdate.h"
@@ -56,7 +59,36 @@ Please visit our Website: http://www.httrack.com
 #include "htsmodules.h"
 #include "htscharset.h"
 #include "htsencoding.h"
+#include "htsescape.h"
 #include "htscodec.h"
+#include "htslines.h"
+
+#include <limits.h>
+
+/* macOS reaches Multipath TCP through connectx() on an AF_MULTIPATH socket
+   rather than through a protocol, so the two platforms differ at connect time
+   and not only at socket time. */
+#if HTS_INET_MPTCP && defined(__APPLE__)
+#define HTS_INET_MPTCP_DARWIN 1
+#ifndef AF_MULTIPATH
+/* Measured, not assumed: the macOS SDK does not declare this, so a build that
+   required the declaration compiled the whole arm out. hts_mptcp_probe() opens
+   one socket with it at startup, which is what makes the number safe to name
+   here, because a wrong one leaves Multipath TCP off. */
+#define AF_MULTIPATH 39
+#endif
+#else
+#define HTS_INET_MPTCP_DARWIN 0
+#endif
+
+/* Without this header Multipath TCP still works but goes unreported, which is
+   also where macOS stands. */
+#if HTS_INET_MPTCP && defined(HAVE_LINUX_MPTCP_H)
+#include <linux/mptcp.h>
+#define HTS_INET_MPTCP_INFO 1
+#else
+#define HTS_INET_MPTCP_INFO 0
+#endif
 
 #ifdef _WIN32
 #include <direct.h>
@@ -669,6 +701,7 @@ void hts_init_htsblk(htsblk * r) {
   r->msg[0] = '\0';
   r->statuscode = STATUSCODE_INVALID;
   r->totalsize = -1;
+  r->retry_after = -1;
 }
 
 // ouverture d'une liaison http, envoi d'une requète
@@ -799,7 +832,7 @@ T_SOC http_xfopen(httrackp *opt, int mode, int treat, int waitconnect,
 
     // connecté?
     if (waitconnect) {
-      http_sendhead(opt, NULL, mode, xsend, adr, fil, NULL, NULL, retour);
+      http_sendhead(opt, NULL, mode, xsend, adr, fil, NULL, NULL, NULL, retour);
     }
 
     if (soc != INVALID_SOCKET) {
@@ -838,7 +871,9 @@ T_SOC http_xfopen(httrackp *opt, int mode, int treat, int waitconnect,
           printf(">%s\n", rcvd);
 #endif
           if (cut)
-            hts_log_print(NULL, LOG_WARNING, "Over-long header dropped");
+            hts_log_print(NULL,
+                          hts_header_is_read(rcvd) ? LOG_WARNING : LOG_DEBUG,
+                          "Over-long header dropped");
           else if (strnotempty(rcvd))
             treathead(NULL, NULL, NULL, retour, rcvd);
 
@@ -903,52 +938,91 @@ static void print_buffer(buff_struct*const str, const char *format, ...) {
 }
 
 /* Append the request "Cookie:" header line for every stored cookie matching
-   domain/path. The port in domain is ignored (see cookie_host). RFC 6265
+   adr/path, where adr may carry its scheme and only "https://" gets a Secure
+   cookie. The port in adr is ignored (see cookie_host). RFC 6265
    form: bare "name=value" pairs joined by "; ", no $Version/$Path attributes
    (those are RFC 2965 syntax that modern servers reject, issue #151).
-   Returns the number of cookies emitted. */
+   A pair that will not fit whole is dropped whole and counted in *skipped (may
+   be NULL), so the line never ends mid-pair and never raises the caller's
+   overflow. The line takes whatever room bstr has left, so the caller must say
+   in reserve how many bytes it still has to write after it.
+   Returns the number emitted. */
 static int append_cookie_header(buff_struct *bstr, t_cookie *cookie,
-                                const char *domain, const char *path) {
+                                const char *adr, const char *path,
+                                size_t reserve, int *skipped) {
+  const size_t crlf_len = sizeof(H_CRLF) - 1;
+  const hts_boolean https = strfield(adr, "https://") != 0;
+  const int64_t now = (int64_t) time(NULL);
+  const char *domain;
   char buffer[8192];
-  char host[256];
+  char host[COOKIE_MAX_DOMAIN];
   char *b;
-  int cook = 0;
-  int max_cookies = 8;
+  int count = 0;
+  size_t max_pos;
 
-  if (cookie == NULL)
+  if (skipped != NULL)
+    *skipped = 0;
+  if (cookie == NULL || bstr->overflow)
     return 0;
-  if (!cookie_host(domain, host, sizeof(host)))
+  if (!cookie_host(adr, host, sizeof(host)))
     return 0;
   domain = host;
+
+  /* Highest position a pair may reach: cookies get what is left once this
+     line's CRLF, the NUL and whatever the caller still owes are set aside.
+     Both tests are what keep the subtractions from wrapping. */
+  if (bstr->capacity <= crlf_len + 1)
+    return 0;
+  max_pos = bstr->capacity - crlf_len - 1;
+  if (reserve >= max_pos)
+    return 0;
+  max_pos -= reserve;
+
   b = cookie->data;
   do {
     b = cookie_find(b, "", domain, path); // next matching cookie
-    if (b != NULL) {
-      max_cookies--;
-      if (!cook) {
-        print_buffer(bstr, "Cookie: ");
-        cook = 1;
-      } else
-        print_buffer(bstr, "; ");
-      print_buffer(bstr, "%s", cookie_get(buffer, b, 5));
-      print_buffer(bstr, "=%s", cookie_get(buffer, b, 6));
+    if (b != NULL && !cookie_sendable(b, https, now)) {
+      b = cookie_nextfield(b);
+    } else if (b != NULL) {
+      const size_t mark = bstr->pos;
+      hts_boolean kept = HTS_FALSE;
+
+      if (mark < max_pos) {
+        if (count == 0)
+          print_buffer(bstr, "Cookie: ");
+        else
+          print_buffer(bstr, "; ");
+        print_buffer(bstr, "%s", cookie_get(buffer, b, 5));
+        print_buffer(bstr, "=%s", cookie_get(buffer, b, 6));
+        kept = !bstr->overflow && bstr->pos <= max_pos;
+      }
+      if (kept) {
+        count++;
+      } else {
+        /* Rewind: half a pair would be read as another cookie's value. */
+        bstr->pos = mark;
+        bstr->buffer[mark] = '\0';
+        bstr->overflow = HTS_FALSE;
+        if (skipped != NULL)
+          (*skipped)++;
+      }
       b = cookie_nextfield(b);
     }
-  } while (b != NULL && max_cookies > 0);
-  if (cook)
+  } while (b != NULL);
+  if (count != 0)
     print_buffer(bstr, H_CRLF);
-  return cook;
+  return count;
 }
 
-/* Build the request Cookie line for domain/path into dst (always
+/* Build the request Cookie line for adr/path into dst (always
    NUL-terminated). Returns the number of cookies emitted. */
-int http_cookie_header(t_cookie *cookie, const char *domain, const char *path,
+int http_cookie_header(t_cookie *cookie, const char *adr, const char *path,
                        char *dst, size_t dst_size) {
   buff_struct bstr = {dst, dst_size, 0};
 
   assertf(dst != NULL && dst_size > 0);
   dst[0] = '\0';
-  return append_cookie_header(&bstr, cookie, domain, path);
+  return append_cookie_header(&bstr, cookie, adr, path, 0, NULL);
 }
 
 hts_boolean hts_body_missing_unexpectedly(const htsblk *r) {
@@ -959,6 +1033,64 @@ hts_boolean hts_body_missing_unexpectedly(const htsblk *r) {
       r->statuscode == HTTP_REQUESTED_RANGE_NOT_SATISFIABLE)
     return HTS_FALSE;
   return HTS_TRUE;
+}
+
+/* Length of the field name that opens the line, without blanks before the
+   colon, or 0 for a folded line or one with no colon. Servers differ on
+   "Host : x", so the engine sends it as Host without the blank. */
+static size_t header_name_len(const char *line) {
+  size_t len;
+
+  if (*line == ' ' || *line == '\t')
+    return 0;
+  for (len = 0; line[len] != '\0' && line[len] != ':' && line[len] != '\r' &&
+                line[len] != '\n';
+       len++)
+    ;
+  if (line[len] != ':')
+    return 0;
+  while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t'))
+    len--;
+  return len;
+}
+
+/* Does the name on this line equal name, ignoring case? */
+static hts_boolean header_name_is(const char *line, size_t len,
+                                  const char *name, size_t name_len) {
+  size_t i = 0;
+
+  if (len != name_len)
+    return HTS_FALSE;
+  while (i < len && streql(line[i], name[i]))
+    i++;
+  return i == len;
+}
+
+/* Does the line open with an RFC 7230 token name and a colon? */
+static hts_boolean header_line_valid(const char *line) {
+  const size_t len = header_name_len(line);
+  size_t i;
+
+  for (i = 0; i < len; i++) {
+    const unsigned char c = (unsigned char) line[i];
+
+    if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
+        !(c >= '0' && c <= '9') && strchr("!#$%&'*+-.^_`|~", c) == NULL)
+      return HTS_FALSE;
+  }
+  return len != 0;
+}
+
+static hts_boolean header_name_in(const char *line, const char *const *names,
+                                  size_t count) {
+  const size_t len = header_name_len(line);
+  size_t i;
+
+  for (i = 0; len != 0 && i < count; i++) {
+    if (header_name_is(line, len, names[i], strlen(names[i])))
+      return HTS_TRUE;
+  }
+  return HTS_FALSE;
 }
 
 hts_boolean http_headers_have_field(const char *headers,
@@ -975,13 +1107,7 @@ hts_boolean http_headers_have_field(const char *headers,
     return HTS_FALSE;
   /* anchored, so a folded line or a name inside a value cannot match */
   for (line = headers; *line != '\0';) {
-    size_t i = 0;
-
-    while (i < len && streql(line[i], field_name[i]))
-      i++;
-    /* RFC 7230 forbids a space before the colon: tolerating one would drop our
-       line for a malformed one the server then ignores */
-    if (i == len && line[len] == ':')
+    if (header_name_is(line, header_name_len(line), field_name, len))
       return HTS_TRUE;
     while (*line != '\0' && *line != '\n' && *line != '\r')
       line++;
@@ -991,11 +1117,130 @@ hts_boolean http_headers_have_field(const char *headers,
   return HTS_FALSE;
 }
 
+/* These fields frame the message or act per hop. */
+static hts_boolean header_line_refused(const char *line) {
+  static const char *const refused[] = {"Content-Length",
+                                        "Transfer-Encoding",
+                                        "Connection",
+                                        "Keep-Alive",
+                                        "TE",
+                                        "Upgrade",
+                                        "Expect"};
+
+  return header_name_in(line, refused, sizeof(refused) / sizeof(refused[0]));
+}
+
+/* Fields a request carries once, so a later custom line overrides an earlier.
+ */
+static hts_boolean header_line_single(const char *line) {
+  static const char *const single[] = {"Host", "Cookie", "Authorization"};
+
+  return header_name_in(line, single, sizeof(single) / sizeof(single[0]));
+}
+
+/* An update or a resume writes these fields itself, dropping the custom line.
+ */
+static hts_boolean header_line_engine_conditional(const char *line) {
+  static const char *const conditional[] = {
+      "Range", "If-Match", "If-None-Match", "If-Modified-Since",
+      "If-Unmodified-Since"};
+
+  return header_name_in(line, conditional,
+                        sizeof(conditional) / sizeof(conditional[0]));
+}
+
+/* Return the last unfolded line of headers, or NULL. */
+static const char *last_unfolded_line(const char *headers) {
+  const char *last = NULL;
+  const char *line;
+
+  for (line = headers; *line != '\0';) {
+    if (*line != ' ' && *line != '\t')
+      last = line;
+    while (*line != '\0' && *line != '\r' && *line != '\n')
+      line++;
+    if (line[0] == '\r' && line[1] == '\n')
+      line += 2;
+    else if (*line != '\0')
+      line++;
+  }
+  return last;
+}
+
+HTSEXT_API hts_header_verdict hts_custom_header_verdict(const char *headers,
+                                                        const char *line) {
+  if (line == NULL)
+    return HTS_HEADER_DROPPED_MALFORMED;
+  if (*line == ' ' || *line == '\t') {
+    const char *const parent =
+        headers != NULL ? last_unfolded_line(headers) : NULL;
+
+    /* alone, or the parent would find its own field in headers */
+    return parent != NULL ? hts_custom_header_verdict(NULL, parent)
+                          : HTS_HEADER_DROPPED_ORPHAN_FOLD;
+  }
+  if (!header_line_valid(line))
+    return HTS_HEADER_DROPPED_MALFORMED;
+  if (header_line_refused(line))
+    return HTS_HEADER_DROPPED_FRAMING;
+  if (header_line_single(line) && headers != NULL) {
+    char field[128];
+    const size_t len = header_name_len(line);
+
+    /* bounded here, not by the longest name in single[] */
+    if (len < sizeof(field)) {
+      memcpy(field, line, len);
+      field[len] = '\0';
+      if (http_headers_have_field(headers, field))
+        return HTS_HEADER_SENT_REPLACES_EARLIER;
+    }
+  }
+  if (header_line_engine_conditional(line))
+    return HTS_HEADER_SENT_UNLESS_ENGINE_OVERRIDES;
+  return HTS_HEADER_SENT;
+}
+
+const char *http_custom_header_warning(const char *headers, const char *line) {
+  /* a fold's parent line already got its warning */
+  if ((*line == ' ' || *line == '\t') && headers != NULL && *headers != '\0')
+    return NULL;
+  switch (hts_custom_header_verdict(headers, line)) {
+  case HTS_HEADER_DROPPED_ORPHAN_FOLD:
+    return "folded line with no header to continue ignored";
+  case HTS_HEADER_DROPPED_MALFORMED:
+    return "malformed header ignored";
+  case HTS_HEADER_DROPPED_FRAMING:
+    return "framing header ignored";
+  case HTS_HEADER_SENT_REPLACES_EARLIER:
+    return "header replaces an earlier one";
+  case HTS_HEADER_SENT_UNLESS_ENGINE_OVERRIDES: /* valid, so a bundle may carry
+                                                   it */
+  case HTS_HEADER_SENT:
+    break;
+  }
+  return NULL;
+}
+
+/* The -%X warnings, plus Host, Cookie and Proxy-*. */
+const char *http_bundle_header_refusal(const char *headers, const char *line) {
+  static const char *const engine[] = {"Host", "Cookie"};
+  const char *const why = http_custom_header_warning(headers, line);
+
+  if (why != NULL)
+    return why;
+  if (header_name_in(line, engine, sizeof(engine) / sizeof(engine[0])))
+    return "Host and Cookie are the engine's";
+  if (strfield(line, "Proxy-"))
+    return "a proxy header is not for the site";
+  return NULL;
+}
+
 /* Dropping a line drops its folded continuations too: kept, that value would
    attach to whichever header precedes it in the request. */
 static void append_custom_headers(buff_struct *bstr, const char *headers) {
   const size_t base = bstr->pos;
-  hts_boolean keep = HTS_TRUE;
+  /* a leading folded line would attach to the engine's last header */
+  hts_boolean keep = HTS_FALSE;
   const char *line;
 
   for (line = headers; *line != '\0';) {
@@ -1011,15 +1256,11 @@ static void append_custom_headers(buff_struct *bstr, const char *headers) {
       next++;
 
     if (*line != ' ' && *line != '\t') { /* not a folded continuation */
-      const char *colon = line;
+      const size_t len = header_name_len(line);
       char field[128];
 
-      keep = HTS_TRUE;
-      while (colon < eol && *colon != ':')
-        colon++;
-      if (colon > line && colon < eol &&
-          (size_t) (colon - line) < sizeof(field)) {
-        const size_t len = (size_t) (colon - line);
+      keep = header_line_valid(line) && !header_line_refused(line);
+      if (keep && len < sizeof(field)) {
         const char cut = bstr->buffer[base];
 
         memcpy(field, line, len);
@@ -1028,10 +1269,23 @@ static void append_custom_headers(buff_struct *bstr, const char *headers) {
         bstr->buffer[base] = '\0';
         keep = !http_headers_have_field(bstr->buffer, field);
         bstr->buffer[base] = cut;
+        /* the last of a single-valued field wins, as later options do */
+        if (keep && header_line_single(line) &&
+            http_headers_have_field(next, field))
+          keep = HTS_FALSE;
       }
     }
-    if (keep)
-      print_buffer(bstr, "%.*s", (int) (next - line), line);
+    if (keep) {
+      const size_t len = header_name_len(line);
+      const char *rest = line + len;
+
+      /* A blank before the colon is invalid, so the name goes out without it.
+         One write, so a line that does not fit leaves nothing behind. */
+      while (len != 0 && *rest != ':')
+        rest++;
+      print_buffer(bstr, "%.*s%.*s", (int) len, line, (int) (next - rest),
+                   rest);
+    }
     line = next;
   }
 }
@@ -1065,19 +1319,330 @@ hts_boolean hts_location_is_safe(const char *location) {
                                                                  : HTS_FALSE;
 }
 
+static hts_boolean hts_request_is_secure(const htsblk *retour) {
+#if HTS_USEOPENSSL
+  return retour->ssl ? HTS_TRUE : HTS_FALSE;
+#else
+  (void) retour;
+  return HTS_FALSE;
+#endif
+}
+
+/* Is the product token at s, length n, named name ("Chrome" for "Chrome/141")?
+   On a match, *major is the version's first number, or -1 when the version is
+   malformed. */
+static hts_boolean ua_product_is(const char *s, size_t n, const char *name,
+                                 int *major) {
+  const size_t len = strlen(name);
+  long v = 0;
+  size_t i;
+
+  if (n <= len || strncmp(s, name, len) != 0 || s[len] != '/')
+    return HTS_FALSE;
+  *major = -1;
+  if (s[len + 1] == '0')
+    return HTS_TRUE;
+  for (i = len + 1; i < n && isdigit((unsigned char) s[i]) && v < 100000; i++)
+    v = v * 10 + (s[i] - '0');
+  if (i == len + 1 || v >= 100000)
+    return HTS_TRUE;
+  for (; i < n; i++) {
+    if (s[i] != '.' && !isdigit((unsigned char) s[i]))
+      return HTS_TRUE;
+  }
+  *major = (int) v;
+  return HTS_TRUE;
+}
+
+/* Does the UA comment s, length n, contain word? */
+static hts_boolean ua_comment_has(const char *s, size_t n, const char *word) {
+  const size_t len = strlen(word);
+  size_t i;
+
+  for (i = 0; i + len <= n; i++) {
+    if (strncmp(s + i, word, len) == 0)
+      return HTS_TRUE;
+  }
+  return HTS_FALSE;
+}
+
+hts_boolean hts_client_hints_of(const char *user_agent, hts_client_hints *ch) {
+  /* Chromium's GREASE brand and brand order (user_agent_utils.cc), seeded by
+     the major. Before M108 the formula differed. */
+  enum { GREASE_FIRST_MAJOR = 108 };
+
+  static const char grease_chars[] = " (:-./);=?_";
+  static const char *const grease_versions[] = {"8", "99", "24"};
+  static const int orders[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2},
+                                   {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+  const char *comment = NULL;
+  size_t comment_len = 0;
+  int chrome = -1;
+  int edge = 0; /* 0: no Edg token */
+  hts_boolean mobile = HTS_FALSE, mozilla = HTS_FALSE;
+  const char *p;
+  char brands[3][48];
+  const char *shuffled[3];
+  int i;
+
+  memset(ch, 0, sizeof(*ch));
+  if (user_agent == NULL)
+    return HTS_FALSE;
+  /* Every product token must be one Chrome or Edge sends, so any other
+     browser built on Chromium (Opera, Samsung, headless) gets no hints. */
+  for (p = user_agent; *p != '\0';) {
+    size_t n;
+    int major;
+
+    if (*p == ' ') {
+      p++;
+    } else if (*p == '(') {
+      const char *const end = strchr(p, ')');
+
+      if (end == NULL)
+        return HTS_FALSE;
+      if (comment == NULL) {
+        comment = p + 1;
+        comment_len = (size_t) (end - comment);
+      }
+      p = end + 1;
+    } else {
+      for (n = 0; (unsigned char) p[n] > ' ' && p[n] != '('; n++)
+        ;
+      if (ua_product_is(p, n, "Chrome", &major))
+        chrome = major;
+      else if (ua_product_is(p, n, "Edg", &major))
+        edge = major;
+      else if (ua_product_is(p, n, "Mozilla", &major))
+        mozilla = HTS_TRUE;
+      else if (n == 6 && strncmp(p, "Mobile", 6) == 0)
+        mobile = HTS_TRUE;
+      else if (!ua_product_is(p, n, "AppleWebKit", &major) &&
+               !ua_product_is(p, n, "Safari", &major))
+        return HTS_FALSE;
+      p += n;
+    }
+  }
+  /* Edge's major is always the Chromium one. */
+  if (!mozilla || chrome < GREASE_FIRST_MAJOR || (edge != 0 && edge != chrome))
+    return HTS_FALSE;
+
+  /* Android before Linux: an Android comment names both. */
+  if (ua_comment_has(comment, comment_len, "Android"))
+    strcpybuff(ch->platform, "\"Android\"");
+  else if (ua_comment_has(comment, comment_len, "CrOS"))
+    strcpybuff(ch->platform, "\"Chrome OS\"");
+  else if (ua_comment_has(comment, comment_len, "Windows"))
+    strcpybuff(ch->platform, "\"Windows\"");
+  else if (ua_comment_has(comment, comment_len, "Macintosh"))
+    strcpybuff(ch->platform, "\"macOS\"");
+  else if (ua_comment_has(comment, comment_len, "Linux"))
+    strcpybuff(ch->platform, "\"Linux\"");
+  else
+    return HTS_FALSE;
+
+  snprintf(brands[0], sizeof(brands[0]), "\"Not%cA%cBrand\";v=\"%s\"",
+           grease_chars[chrome % 11], grease_chars[(chrome + 1) % 11],
+           grease_versions[chrome % 3]);
+  snprintf(brands[1], sizeof(brands[1]), "\"Chromium\";v=\"%d\"", chrome);
+  if (edge > 0)
+    snprintf(brands[2], sizeof(brands[2]), "\"Microsoft Edge\";v=\"%d\"", edge);
+  else
+    snprintf(brands[2], sizeof(brands[2]), "\"Google Chrome\";v=\"%d\"",
+             chrome);
+  for (i = 0; i < 3; i++)
+    shuffled[orders[chrome % 6][i]] = brands[i];
+  snprintf(ch->ua, sizeof(ch->ua), "%s, %s, %s", shuffled[0], shuffled[1],
+           shuffled[2]);
+  ch->mobile = mobile;
+  return HTS_TRUE;
+}
+
+/* Is user_agent Firefox from 90, the first to send Sec-Fetch-*? Every product
+   token must be one Firefox sends, so a fork naming itself gets no table. */
+static hts_boolean ua_is_firefox(const char *user_agent) {
+  enum { FETCH_META_FIRST_MAJOR = 90 };
+
+  hts_boolean mozilla = HTS_FALSE, gecko = HTS_FALSE;
+  int firefox = -1;
+  const char *p;
+
+  for (p = user_agent; *p != '\0';) {
+    size_t n;
+    int major;
+
+    if (*p == ' ') {
+      p++;
+    } else if (*p == '(') {
+      const char *const end = strchr(p, ')');
+
+      if (end == NULL)
+        return HTS_FALSE;
+      p = end + 1;
+    } else {
+      for (n = 0; (unsigned char) p[n] > ' ' && p[n] != '('; n++)
+        ;
+      if (ua_product_is(p, n, "Firefox", &major))
+        firefox = major;
+      else if (ua_product_is(p, n, "Gecko", &major))
+        gecko = HTS_TRUE;
+      else if (ua_product_is(p, n, "Mozilla", &major))
+        mozilla = HTS_TRUE;
+      else
+        return HTS_FALSE;
+      p += n;
+    }
+  }
+  return mozilla && gecko && firefox >= FETCH_META_FIRST_MAJOR ? HTS_TRUE
+                                                               : HTS_FALSE;
+}
+
+hts_browser_family hts_browser_family_of(const char *user_agent) {
+  hts_client_hints ch;
+
+  if (user_agent == NULL)
+    return HTS_BROWSER_NONE;
+  if (hts_client_hints_of(user_agent, &ch))
+    return HTS_BROWSER_CHROME;
+  return ua_is_firefox(user_agent) ? HTS_BROWSER_FIREFOX : HTS_BROWSER_NONE;
+}
+
+/* Return fetch, or NULL when a browser would send no Sec-Fetch-*. That is the
+   case for an unknown destination, -%Q0, an untrustworthy URL, and a
+   User-Agent that is no current browser or that -%X replaces. An unset site
+   means a hop missed hts_fetch_through, which must not read as same-origin. */
+static const hts_fetch_meta *
+fetch_meta_sent(httrackp *opt, const hts_fetch_meta *fetch, const char *adr,
+                const htsblk *retour, const char *custom) {
+  if (fetch == NULL || fetch->dest == HTS_FETCH_DEST_UNKNOWN ||
+      fetch->site == HTS_FETCH_SITE_UNSET ||
+      opt->browser_headers == HTS_FALSE || !hts_fetch_trustworthy(adr) ||
+      !retour->req.user_agent_send || retour->req.user_agent == NULL ||
+      strncmp(retour->req.user_agent, "Mozilla/5.0 ", 12) != 0 ||
+      http_headers_have_field(custom, "User-Agent"))
+    return NULL;
+  return fetch;
+}
+
+/* A browser table may reorder these headers, which go out in this order
+   without one. */
+typedef enum http_header_slot {
+  HDR_REFERER,
+  HDR_CONTENT_LENGTH,
+  HDR_CONNECTION,
+  HDR_HOST,
+  HDR_FROM,
+  HDR_CH_UA,
+  HDR_CH_UA_MOBILE,
+  HDR_CH_UA_PLATFORM,
+  HDR_UPGRADE_INSECURE,
+  HDR_USER_AGENT,
+  HDR_ACCEPT,
+  HDR_FETCH_SITE,
+  HDR_FETCH_MODE,
+  HDR_FETCH_USER,
+  HDR_FETCH_DEST,
+  HDR_ACCEPT_LANGUAGE,
+  HDR_ACCEPT_ENCODING,
+  HDR_ORIGIN,
+  HDR_COUNT
+} http_header_slot;
+
+/* A span locates one header in the scratch block, and is empty when unsent. */
+typedef struct http_header_span {
+  size_t start, end;
+} http_header_span;
+
+/* Chrome 155 and Firefox 158 send these orders. A header the browser never
+   sends goes first (Content-length, From) or last. */
+static const unsigned char header_orders[][HDR_COUNT] = {
+    {HDR_REFERER, HDR_CONTENT_LENGTH, HDR_CONNECTION, HDR_HOST, HDR_FROM,
+     HDR_CH_UA, HDR_CH_UA_MOBILE, HDR_CH_UA_PLATFORM, HDR_UPGRADE_INSECURE,
+     HDR_USER_AGENT, HDR_ACCEPT, HDR_FETCH_SITE, HDR_FETCH_MODE, HDR_FETCH_USER,
+     HDR_FETCH_DEST, HDR_ACCEPT_LANGUAGE, HDR_ACCEPT_ENCODING, HDR_ORIGIN},
+    /* Chrome navigation */
+    {HDR_CONTENT_LENGTH, HDR_FROM, HDR_HOST, HDR_CONNECTION, HDR_ORIGIN,
+     HDR_CH_UA, HDR_CH_UA_MOBILE, HDR_CH_UA_PLATFORM, HDR_ACCEPT_LANGUAGE,
+     HDR_UPGRADE_INSECURE, HDR_USER_AGENT, HDR_ACCEPT, HDR_FETCH_SITE,
+     HDR_FETCH_MODE, HDR_FETCH_USER, HDR_FETCH_DEST, HDR_REFERER,
+     HDR_ACCEPT_ENCODING},
+    /* Chrome subresource */
+    {HDR_CONTENT_LENGTH, HDR_FROM, HDR_HOST, HDR_CONNECTION, HDR_ORIGIN,
+     HDR_CH_UA_PLATFORM, HDR_ACCEPT_LANGUAGE, HDR_CH_UA, HDR_UPGRADE_INSECURE,
+     HDR_USER_AGENT, HDR_CH_UA_MOBILE, HDR_ACCEPT, HDR_FETCH_SITE,
+     HDR_FETCH_MODE, HDR_FETCH_USER, HDR_FETCH_DEST, HDR_REFERER,
+     HDR_ACCEPT_ENCODING},
+    /* Firefox: Origin was never captured, so it sits where Firefox's CORS
+       requests put it. */
+    {HDR_CONTENT_LENGTH, HDR_FROM, HDR_HOST, HDR_USER_AGENT, HDR_ACCEPT,
+     HDR_ACCEPT_LANGUAGE, HDR_ACCEPT_ENCODING, HDR_ORIGIN, HDR_CONNECTION,
+     HDR_REFERER, HDR_UPGRADE_INSECURE, HDR_FETCH_DEST, HDR_FETCH_MODE,
+     HDR_FETCH_SITE, HDR_FETCH_USER, HDR_CH_UA, HDR_CH_UA_MOBILE,
+     HDR_CH_UA_PLATFORM}};
+
+const unsigned char *http_header_order(hts_browser_family family, int dest) {
+  switch (family) {
+  case HTS_BROWSER_CHROME:
+    return header_orders[hts_fetch_is_navigation(dest) ? 1 : 2];
+  case HTS_BROWSER_FIREFOX:
+    return header_orders[3];
+  default:
+    return header_orders[0];
+  }
+}
+
+const char *http_header_slot_name(int slot) {
+  static const char *const names[HDR_COUNT] = {"Referer",
+                                               "Content-length",
+                                               "Connection",
+                                               "Host",
+                                               "From",
+                                               "sec-ch-ua",
+                                               "sec-ch-ua-mobile",
+                                               "sec-ch-ua-platform",
+                                               "Upgrade-Insecure-Requests",
+                                               "User-Agent",
+                                               "Accept",
+                                               "Sec-Fetch-Site",
+                                               "Sec-Fetch-Mode",
+                                               "Sec-Fetch-User",
+                                               "Sec-Fetch-Dest",
+                                               "Accept-Language",
+                                               "Accept-Encoding",
+                                               "Origin"};
+
+  return slot >= 0 && slot < HDR_COUNT ? names[slot] : NULL;
+}
+
+int http_header_slot_count(void) { return HDR_COUNT; }
+
 // envoi d'une requète
-int http_sendhead(httrackp * opt, t_cookie * cookie, int mode,
-                  const char *xsend, const char *adr, const char *fil,
-                  const char *referer_adr, const char *referer_fil,
-                  htsblk * retour) {
+int http_sendhead(httrackp *opt, t_cookie *cookie, int mode, const char *xsend,
+                  const char *adr, const char *fil, const char *referer_adr,
+                  const char *referer_fil, const hts_fetch_meta *fetch,
+                  htsblk *retour) {
   char BIGSTK buffer_head_request[16384];
   buff_struct bstr = { buffer_head_request, sizeof(buffer_head_request), 0 };
+  /* The headers a browser table orders are rendered here before they go out. */
+  char BIGSTK buffer_headers[16384];
+  buff_struct hdr = {buffer_headers, sizeof(buffer_headers), 0};
+  http_header_span slots[HDR_COUNT];
+#define HDR_OPEN(h) (slots[h].start = hdr.pos)
+#define HDR_CLOSE(h) (slots[h].end = hdr.pos)
 
   int direct_url = 0;           // ne pas analyser l'url (exemple: ftp://)
   const char *search_tag = NULL;
+  /* What follows the headers, so the cookie line can leave it room. */
+  size_t body_len = 0;
 
   /* the extra-headers box wins: skip the engine's own line (#1337, #1340) */
   const char *const custom = retour->req.headers;
+  const hts_fetch_meta *const sent_fetch =
+      fetch_meta_sent(opt, fetch, adr, retour, custom);
+  /* That browser's tables pick the Accept, header order and Accept-Language. */
+  const hts_browser_family family =
+      sent_fetch != NULL ? hts_browser_family_of(retour->req.user_agent)
+                         : HTS_BROWSER_NONE;
 
   /* adr and the referer come off the network and can carry raw CR/LF; capped
      at their own source buffers, so the worst case emitted does not grow. */
@@ -1089,6 +1654,8 @@ int http_sendhead(httrackp * opt, t_cookie * cookie, int mode,
 
   // Initialize buffer
   buffer_head_request[0] = '\0';
+  buffer_headers[0] = '\0';
+  memset(slots, 0, sizeof(slots));
 
   // Undocumented: >post: posts what follows it, >postfile: sends the file it
   // names as the raw request.
@@ -1106,7 +1673,8 @@ int http_sendhead(httrackp * opt, t_cookie * cookie, int mode,
           char BIGSTK line[1100];
           char BIGSTK protocol[256], url[HTS_URLMAXSIZE * 2], method[256];
 
-          linput(fp, line, 1000);
+          /* a TAB may separate the request line's words */
+          hts_readline(fp, line, 1000, HTS_LINE_DROP_FF);
           /* widths bound method[256], url[HTS_URLMAXSIZE*2], protocol[256] */
           if (sscanf(line, "%255s %2047s %255s", method, url, protocol) == 3) {
             // http proxy: absolute-URI; socks/CONNECT tunnel: origin-form
@@ -1213,6 +1781,8 @@ int http_sendhead(httrackp * opt, t_cookie * cookie, int mode,
         strcpybuff(user_pass, unescape_http(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt), user_pass));
         code64((unsigned char *) user_pass, (int) strlen(user_pass),
                (unsigned char *) autorisation, 0);
+        hts_secret_add(opt, autorisation, strlen(autorisation),
+                       HTS_SECRET_HEADER);
         print_buffer(&bstr, "Proxy-Authorization: Basic %s"H_CRLF,
                      autorisation);
 #if HDEBUG
@@ -1231,40 +1801,50 @@ int http_sendhead(httrackp * opt, t_cookie * cookie, int mode,
                0) /* or referer AND addresses are https */
            ) &&
           !http_headers_have_field(custom, "Referer")) { // not file://
+        /* An https or ftp address is stored with its scheme, an http one bare.
+         */
+        const char *const scheme =
+            strncmp(referer_adr, "https://", 8) == 0 ? "https://"
+            : strncmp(referer_adr, "ftp://", 6) == 0 ? "ftp://"
+                                                     : "http://";
+
         /* one escape per piece, so neither can outgrow its own source buffer */
+        HDR_OPEN(HDR_REFERER);
         print_buffer(
-            &bstr, "Referer: http://%s",
+            &hdr, "Referer: %s%s", scheme,
             escape_check_url_addr(jump_identification_const(referer_adr), esc,
                                   sizeof(esc)));
-        print_buffer(&bstr, "%s" H_CRLF,
+        print_buffer(&hdr, "%s" H_CRLF,
                      escape_check_url_addr(referer_fil, esc, sizeof(esc)));
+        HDR_CLOSE(HDR_REFERER);
       }
     }
     // HTTP field: referer
     else if (strnotempty(retour->req.referer) &&
              !http_headers_have_field(custom, "Referer")) {
-      print_buffer(&bstr, "Referer: %s"H_CRLF, retour->req.referer);
+      HDR_OPEN(HDR_REFERER);
+      print_buffer(&hdr, "Referer: %s" H_CRLF, retour->req.referer);
+      HDR_CLOSE(HDR_REFERER);
     }
     // POST?
     if (mode == 0) {            // GET!
       if (search_tag) {
-        print_buffer(&bstr, "Content-length: %d" H_CRLF,
-                (int) (strlen
-                       (unescape_http
-                        (OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
-                         search_tag + strlen(POSTTOK) + 1))));
+        body_len =
+            strlen(unescape_http(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt),
+                                 search_tag + strlen(POSTTOK) + 1));
+        HDR_OPEN(HDR_CONTENT_LENGTH);
+        print_buffer(&hdr, "Content-length: %d" H_CRLF, (int) body_len);
+        HDR_CLOSE(HDR_CONTENT_LENGTH);
       }
     }
-    // send stored cookies matching this host/path
-    if (cookie != NULL && !http_headers_have_field(custom, "Cookie")) {
-      append_cookie_header(&bstr, cookie, jump_identification_const(adr), fil);
-    }
-    // gérer le keep-alive (garder socket)
+    // keep-alive reuses the socket
+    HDR_OPEN(HDR_CONNECTION);
     if (retour->req.http11 && !retour->req.nokeepalive) {
-      print_buffer(&bstr, "Connection: keep-alive" H_CRLF);
+      print_buffer(&hdr, "Connection: keep-alive" H_CRLF);
     } else {
-      print_buffer(&bstr, "Connection: close" H_CRLF);
+      print_buffer(&hdr, "Connection: close" H_CRLF);
     }
+    HDR_CLOSE(HDR_CONNECTION);
 
     {
       const char *real_adr = jump_identification_const(adr);
@@ -1272,31 +1852,116 @@ int http_sendhead(httrackp * opt, t_cookie * cookie, int mode,
       // Mandatory per RFC2616
       if (!direct_url &&
           !http_headers_have_field(custom, "Host")) { // not ftp:// for example
-        print_buffer(&bstr, "Host: %s" H_CRLF,
+        HDR_OPEN(HDR_HOST);
+        print_buffer(&hdr, "Host: %s" H_CRLF,
                      escape_check_url_addr(real_adr, esc, sizeof(esc)));
+        HDR_CLOSE(HDR_HOST);
       }
 
       // HTTP field: from
       if (strnotempty(retour->req.from) &&
           !http_headers_have_field(custom, "From")) { // HTTP from
-        print_buffer(&bstr, "From: %s" H_CRLF, retour->req.from);
+        HDR_OPEN(HDR_FROM);
+        print_buffer(&hdr, "From: %s" H_CRLF, retour->req.from);
+        HDR_CLOSE(HDR_FROM);
+      }
+
+      /* HTTPS only, and only beside the User-Agent the hints come from. */
+      if (opt->browser_headers != HTS_FALSE && hts_request_is_secure(retour) &&
+          retour->req.user_agent_send &&
+          !http_headers_have_field(custom, "User-Agent")) {
+        hts_client_hints ch;
+
+        if (hts_client_hints_of(retour->req.user_agent, &ch)) {
+          if (!http_headers_have_field(custom, "Sec-CH-UA")) {
+            HDR_OPEN(HDR_CH_UA);
+            print_buffer(&hdr, "sec-ch-ua: %s" H_CRLF, ch.ua);
+            HDR_CLOSE(HDR_CH_UA);
+          }
+          if (!http_headers_have_field(custom, "Sec-CH-UA-Mobile")) {
+            HDR_OPEN(HDR_CH_UA_MOBILE);
+            print_buffer(&hdr, "sec-ch-ua-mobile: ?%d" H_CRLF,
+                         ch.mobile ? 1 : 0);
+            HDR_CLOSE(HDR_CH_UA_MOBILE);
+          }
+          if (!http_headers_have_field(custom, "Sec-CH-UA-Platform")) {
+            HDR_OPEN(HDR_CH_UA_PLATFORM);
+            print_buffer(&hdr, "sec-ch-ua-platform: %s" H_CRLF, ch.platform);
+            HDR_CLOSE(HDR_CH_UA_PLATFORM);
+          }
+        }
+      }
+
+      /* On https only, so a server answering it cannot move a plain http
+         crawl onto https. */
+      if (sent_fetch != NULL && hts_fetch_is_navigation(sent_fetch->dest) &&
+          hts_request_is_secure(retour) &&
+          !http_headers_have_field(custom, "Upgrade-Insecure-Requests")) {
+        HDR_OPEN(HDR_UPGRADE_INSECURE);
+        print_buffer(&hdr, "Upgrade-Insecure-Requests: 1" H_CRLF);
+        HDR_CLOSE(HDR_UPGRADE_INSECURE);
       }
 
       if (retour->req.user_agent_send && strnotempty(retour->req.user_agent) &&
           !http_headers_have_field(custom, "User-Agent")) {
-        print_buffer(&bstr, "User-Agent: %s" H_CRLF, retour->req.user_agent);
+        HDR_OPEN(HDR_USER_AGENT);
+        print_buffer(&hdr, "User-Agent: %s" H_CRLF, retour->req.user_agent);
+        HDR_CLOSE(HDR_USER_AGENT);
       }
 
-      // Accept
-      if (strnotempty(retour->req.accept) &&
-          !http_headers_have_field(custom, "Accept")) {
-        print_buffer(&bstr, "Accept: %s" H_CRLF, retour->req.accept);
+      /* dest comes from fetch, so a KIND= entry applies without Sec-Fetch-*. */
+      {
+        char accept_buf[HTS_ACCEPT_MAXSIZE];
+        const char *const accept = hts_accept_lookup(
+            StringBuff(opt->accept_kinds), retour->req.accept,
+            opt->accept_given,
+            fetch != NULL ? fetch->dest : HTS_FETCH_DEST_UNKNOWN, family,
+            accept_buf, sizeof(accept_buf));
+
+        if (strnotempty(accept) && !http_headers_have_field(custom, "Accept")) {
+          HDR_OPEN(HDR_ACCEPT);
+          print_buffer(&hdr, "Accept: %s" H_CRLF, accept);
+          HDR_CLOSE(HDR_ACCEPT);
+        }
       }
 
-      // Accept-language
+      if (sent_fetch != NULL) {
+        if (!http_headers_have_field(custom, "Sec-Fetch-Site")) {
+          HDR_OPEN(HDR_FETCH_SITE);
+          print_buffer(&hdr, "Sec-Fetch-Site: %s" H_CRLF,
+                       hts_fetch_site_name(sent_fetch->site));
+          HDR_CLOSE(HDR_FETCH_SITE);
+        }
+        if (!http_headers_have_field(custom, "Sec-Fetch-Mode")) {
+          HDR_OPEN(HDR_FETCH_MODE);
+          print_buffer(&hdr, "Sec-Fetch-Mode: %s" H_CRLF,
+                       hts_fetch_mode_name(sent_fetch));
+          HDR_CLOSE(HDR_FETCH_MODE);
+        }
+        if (sent_fetch->user &&
+            !http_headers_have_field(custom, "Sec-Fetch-User")) {
+          HDR_OPEN(HDR_FETCH_USER);
+          print_buffer(&hdr, "Sec-Fetch-User: ?1" H_CRLF);
+          HDR_CLOSE(HDR_FETCH_USER);
+        }
+        if (!http_headers_have_field(custom, "Sec-Fetch-Dest")) {
+          HDR_OPEN(HDR_FETCH_DEST);
+          print_buffer(&hdr, "Sec-Fetch-Dest: %s" H_CRLF,
+                       hts_fetch_dest_name(sent_fetch->dest));
+          HDR_CLOSE(HDR_FETCH_DEST);
+        }
+      }
+
+      /* A browser table replaces the built-in -%l, never the user's. */
       if (strnotempty(retour->req.lang_iso) &&
           !http_headers_have_field(custom, "Accept-Language")) {
-        print_buffer(&bstr, "Accept-Language: %s"H_CRLF, retour->req.lang_iso);
+        const char *lang = retour->req.lang_iso;
+
+        if (family != HTS_BROWSER_NONE && !opt->lang_given)
+          lang = HTS_ACCEPT_LANGUAGE_BROWSER;
+        HDR_OPEN(HDR_ACCEPT_LANGUAGE);
+        print_buffer(&hdr, "Accept-Language: %s" H_CRLF, lang);
+        HDR_CLOSE(HDR_ACCEPT_LANGUAGE);
       }
 
       // Compression accepted ?
@@ -1304,15 +1969,54 @@ int http_sendhead(httrackp * opt, t_cookie * cookie, int mode,
           !http_headers_have_field(custom, "Accept-Encoding")) {
         hts_boolean compressible =
             (!retour->req.range_used && !retour->req.nocompression);
-        hts_boolean secure = HTS_FALSE;
 
-#if HTS_USEOPENSSL
-        secure = retour->ssl ? HTS_TRUE : HTS_FALSE;
-#endif
-        print_buffer(&bstr, "Accept-Encoding: %s" H_CRLF,
-                     hts_acceptencoding(compressible, secure));
+        HDR_OPEN(HDR_ACCEPT_ENCODING);
+        print_buffer(
+            &hdr, "Accept-Encoding: %s" H_CRLF,
+            hts_acceptencoding(compressible, hts_request_is_secure(retour)));
+        HDR_CLOSE(HDR_ACCEPT_ENCODING);
       }
 
+      /* Chrome sends a cors request's Origin even same-origin, Firefox only
+         cross-origin. */
+      if (sent_fetch != NULL && family != HTS_BROWSER_NONE &&
+          strcmp(hts_fetch_mode_name(sent_fetch), "cors") == 0 &&
+          !http_headers_have_field(custom, "Origin")) {
+        const char *const from =
+            sent_fetch->initiator > 0 && sent_fetch->initiator < opt->lien_tot
+                ? heap(sent_fetch->initiator)->adr
+                : NULL;
+        char origin[HTS_URLMAXSIZE * 2];
+
+        if (from != NULL && hts_fetch_origin(from, origin, sizeof(origin)) &&
+            (family == HTS_BROWSER_CHROME ||
+             hts_fetch_site_of(from, adr) != HTS_FETCH_SITE_SAME_ORIGIN)) {
+          HDR_OPEN(HDR_ORIGIN);
+          print_buffer(&hdr, "Origin: %s" H_CRLF, origin);
+          HDR_CLOSE(HDR_ORIGIN);
+        }
+      }
+
+      /* Each header in the order the browser sends them. */
+      {
+        const unsigned char *const order = http_header_order(
+            family,
+            sent_fetch != NULL ? sent_fetch->dest : HTS_FETCH_DEST_UNKNOWN);
+        int i;
+
+        /* Only a library caller can set opt strings past the argv caps. */
+        if (hdr.overflow)
+          bstr.overflow = HTS_TRUE;
+        for (i = 0; i < HDR_COUNT; i++) {
+          const http_header_span *const h = &slots[order[i]];
+
+          if (h->end > h->start)
+            print_buffer(&bstr, "%.*s", (int) (h->end - h->start),
+                         hdr.buffer + h->start);
+        }
+      }
+#undef HDR_OPEN
+#undef HDR_CLOSE
       /* Authentification */
       {
         char autorisation[1100];
@@ -1336,6 +2040,8 @@ int http_sendhead(httrackp * opt, t_cookie * cookie, int mode,
                                        OPT_GET_BUFF_SIZE(opt), user_pass));
               code64((unsigned char *) user_pass, (int) strlen(user_pass),
                      (unsigned char *) autorisation, 0);
+              hts_secret_add(opt, autorisation, strlen(autorisation),
+                             HTS_SECRET_HEADER);
               if (strcmp(fil, "/robots.txt")) /* pas robots.txt */
                 bauth_add(cookie, astart, fil, autorisation);
             } else {
@@ -1357,6 +2063,20 @@ int http_sendhead(httrackp * opt, t_cookie * cookie, int mode,
     // Custom header(s), minus the fields the request already carries
     if (strnotempty(custom)) {
       append_custom_headers(&bstr, custom);
+    }
+
+    /* Stored cookies matching this host/path, last because the line takes
+       whatever room the headers above left it. */
+    if (cookie != NULL && !http_headers_have_field(custom, "Cookie")) {
+      int skipped;
+
+      append_cookie_header(&bstr, cookie, adr, fil,
+                           sizeof(H_CRLF) - 1 + body_len, &skipped);
+      if (skipped != 0) {
+        hts_log_print(opt, LOG_WARNING,
+                      "Request too large for %d cookie(s) of %s%s", skipped,
+                      jump_identification_const(adr), fil);
+      }
     }
 
     // CRLF de fin d'en tête
@@ -1384,9 +2104,9 @@ int http_sendhead(httrackp * opt, t_cookie * cookie, int mode,
 #endif
   if (_DEBUG_HEAD) {
     if (ioinfo) {
-      fprintf(ioinfo, "[%d] request for %s%s:\r\n", retour->debugid,
-              jump_identification_const(adr), fil);
-      fprintfio(ioinfo, bstr.buffer, "<<< ");
+      hts_secret_fprintf(opt, ioinfo, "[%d] request for %s%s:\r\n",
+                         retour->debugid, jump_identification_const(adr), fil);
+      fprintfio(ioinfo, bstr.buffer, "<<< ", opt);
       fprintf(ioinfo, "\r\n");
       fflush(ioinfo);
     }
@@ -1407,6 +2127,7 @@ int http_sendhead(httrackp * opt, t_cookie * cookie, int mode,
       deletesoc_r(retour);
       strcpybuff(retour->msg, "Header refused by external wrapper");
       retour->soc = INVALID_SOCKET;
+      return -1;
     }
   }
 
@@ -1422,6 +2143,29 @@ int http_sendhead(httrackp * opt, t_cookie * cookie, int mode,
 
   // RX'98
   return 0;
+}
+
+int hts_status_code(const char *s) {
+  /* RFC 9110 15: exactly three digits. sscanf("%d") range-checks nothing and
+     glibc wraps, so "4294967496" would read as a 200. */
+  if (s[0] >= '0' && s[0] <= '9' && s[1] >= '0' && s[1] <= '9' && s[2] >= '0' &&
+      s[2] <= '9' && (s[3] < '0' || s[3] > '9'))
+    return (s[0] - '0') * 100 + (s[1] - '0') * 10 + (s[2] - '0');
+  return -1;
+}
+
+int hts_status_line_code(const char *line) {
+  const char *a = line;
+
+  while (*a == ' ' || *a == '\t' || *a == '\r' || *a == '\n')
+    a++;
+  if (!strfield(a, "HTTP/"))
+    return -1;
+  while (*a != '\0' && *a != ' ' && *a != '\t' && *a != '\r' && *a != '\n')
+    a++;
+  while (*a == ' ' || *a == '\t' || *a == '\r' || *a == '\n')
+    a++;
+  return hts_status_code(a);
 }
 
 // traiter 1ere ligne d'en tête
@@ -1442,13 +2186,8 @@ void treatfirstline(htsblk * retour, const char *rcvd) {
       if (*a != '\0') {
         while((*a == ' ') || (*a == 10) || (*a == 13) || (*a == 9))
           a++;                  // épurer espaces
-        /* RFC 9110 15: exactly three digits. sscanf("%d") range-checks
-           nothing and glibc wraps, so "4294967496" would read as a 200. */
-        if (a[0] >= '0' && a[0] <= '9' && a[1] >= '0' && a[1] <= '9' &&
-            a[2] >= '0' && a[2] <= '9' && (a[3] < '0' || a[3] > '9')) {
-          retour->statuscode =
-              (a[0] - '0') * 100 + (a[1] - '0') * 10 + (a[2] - '0');
-          // sauter 200
+        if ((retour->statuscode = hts_status_code(a)) >= 0) {
+          // skip the code
           while((*a != ' ') && (*a != '\0') && (*a != 10) && (*a != 13)
                 && (*a != 9))
             a++;
@@ -1500,44 +2239,54 @@ void treatfirstline(htsblk * retour, const char *rcvd) {
   }
 }
 
+/* A signed or oversized value reads as 0, which turns keep-alive off. */
+static void keep_alive_param(const char *s, int *value) {
+  LLint v;
+  const hts_scan_result got = hts_scan_llint(&s, 0, INT_MAX, &v);
+
+  if (got != HTS_SCAN_NONE)
+    *value = got == HTS_SCAN_OK ? (int) v : 0;
+}
+
 // traiter ligne par ligne l'en tête
 // gestion des cookies
 void treathead(t_cookie * cookie, const char *adr, const char *fil, htsblk * retour,
                char *rcvd) {
+  treathead_opt(NULL, cookie, adr, fil, retour, rcvd);
+}
+
+/* A header added here also goes into hts_header_is_read(). */
+void treathead_opt(httrackp *opt, t_cookie *cookie, const char *adr,
+                   const char *fil, htsblk *retour, char *rcvd) {
   int p;
 
   if ((p = strfield(rcvd, "Content-length:")) != 0) {
 #if HDEBUG
     printf("ok, Content-length: détecté\n");
 #endif
-    if (sscanf(rcvd + p, LLintP, &(retour->totalsize)) == 1) {
+    const char *a = rcvd + p;
+    LLint size;
+
+    if (hts_scan_llint(&a, 0, INT64_MAX, &size) == HTS_SCAN_OK) {
+      retour->totalsize = size;
       if (retour->totalsize == 0) {
         retour->empty = 1;
       }
     }
   } else if ((p = strfield(rcvd, "Content-Disposition:")) != 0) {
-    while(is_realspace(*(rcvd + p)))
-      p++;                      // sauter espaces
-    if ((int) strlen(rcvd + p) < 250) { // pas trop long?
-      char tmp[256];
-      char *a = NULL;
+    char tmp[256];
 
-      strcpybuff(tmp, rcvd + p);
-      a = strstr(tmp, "filename=");
-      if (a) {
-        a += strlen("filename=");
-        while(is_space(*a))
-          a++;
-        if (a) {
-          char *c = NULL;
+    if (hts_header_param(rcvd + p, ";", "filename", tmp, sizeof(tmp))) {
+      const char *a = tmp;
+      const char *c;
 
-          while((c = strchr(a, '/')))   /* skip all / (see RFC2616) */
-            a = c + 1;
-          hts_rtrim(a, HTS_SPACES);
-          if ((int) strlen(a) < 200) { // pas trop long?
-            strcpybuff(retour->cdispo, a);
-          }
-        }
+      while (is_space(*a))
+        a++;
+      while ((c = strchr(a, '/')) != NULL) /* skip all / (see RFC2616) */
+        a = c + 1;
+      hts_rtrim(tmp, HTS_SPACES);
+      if (strlen(a) < 200) {
+        strcpybuff(retour->cdispo, a);
       }
     }
   } else if ((p = strfield(rcvd, "Last-Modified:")) != 0) {
@@ -1576,43 +2325,21 @@ void treathead(t_cookie * cookie, const char *adr, const char *fil, htsblk * ret
     if (retour) {
       char tempo[1100];
 
-      // éviter les text/html; charset=foo
-      {
-        char *a = strchr(rcvd + p, ';');
+      char chs[256];
+      char *const semi = strchr(rcvd + p, ';');
 
-        if (a) {                // extended information
-          *a = '\0';
-          a++;
-          while(is_space(*a))
-            a++;
-          if (strfield(a, "charset")) {
-            a += 7;
-            while(is_space(*a))
-              a++;
-            if (*a == '=') {
-              a++;
-              while(is_space(*a))
-                a++;
-              if (*a == '\"')
-                a++;
-              while(is_space(*a))
-                a++;
-              if (*a) {
-                char *chs = a;
+      if (hts_header_param(rcvd + p, ";", "charset", chs, sizeof(chs))) {
+        const char *const c = chs + strspn(chs, HTS_SPACES);
+        const size_t n = strcspn(c, HTS_SPACES);
 
-                while(*a && !is_space(*a) && *a != '\"' && *a != ';')
-                  a++;
-                *a = '\0';
-                if (*chs) {
-                  if (strlen(chs) < sizeof(retour->charset) - 2) {
-                    strcpybuff(retour->charset, chs);
-                  }
-                }
-              }
-            }
-          }
+        // A charset is one token.
+        if (n != 0 && n < sizeof(retour->charset) - 2) {
+          retour->charset[0] = '\0';
+          strlncatbuff(retour->charset, c, sizeof(retour->charset), n);
         }
       }
+      if (semi != NULL)
+        *semi = '\0';
       // An empty/whitespace Content-Type value yields no token: keep the
       // sentinel default rather than reading an uninitialized tempo.
       if (sscanf(rcvd + p, "%1099s", tempo) == 1) { // tempo[1100], server data
@@ -1629,30 +2356,47 @@ void treathead(t_cookie * cookie, const char *adr, const char *fil, htsblk * ret
 
     for(a = rcvd + p; is_space(*a); a++) ;
     if (strncasecmp(a, "bytes ", 6) == 0) {
+      LLint start = 0, end = 0, total = 0;
+      hts_scan_result got;
+      hts_boolean refused;
+
       for(a += 6; is_space(*a); a++) ;
-      if (sscanf
-          (a, LLintP "-" LLintP "/" LLintP, &retour->crange_start,
-           &retour->crange_end, &retour->crange) != 3) {
-        retour->crange_start = 0;
-        retour->crange_end = 0;
-        retour->crange = 0;
+      got = hts_scan_llint(&a, 0, INT64_MAX, &start);
+      refused = got == HTS_SCAN_REFUSED;
+
+      // A signed or oversized field in "start-end/total" refuses the header.
+      if (got != HTS_SCAN_NONE && *a == '-') {
+        a++;
+        got = hts_scan_llint(&a, 0, INT64_MAX, &end);
+        refused = refused || got == HTS_SCAN_REFUSED;
+        if (got != HTS_SCAN_NONE && *a == '/') {
+          a++;
+          got = hts_scan_llint(&a, 0, INT64_MAX, &total);
+          refused = refused || got == HTS_SCAN_REFUSED;
+        } else {
+          got = HTS_SCAN_NONE;
+        }
+      } else {
+        got = HTS_SCAN_NONE;
+      }
+      // Only the total after the first '/' counts, as in "*/N".
+      if (got == HTS_SCAN_NONE) {
+        start = end = total = 0;
         a = strchr(rcvd + p, '/');
         if (a != NULL) {
           a++;
-          if (sscanf(a, LLintP, &retour->crange) == 1 && retour->crange >= 0) {
-            retour->crange_start = 0;
-            retour->crange_end = retour->crange - 1;
+          if (hts_scan_llint(&a, 1, INT64_MAX, &total) == HTS_SCAN_OK) {
+            end = total - 1;
           } else {
-            retour->crange = 0;
+            total = 0;
           }
         }
+      } else if (refused) {
+        start = end = total = 0;
       }
-      // A valid Content-Range has no negative field; reject hostile values so
-      // the crange +/- 1 arithmetic downstream cannot sign-overflow (UB).
-      if (retour->crange_start < 0 || retour->crange_end < 0 ||
-          retour->crange < 0) {
-        retour->crange_start = retour->crange_end = retour->crange = 0;
-      }
+      retour->crange_start = start;
+      retour->crange_end = end;
+      retour->crange = total;
     }
   } else if ((p = strfield(rcvd, "Connection:")) != 0) {
     char *a = rcvd + p;
@@ -1676,19 +2420,15 @@ void treathead(t_cookie * cookie, const char *adr, const char *fil, htsblk * ret
     while(is_space(*a))
       a++;
     if (*a) {
-      char *p;
+      char v[64];
 
       retour->keep_alive = 1;
       retour->keep_alive_max = 10;
       retour->keep_alive_t = 15;
-      if ((p = strstr(a, "timeout="))) {
-        p += strlen("timeout=");
-        sscanf(p, "%d", &retour->keep_alive_t);
-      }
-      if ((p = strstr(a, "max="))) {
-        p += strlen("max=");
-        sscanf(p, "%d", &retour->keep_alive_max);
-      }
+      if (hts_header_param(a, ",;", "timeout", v, sizeof(v)))
+        keep_alive_param(v, &retour->keep_alive_t);
+      if (hts_header_param(a, ",;", "max", v, sizeof(v)))
+        keep_alive_param(v, &retour->keep_alive_max);
       if (retour->keep_alive_max <= 1 || retour->keep_alive_t < 1) {
         retour->keep_alive = 0;
       }
@@ -1726,6 +2466,11 @@ void treathead(t_cookie * cookie, const char *adr, const char *fil, htsblk * ret
       if (hts_codec_parse(retour->contentencoding) != HTS_CODEC_IDENTITY)
         retour->compressed = 1;
     }
+  } else if ((p = strfield(rcvd, "Retry-After:")) != 0) {
+    if (retour) {
+      /* uncapped: treathead() has no opt, so the caller clips it */
+      retour->retry_after = hts_parse_retry_after(rcvd + p, time(NULL));
+    }
   } else if ((p = strfield(rcvd, "Location:")) != 0) {
     if (retour) {
       if (retour->location) {
@@ -1750,11 +2495,12 @@ void treathead(t_cookie * cookie, const char *adr, const char *fil, htsblk * ret
   } else if (((p = strfield(rcvd, "Set-Cookie:")) != 0) &&
              (cookie)) {        // ohh un cookie
     char *a = rcvd + p;         // pointeur
-    char domain[256];           // domaine cookie (.netscape.com)
-    char scoped[256];           // adr with no identification, brackets or port
-    char path[256];             // chemin (/)
+    char domain[COOKIE_MAX_DOMAIN]; // .netscape.com
+    char scoped[COOKIE_MAX_DOMAIN]; // adr without userinfo, brackets or port
+    char path[COOKIE_MAX_PATH];     // /
     char cook_name[256];        // nom cookie (MYCOOK)
     char BIGSTK cook_value[8192];       // valeur (ID=toto,S=1234)
+    const int64_t now = (int64_t) time(NULL);
 
 #if DEBUG_COOK
     printf("set-cookie detected\n");
@@ -1764,27 +2510,32 @@ void treathead(t_cookie * cookie, const char *adr, const char *fil, htsblk * ret
     if (adr != NULL && (strlen(adr) >= sizeof(domain) ||
                         !cookie_host(adr, scoped, sizeof(scoped))))
       return;
-    while(*a) {
+    {
       char *token_st, *token_end;
       char *value_st, *value_end;
       char name[256];
       char BIGSTK value[8192];
-      int next = 0;
+      hts_boolean has_domain = HTS_FALSE;
+      hts_boolean has_max_age = HTS_FALSE;
+      hts_boolean has_expires = HTS_FALSE;
+      int64_t max_age_when = 0, expires_when = 0;
+      cookie_attr attr = {.host_only = HTS_FALSE,
+                          .secure = HTS_FALSE,
+                          .http_only = HTS_FALSE,
+                          .expires = 0};
+      hts_boolean first = HTS_TRUE;
 
       name[0] = value[0] = '\0';
       //
 
-      // initialiser cookie lu actuellement
-      /* raw, because cookie_add() normalises and doing that twice is not the
+      /* raw, because cookie_set() normalises and doing that twice is not the
          same as doing it once; no adr means empty, which it refuses */
       strcpybuff(domain, adr != NULL ? adr : "");
-      strcpybuff(path, "/");    // chemin (/)
-      strcpybuff(cook_name, "");        // nom cookie (MYCOOK)
-      strcpybuff(cook_value, "");       // valeur (ID=toto,S=1234)
-      // boucler jusqu'au prochain cookie ou la fin
+      strcpybuff(path, "/");
+      strcpybuff(cook_name, "");
+      strcpybuff(cook_value, "");
+      // read every pair up to the end of the header
       do {
-        char *start_loop = a;
-
         while(is_space(*a))
           a++;                  // sauter espaces
         token_st = a;           // départ token
@@ -1795,17 +2546,20 @@ void treathead(t_cookie * cookie, const char *adr, const char *fil, htsblk * ret
           a++;                  // sauter espaces
         if (*a == '=') {        // name=value
           a++;
-          while(is_space(*a))
-            a++;                // sauter espaces
+          /* RFC 6265 4.1.1 makes the quotes part of a quoted cookie-value. */
+          while (is_realspace(*a))
+            a++;
           value_st = a;
           while((*a != ';') && (*a))
             a++; // prochain ;
           value_end = a;
+          // RFC 6265 5.2 trims the value
+          while (value_end > value_st && is_realspace(value_end[-1]))
+            value_end--;
           // vérifier débordements
-          if ((((int) (token_end - token_st)) < 200)
-              && (((int) (value_end - value_st)) < 8000)
-              && (((int) (token_end - token_st)) > 0)
-              && (((int) (value_end - value_st)) > 0)) {
+          if ((((int) (token_end - token_st)) < 200) &&
+              (((int) (value_end - value_st)) < 8000) &&
+              (((int) (token_end - token_st)) > 0)) {
             int name_len = (int) (token_end - token_st);
             int value_len = (int) (value_end - value_st);
 
@@ -1817,61 +2571,89 @@ void treathead(t_cookie * cookie, const char *adr, const char *fil, htsblk * ret
             printf("detected cookie-av: name=\"%s\" value=\"%s\"\n", name,
                    value);
 #endif
-            if (strfield2(name, "domain")) {
-              if (value_len < sizeof(domain) - 1) {
+            if (first) {
+              // the first pair is the cookie, and "name=" may erase one
+              strcpybuff(cook_name, name);
+              strcpybuff(cook_value, value);
+            } else if (strfield2(name, "domain")) {
+              if (value_len == 0 || strcmp(value, ".") == 0) {
+                // ignored, so the cookie stays on the host
+              } else if ((size_t) value_len < sizeof(domain) - 1) {
                 strcpybuff(domain, value);
+                has_domain = HTS_TRUE;
               } else {
                 cook_name[0] = 0;
                 break;
               }
             } else if (strfield2(name, "path")) {
-              if (value_len < sizeof(path) - 1) {
+              if (value_len == 0) {
+                // ignored, so the path stays "/"
+              } else if ((size_t) value_len < sizeof(path) - 1) {
                 strcpybuff(path, value);
               } else {
                 cook_name[0] = 0;
                 break;
               }
             } else if (strfield2(name, "max-age")) {
-              // ignoré..
-            } else if (strfield2(name, "expires")) {
-              // ignoré..
-            } else if (strfield2(name, "version")) {
-              // ignoré..
-            } else if (strfield2(name, "comment")) {
-              // ignoré
-            } else if (strfield2(name, "secure")) {     // ne devrait pas arriver ici
-              // ignoré
-            } else {
-              if (value_len < sizeof(cook_value) - 1
-                  && name_len < sizeof(cook_name) - 1) {
-                if (strnotempty(cook_name) == 0) {      // noter premier: nom et valeur cookie
-                  strcpybuff(cook_name, name);
-                  strcpybuff(cook_value, value);
-                } else {        // prochain cookie
-                  a = start_loop;       // on devra recommencer à cette position
-                  next = 1;     // enregistrer
-                }
-              } else {
-                cook_name[0] = 0;
-                break;
+              int64_t when;
+
+              // an invalid value is ignored, not a reset (5.3)
+              if (cookie_max_age_time(value, now, &when)) {
+                has_max_age = HTS_TRUE;
+                max_age_when = when;
               }
+            } else if (strfield2(name, "expires")) {
+              int64_t when;
+
+              if (cookie_expires_time(value, now, &when)) {
+                has_expires = HTS_TRUE;
+                expires_when = when;
+              }
+            } else if (strfield2(name, "secure")) {
+              attr.secure = HTS_TRUE;
+            } else if (strfield2(name, "httponly")) {
+              attr.http_only = HTS_TRUE;
             }
+            // RFC 6265 5.2 ignores any other attribute, SameSite for example
           }
+        } else { // a bare attribute
+          const size_t len = (size_t) (token_end - token_st);
+
+          if (len == 6 && strfield(token_st, "secure"))
+            attr.secure = HTS_TRUE;
+          else if (len == 8 && strfield(token_st, "httponly"))
+            attr.http_only = HTS_TRUE;
         }
-        if (!next) {
-          while((*a != ';') && (*a))
-            a++;                // prochain
-          while(*a == ';')
-            a++;                // sauter ;
-        }
-      } while((*a) && (!next));
+        // an unusable first pair leaves no cookie, so the header is ignored
+        first = HTS_FALSE;
+        while ((*a != ';') && (*a))
+          a++;
+        while (*a == ';')
+          a++;
+      } while (*a);
       if (strnotempty(cook_name)) {     // cookie?
+        /* Max-Age outranks Expires (RFC 6265 5.3 step 3) */
+        attr.expires =
+            has_max_age ? max_age_when : (has_expires ? expires_when : 0);
+        attr.host_only = !has_domain;
+
 #if DEBUG_COOK
         printf
           ("new cookie: name=\"%s\" value=\"%s\" domain=\"%s\" path=\"%s\"\n",
            cook_name, cook_value, domain, path);
 #endif
-        cookie_add(cookie, cook_name, cook_value, domain, path);
+        // a Domain= the host may not claim drops the cookie (5.3 step 6)
+        if (!has_domain ||
+            (adr != NULL && cookie_domain_allowed(domain, scoped))) {
+          if (attr.expires != 0 && attr.expires <= now) {
+            cookie_remove(cookie, cook_name, domain, path);
+          } else if (cookie_set(cookie, cook_name, cook_value, domain, path,
+                                &attr) != 0) {
+            hts_log_print(opt, LOG_WARNING,
+                          "Cookies: the jar did not store '%.64s' set by %s",
+                          cook_name, adr_nologin(opt, adr));
+          }
+        }
       }
     }
   }
@@ -2266,6 +3048,153 @@ void socket_set_nosigpipe(T_SOC soc) {
 #endif
 }
 
+/* Resolved by hts_init(), before any crawl thread reads them. */
+static hts_boolean hts_mptcp_usable = HTS_FALSE;
+static hts_boolean hts_mptcp_on_by_default = HTS_FALSE;
+
+#if HTS_INET_MPTCP && !HTS_INET_MPTCP_DARWIN
+/* Read one small integer sysctl, or -1 when the file cannot be read. */
+static long hts_mptcp_sysctl(const char *path) {
+  FILE *fp = fopen(path, "rb");
+  long value = -1;
+
+  if (fp == NULL)
+    return -1;
+  if (fscanf(fp, "%ld", &value) != 1)
+    value = -1;
+  fclose(fp);
+  return value;
+}
+
+/* Can the kernel climb out of a SYN that a middlebox dropped for carrying the
+   MPTCP option? It needs the retry enabled and blackhole detection on, or the
+   first connect to any host behind a silent middlebox pays the full timeout.
+   Zero turns the detection off, so the file being there is not the answer. */
+static hts_boolean hts_mptcp_kernel_recovers(void) {
+  static const char retrans[] =
+      "/proc/sys/net/mptcp/syn_retrans_before_tcp_fallback";
+
+  if (hts_mptcp_sysctl(retrans) < 0)
+    return HTS_FALSE;
+  if (hts_mptcp_sysctl("/proc/sys/net/mptcp/blackhole_timeout") <= 0)
+    return HTS_FALSE;
+  return HTS_TRUE;
+}
+#endif
+
+/* Being able to open an MPTCP socket is not enough to turn it on by default. */
+static void hts_mptcp_probe(void) {
+#if HTS_INET_MPTCP_DARWIN
+  /* Left off by default here: macOS offers neither the blackhole sysctls that
+     make the default safe nor a way to see whether a connection negotiated it,
+     so it is the user who asks. */
+  const T_SOC soc = (T_SOC) socket(AF_MULTIPATH, SOCK_STREAM, 0);
+
+  if (soc != INVALID_SOCKET) {
+    close(soc);
+    hts_mptcp_usable = HTS_TRUE;
+  }
+#elif HTS_INET_MPTCP
+  const T_SOC soc = (T_SOC) socket(AF_INET, SOCK_STREAM, IPPROTO_MPTCP);
+
+  if (soc != INVALID_SOCKET) {
+    close(soc);
+    hts_mptcp_usable = HTS_TRUE;
+    hts_mptcp_on_by_default = hts_mptcp_kernel_recovers();
+  }
+#endif
+}
+
+hts_boolean hts_mptcp_available(void) { return hts_mptcp_usable; }
+
+hts_boolean hts_mptcp_reports(void) {
+  return HTS_INET_MPTCP_INFO ? HTS_TRUE : HTS_FALSE;
+}
+
+/* Should this connection be opened with MPTCP? */
+static hts_boolean hts_mptcp_enabled(const httrackp *opt) {
+  if (!hts_mptcp_usable)
+    return HTS_FALSE;
+  if (opt->mptcp == HTS_DEFAULT)
+    return hts_mptcp_on_by_default;
+  return opt->mptcp == HTS_TRUE ? HTS_TRUE : HTS_FALSE;
+}
+
+T_SOC hts_socket_client(int family, const httrackp *opt,
+                        hts_boolean will_bind) {
+  T_SOC soc = INVALID_SOCKET;
+
+#if HTS_INET_MPTCP_DARWIN
+  /* The multipath socket has its own domain, and takes the address family from
+     the address hts_socket_connect() hands connectx(). It also cannot bind:
+     macOS gives AF_MULTIPATH no bind at all, and a pinned source address is
+     the opposite of what multipath is for, so a caller that binds gets TCP. */
+  if (!will_bind && hts_mptcp_enabled(opt))
+    soc = (T_SOC) socket(AF_MULTIPATH, SOCK_STREAM, 0);
+#elif HTS_INET_MPTCP
+  (void) will_bind;
+  /* A refusal here is the kernel declining the protocol. The peer declining it
+     is not visible: the kernel completes the handshake as plain TCP. */
+  if (hts_mptcp_enabled(opt))
+    soc = (T_SOC) socket(family, SOCK_STREAM, IPPROTO_MPTCP);
+#else
+  (void) opt;
+  (void) will_bind;
+#endif
+  if (soc == INVALID_SOCKET)
+    soc = (T_SOC) socket(family, SOCK_STREAM, 0);
+  if (soc != INVALID_SOCKET)
+    socket_set_nosigpipe(soc);
+  return soc;
+}
+
+int hts_socket_connect(T_SOC soc, const struct sockaddr *addr, SOClen len,
+                       const httrackp *opt) {
+#if HTS_INET_MPTCP_DARWIN
+  /* connectx() is how a multipath socket is connected, and it accepts an
+     ordinary socket too, so the fallback needs no second path here. A NULL opt
+     is the caller saying this socket is not a multipath one. */
+  if (opt != NULL && hts_mptcp_enabled(opt)) {
+    sa_endpoints_t ep;
+
+    memset(&ep, 0, sizeof(ep));
+    ep.sae_dstaddr = addr;
+    ep.sae_dstaddrlen = (socklen_t) len;
+    return connectx(soc, &ep, SAE_ASSOCID_ANY, 0, NULL, 0, NULL, NULL);
+  }
+#else
+  (void) opt;
+#endif
+  return connect(soc, addr, len);
+}
+
+hts_boolean hts_socket_is_mptcp(T_SOC soc) {
+#if HTS_INET_MPTCP_INFO
+  struct mptcp_info info;
+  socklen_t len = (socklen_t) sizeof(info);
+
+  /* Refused on a socket the kernel fell back to TCP, where SO_PROTOCOL still
+     reads IPPROTO_MPTCP and so answers nothing. */
+  if (getsockopt(soc, SOL_MPTCP, MPTCP_INFO, (char *) &info, &len) != 0)
+    return HTS_FALSE;
+  return HTS_TRUE;
+#else
+  (void) soc;
+  return HTS_FALSE;
+#endif
+}
+
+void hts_mptcp_account(httrackp *opt, T_SOC soc) {
+  /* Where a fallback cannot be seen, every connection would be counted as one,
+     which is a wrong number rather than a missing one. */
+  if (!hts_mptcp_reports() || !hts_mptcp_enabled(opt))
+    return;
+  if (hts_socket_is_mptcp(soc))
+    opt->mptcp_connections++;
+  else
+    opt->mptcp_fallbacks++;
+}
+
 int connect_socket_error(T_SOC soc) {
   int soerr = 0;
   socklen_t len = (socklen_t) sizeof(soerr);
@@ -2326,8 +3255,7 @@ T_SOC newhttp_addr(httrackp *opt, const char *_iadr, htsblk *retour, int port,
         // a port filter named; an empty "host:" just means the default (#614)
         if (a[1] != '\0' && !hts_parse_url_port(a + 1, &port)) {
           if (retour != NULL) {
-            snprintf(retour->msg, sizeof(retour->msg), "Invalid port: %s",
-                     a + 1);
+            htsblk_failf(retour, "Invalid port: %s", a + 1);
           }
           return INVALID_SOCKET;
         }
@@ -2355,13 +3283,7 @@ T_SOC newhttp_addr(httrackp *opt, const char *_iadr, htsblk *retour, int port,
       printf("erreur gethostbyname\n");
 #endif
       if (retour != NULL) {
-#ifdef _WIN32
-        snprintf(retour->msg, sizeof(retour->msg),
-                 "Unable to get server's address: %s", error);
-#else
-        snprintf(retour->msg, sizeof(retour->msg),
-                 "Unable to get server's address: %s", error);
-#endif
+        htsblk_failf(retour, "Unable to get server's address: %s", error);
       }
       return INVALID_SOCKET;
     }
@@ -2377,7 +3299,12 @@ T_SOC newhttp_addr(httrackp *opt, const char *_iadr, htsblk *retour, int port,
 #if HTS_WIDE_DEBUG
     DEBUG_W("socket\n");
 #endif
-    soc = (T_SOC) socket(SOCaddr_sinfamily(server), SOCK_STREAM, 0);
+    /* -%b pins the source address, and a socket that binds cannot be a
+       multipath one. */
+    const hts_boolean will_bind =
+        retour != NULL && strnotempty(retour->req.proxy.bindhost) ? HTS_TRUE
+                                                                  : HTS_FALSE;
+    soc = hts_socket_client(SOCaddr_sinfamily(server), opt, will_bind);
     if (retour != NULL) {
       retour->debugid = HTS_STAT.stat_sockid++;
     }
@@ -2398,7 +3325,6 @@ T_SOC newhttp_addr(httrackp *opt, const char *_iadr, htsblk *retour, int port,
       }
       return INVALID_SOCKET;    // erreur création socket impossible
     }
-    socket_set_nosigpipe(soc);
     // bind this address
     if (retour != NULL && strnotempty(retour->req.proxy.bindhost)) {
       const char *error = "unknown error";
@@ -2408,8 +3334,8 @@ T_SOC newhttp_addr(httrackp *opt, const char *_iadr, htsblk *retour, int port,
                              &bind_addr, &error) == NULL
           || bind(soc, &SOCaddr_sockaddr(bind_addr), 
                   SOCaddr_size(bind_addr)) != 0) {
-        snprintf(retour->msg, sizeof(retour->msg),
-                 "Unable to bind the specificied server address: %s", error);
+        htsblk_failf(
+            retour, "Unable to bind the specificied server address: %s", error);
         deletesoc(soc);
         return INVALID_SOCKET;
       }
@@ -2430,9 +3356,8 @@ T_SOC newhttp_addr(httrackp *opt, const char *_iadr, htsblk *retour, int port,
 #endif
         char errbuf[HTS_STRERROR_SIZE];
 
-        snprintf(retour->msg, sizeof(retour->msg),
-                 "Non-blocking socket failed: %s",
-                 hts_strerror(last_errno, errbuf, sizeof(errbuf)));
+        htsblk_failf(retour, "Non-blocking socket failed: %s",
+                     hts_strerror(last_errno, errbuf, sizeof(errbuf)));
         deletesoc(soc);
         return INVALID_SOCKET;
       }
@@ -2446,7 +3371,8 @@ T_SOC newhttp_addr(httrackp *opt, const char *_iadr, htsblk *retour, int port,
 #if HTS_WIDE_DEBUG
     DEBUG_W("connect\n");
 #endif
-    if (connect(soc, &SOCaddr_sockaddr(server), SOCaddr_size(server)) != 0) {
+    if (hts_socket_connect(soc, &SOCaddr_sockaddr(server), SOCaddr_size(server),
+                           will_bind ? NULL : opt) != 0) {
       // bloquant
       if (waitconnect) {
 #if HDEBUG
@@ -2794,6 +3720,22 @@ HTSEXT_API TStamp mtime_local(void) {
 #endif
 }
 
+/* Contract in htslib.h. Falls back to the wall clock where the platform has
+   no monotonic one, which is no worse than before. */
+TStamp mtime_monotonic(void) {
+#if defined(_WIN32)
+  return (TStamp) GetTickCount64();
+#elif defined(HAVE_CLOCK_GETTIME) && defined(CLOCK_MONOTONIC)
+  struct timespec ts;
+
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)
+    return (TStamp) ts.tv_sec * 1000 + (TStamp) (ts.tv_nsec / 1000000);
+  return mtime_local();
+#else
+  return mtime_local();
+#endif
+}
+
 // convertit un nombre de secondes en temps (chaine)
 void sec2str(char *st, TStamp t) {
   int j, h, m, s;
@@ -2873,22 +3815,12 @@ void time_local_rfc822(char *s) {
     s[0] = '\0';
 }
 
-/* convertir une chaine en temps */
-static time_t getGMT(struct tm *tm) {
-  time_t t = timegm(tm);
-
-  if (t != (time_t) - 1 && t != (time_t) 0) {
-    return (time_t) t;
-  }
-  return (time_t) -1;
-}
-
 /* sets file time. -1 if error */
 /* Note: utf-8 */
 int set_filetime(const char *file, struct tm *tm_time) {
-  time_t t = getGMT(tm_time);
+  time_t t;
 
-  if (t != (time_t) - 1) {
+  if (hts_tm_filetime(tm_time, &t)) {
     STRUCT_UTIMBUF tim;
 
     memset(&tim, 0, sizeof(tim));
@@ -2896,6 +3828,49 @@ int set_filetime(const char *file, struct tm *tm_time) {
     return UTIME(file, &tim);
   }
   return -1;
+}
+
+/* Both Retry-After forms (RFC 9110 10.2.3). An unusable value gives -1 rather
+   than 0, so a caller can tell it from a server that named zero. */
+int hts_parse_retry_after(const char *value, time_t now) {
+  const char *p = value;
+  const char *end;
+
+  if (value == NULL)
+    return -1;
+  while (is_space(*p))
+    p++;
+  end = p + strspn(p, "0123456789");
+  while (is_space(*end))
+    end++;
+
+  // delta-seconds is the whole value, so "06 Nov 2026 ..." is a date
+  if (end > p && *end == '\0') {
+    LLint secs;
+
+    // Every byte is a digit, so a refusal means too big, which clips.
+    return hts_parse_llint(p, NULL, 0, INT_MAX, &secs) ? (int) secs : INT_MAX;
+  }
+
+  {
+    const int64_t when = hts_parse_date(p, 50);
+
+    if (when == -1)
+      return -1;
+    if (when <= (int64_t) now)
+      return 0;
+    if (when - (int64_t) now > INT_MAX)
+      return INT_MAX;
+    return (int) (when - (int64_t) now);
+  }
+}
+
+/* See htslib.h. */
+int64_t hts_parse_date(const char *s, int pivot) {
+  struct tm buffer;
+  struct tm *const tm_s = convert_time_rfc822_pivot(&buffer, s, pivot);
+
+  return tm_s != NULL ? hts_utc_seconds(tm_s) : -1;
 }
 
 /* sets file time from RFC822 date+time, -1 if error*/
@@ -3152,7 +4127,7 @@ int sendc(htsblk * r, const char *s) {
     sigpipe_release(&m);
   } else
 #endif
-    n = send(r->soc, s, ssz, HTS_MSG_NOSIGNAL);
+    n = hts_send_nosignal(r->soc, s, ssz);
 
   return (n == ssz) ? n : -1;
 }
@@ -3174,6 +4149,30 @@ int binput(const char *buff, char *s, int max) {
 
   // then return the supplemental jump offset
   return count + 1;
+}
+
+hts_boolean hts_header_is_read(const char *line) {
+  static const char *const names[] = {"Connection:",
+                                      "Content-Disposition:",
+                                      "Content-Encoding:",
+                                      "Content-length:",
+                                      "Content-Range:",
+                                      "Content-type:",
+                                      "Date:",
+                                      "Etag:",
+                                      "Keep-Alive:",
+                                      "Last-Modified:",
+                                      "Location:",
+                                      "Retry-After:",
+                                      "Set-Cookie:",
+                                      "TE:",
+                                      "Transfer-Encoding:"};
+  size_t i;
+
+  for (i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+    if (strfield(line, names[i]))
+      return HTS_TRUE;
+  return HTS_FALSE;
 }
 
 hts_boolean binput_line(const char *buff, const char *end, char *s, int max,
@@ -3281,80 +4280,8 @@ int linputsoc_t(T_SOC soc, char *s, int max, int timeout) {
   }
   return -1;
 }
-int linput_trim(FILE * fp, char *s, int max) {
-  int rlen = 0;
-  char *ls = (char *) malloct(max + 1);
 
-  s[0] = '\0';
-  if (ls) {
-    char *a;
-
-    // lire ligne
-    rlen = linput(fp, ls, max);
-    if (rlen) {
-      // sauter espaces et tabs en fin
-      while((rlen > 0)
-            && ((ls[max(rlen - 1, 0)] == ' ')
-                || (ls[max(rlen - 1, 0)] == '\t')))
-        ls[--rlen] = '\0';
-      // sauter espaces en début
-      a = ls;
-      while((rlen > 0) && ((*a == ' ') || (*a == '\t'))) {
-        a++;
-        rlen--;
-      }
-      if (rlen > 0) {
-        memcpy(s, a, rlen);     // can copy \0 chars
-        s[rlen] = '\0';
-      }
-    }
-    //
-    freet(ls);
-  }
-  return rlen;
-}
-int linput_cpp(FILE * fp, char *s, int max) {
-  int rlen = 0;
-
-  s[0] = '\0';
-  do {
-    int ret;
-
-    if (rlen > 0)
-      if (s[rlen - 1] == '\\')
-        s[--rlen] = '\0';       // couper \ final
-    // lire ligne
-    ret = linput_trim(fp, s + rlen, max - rlen);
-    if (ret > 0)
-      rlen += ret;
-  } while((s[max(rlen - 1, 0)] == '\\') && (rlen < max));
-  return rlen;
-}
-
-// idem avec les car spéciaux
-void rawlinput(FILE * fp, char *s, int max) {
-  int c;
-  int j = 0;
-
-  do {
-    c = fgetc(fp);
-    if (c != EOF) {
-      switch (c) {
-      case 13:
-        break;                  // sauter CR
-      case 10:
-        c = -1;
-        break;
-      default:
-        s[j++] = (char) c;
-        break;
-      }
-    }
-  } while((c != -1) && (c != EOF) && (j < (max - 1)));
-  s[j++] = '\0';
-}
-
-//cherche chaine, case insensitive
+// case-insensitive strstr()
 const char *strstrcase(const char *s, const char *o) {
   while(*s && strfield(s, o) == 0)
     s++;
@@ -3520,8 +4447,86 @@ char *FUN(char *source) { \
   return ret != NULL ? source + ( ret - source ) : NULL; \
 }
 
-// retourne le pointeur ou le pointeur + offset si il existe dans la chaine un @ signifiant 
-// une identification
+/* Appends n bytes of s at buf[*len], clipped to size - 1, NUL-terminated. */
+static void append_clipped(char *buf, size_t size, size_t *len, const char *s,
+                           size_t n) {
+  if (n > size - 1 - *len)
+    n = size - 1 - *len;
+  memcpy(buf + *len, s, n);
+  *len += n;
+  buf[*len] = '\0';
+}
+
+/* Returns adr past its blanks, scheme and "//", the engine's or any
+   "scheme://", or adr when it has no scheme. */
+static const char *login_start(const char *adr) {
+  const char *s = adr;
+  const char *known;
+
+  while (isspace((unsigned char) *s))
+    s++;
+  known = jump_protocol_const(s);
+  if (known != s)
+    return known;
+  if (!isalpha((unsigned char) *s))
+    return adr;
+  while (isalnum((unsigned char) *s) || *s == '+' || *s == '-' || *s == '.')
+    s++;
+  return strncmp(s, "://", 3) == 0 ? s + 3 : adr;
+}
+
+/* Returns adr past its login, or login_start(adr) when it has none. */
+static const char *login_end(const char *adr) {
+  const char *const start = login_start(adr);
+  const char *const at = strrchr_limit(start, '@', strchr(start, '/'));
+
+  return at != NULL ? at : start;
+}
+
+/* Returns HTS_TRUE when adr has a login, a user alone included. */
+static hts_boolean has_login(const char *adr) {
+  return login_end(adr) > login_start(adr) ? HTS_TRUE : HTS_FALSE;
+}
+
+const char *adr_nologin_r(char *buf, size_t size, const char *adr) {
+  const char *const scheme = login_start(adr);
+  const char *const host = login_end(adr);
+  const char *colon;
+  size_t len = 0;
+
+  if (!has_login(adr) || size == 0)
+    return adr;
+  colon = memchr(scheme, ':', (size_t) (host - scheme));
+  buf[0] = '\0';
+  if (colon != NULL) {
+    append_clipped(buf, size, &len, adr, (size_t) (colon - adr));
+    append_clipped(buf, size, &len, ":***@", 5);
+  } else {
+    append_clipped(buf, size, &len, adr, (size_t) (scheme - adr));
+    append_clipped(buf, size, &len, "***@", 4);
+  }
+  append_clipped(buf, size, &len, host, strlen(host));
+  return buf;
+}
+
+const char *url_nologin_r(char *buf, size_t size, const char *url) {
+  return login_start(url) != url ? adr_nologin_r(buf, size, url) : url;
+}
+
+const char *adr_nologin(httrackp *opt, const char *adr) {
+  if (!has_login(adr))
+    return adr;
+  // no buffer to mask into: drop the whole login
+  if (opt == NULL)
+    return login_end(adr);
+  return adr_nologin_r(OPT_GET_BUFF(opt), OPT_GET_BUFF_SIZE(opt), adr);
+}
+
+const char *url_nologin(httrackp *opt, const char *url) {
+  return login_start(url) != url ? adr_nologin(opt, url) : url;
+}
+
+// Returns source past its login (user:pass@), if any.
 HTSEXT_API const char *jump_identification_const(const char *source) {
   const char *a, *trytofind;
 
@@ -3559,10 +4564,14 @@ HTSEXT_API const char *jump_normalized_const(const char *source) {
 HTSEXT_API DECLARE_NON_CONST_VERSION(jump_normalized)
 
 static int sortNormFnc(const void *a_, const void *b_) {
-  const char *const*const a = (const char *const*) a_;
-  const char *const*const b = (const char *const*) b_;
+  const hts_query_field *const a = (const hts_query_field *) a_;
+  const hts_query_field *const b = (const hts_query_field *) b_;
+  const size_t n = a->len < b->len ? a->len : b->len;
+  const int c = memcmp(a->key, b->key, n);
 
-  return strcmp(*a + 1, *b + 1);
+  if (c != 0)
+    return c;
+  return a->len < b->len ? -1 : a->len > b->len ? 1 : 0;
 }
 
 /* Path normalizer core: optionally collapse redundant '//' (DO_SLASH) and/or
@@ -3571,21 +4580,16 @@ static char *fil_normalized_ex(const char *source, char *dest, int do_slash,
                                int do_query) {
   char lastc = 0;
   int gotquery = 0;
-  size_t ampargs = 0;
   size_t i, j;
-  char *query = NULL;
+  char *query;
 
   for(i = j = 0; source[i] != '\0'; i++) {
     if (!gotquery && source[i] == '?') {
       gotquery = 1;
-      ampargs = 1;
     }
     if (do_slash && !gotquery && lastc == '/' && source[i] == '/') {
       // foo//bar -> foo/bar
     } else {
-      if (gotquery && source[i] == '&') {
-        ampargs++;
-      }
       dest[j++] = source[i];
     }
     lastc = source[i];
@@ -3593,49 +4597,42 @@ static char *fil_normalized_ex(const char *source, char *dest, int do_slash,
   dest[j++] = '\0';
 
   /* Sort arguments (&foo=1&bar=2 == &bar=2&foo=1) */
-  if (do_query && ampargs > 1) {
-    char **amps = malloct(ampargs * sizeof(char *));
-    char *copyBuff = NULL;
-    size_t qLen = 0;
+  if (do_query && (query = strchr(dest, '?')) != NULL) {
+    const char *cur = query + 1;
+    hts_query_field f;
+    size_t nfields = 0;
 
-    assertf(amps != NULL);
-    gotquery = 0;
-    for(i = j = 0; dest[i] != '\0'; i++) {
-      if ((gotquery && dest[i] == '&') || (!gotquery && dest[i] == '?')) {
-        if (!gotquery) {
-          gotquery = 1;
-          query = &dest[i];
-          qLen = strlen(query);
-        }
-        assertf(j < ampargs);
-        amps[j++] = &dest[i];
-        dest[i] = '\0';
+    while (hts_query_next(&cur, &f))
+      nfields++;
+    if (nfields > 1) {
+      hts_query_field *fields = malloct(nfields * sizeof(*fields));
+      const size_t qLen = strlen(query);
+      char *copyBuff = malloct(qLen + 1);
+      htsbuff cb;
+
+      assertf(fields != NULL);
+      assertf(copyBuff != NULL);
+      cur = query + 1;
+      for (i = 0; hts_query_next(&cur, &f); i++) {
+        assertf(i < nfields);
+        fields[i] = f;
       }
-    }
-    assertf(gotquery);
-    assertf(j == ampargs);
+      assertf(i == nfields);
 
-    /* Sort 'em all */
-    qsort(amps, ampargs, sizeof(char *), sortNormFnc);
+      qsort(fields, nfields, sizeof(*fields), sortNormFnc);
 
-    /* Replace query by sorted query */
-    copyBuff = malloct(qLen + 1);
-    assertf(copyBuff != NULL);
-    {
-      htsbuff cb = htsbuff_ptr(copyBuff, qLen + 1);
-
-      for (i = 0; i < ampargs; i++) {
-        htsbuff_cat(&cb, i == 0 ? "?" : "&");
-        htsbuff_cat(&cb, amps[i] + 1);
+      /* Replace query by sorted query, of the same length */
+      cb = htsbuff_ptr(copyBuff, qLen + 1);
+      for (i = 0; i < nfields; i++) {
+        htsbuff_catc(&cb, i == 0 ? '?' : '&');
+        htsbuff_catn(&cb, fields[i].key, fields[i].len);
       }
       assertf(cb.len == qLen);
-    }
-    /* query points into dest where the original qLen-byte query was */
-    strlcpybuff(query, copyBuff, qLen + 1);
+      strlcpybuff(query, copyBuff, qLen + 1);
 
-    /* Cleanup */
-    freet(amps);
-    freet(copyBuff);
+      freet(fields);
+      freet(copyBuff);
+    }
   }
 
   return dest;
@@ -3645,40 +4642,30 @@ HTSEXT_API char *fil_normalized(const char *source, char *dest) {
   return fil_normalized_ex(source, dest, 1, 1);
 }
 
-/* Is query key ARG[0..keylen) in the comma-separated STRIP list? "*" = all;
-   case-sensitive, space-trimmed tokens. */
-static int hts_query_key_stripped(const char *arg, size_t keylen,
-                                  const char *strip) {
-  const char *p = strip;
+/* see htscore.h */
+hts_boolean hts_query_key_stripped(const char *arg, size_t keylen,
+                                   const char *strip) {
+  const hts_span list = hts_span_of(strip);
+  const char *const end = list.p + list.len;
+  const char *cur = list.p;
+  hts_span tok;
 
-  while (*p != '\0') {
-    const char *start = p;
-    size_t toklen;
-
-    while (*p != '\0' && *p != ',')
-      p++;
-    toklen = (size_t) (p - start);
-    while (toklen > 0 && *start == ' ') {
-      start++;
-      toklen--;
-    }
-    while (toklen > 0 && start[toklen - 1] == ' ')
-      toklen--;
-    if (toklen == 1 && start[0] == '*')
-      return 1;
-    if (toklen == keylen && strncmp(start, arg, keylen) == 0)
-      return 1;
-    if (*p == ',')
-      p++;
+  while (hts_span_next(&cur, end, ',', &tok)) {
+    tok = hts_span_trim(tok, " ", " ");
+    if (tok.len == 1 && tok.p[0] == '*')
+      return HTS_TRUE;
+    if (tok.len == keylen && strncmp(tok.p, arg, keylen) == 0)
+      return HTS_TRUE;
   }
-  return 0;
+  return HTS_FALSE;
 }
 
 /* see htscore.h */
 char *fil_normalized_filtered_ex(const char *source, char *dest,
                                  const char *strip, int do_slash,
                                  int do_query) {
-  const char *query;
+  const char *query, *cur;
+  hts_query_field f;
   char BIGSTK tmp[HTS_URLMAXSIZE * 2];
   htsbuff cb;
   int wrote = 0;
@@ -3694,26 +4681,12 @@ char *fil_normalized_filtered_ex(const char *source, char *dest,
      (the read re-normalizes it; a dropped empty arg would miss dedup). */
   cb = htsbuff_ptr(tmp, sizeof(tmp));
   htsbuff_catn(&cb, source, (size_t) (query - source));
-  for (query++;;) {
-    const char *const arg = query;
-    const char *eq = NULL;
-    size_t keylen, arglen;
-
-    while (*query != '\0' && *query != '&') {
-      if (eq == NULL && *query == '=')
-        eq = query;
-      query++;
-    }
-    arglen = (size_t) (query - arg);
-    keylen = eq != NULL ? (size_t) (eq - arg) : arglen;
-    if (!hts_query_key_stripped(arg, keylen, strip)) {
+  for (cur = query + 1; hts_query_next(&cur, &f);) {
+    if (!hts_query_key_stripped(f.key, f.keylen, strip)) {
       htsbuff_catc(&cb, wrote ? '&' : '?');
-      htsbuff_catn(&cb, arg, arglen);
+      htsbuff_catn(&cb, f.key, f.len);
       wrote = 1;
     }
-    if (*query == '\0')
-      break;
-    query++;
   }
   return fil_normalized_ex(tmp, dest, do_slash, do_query);
 }
@@ -3727,8 +4700,9 @@ char *fil_normalized_filtered(const char *source, char *dest,
 /* see htscore.h */
 const char *hts_query_strip_keys(const char *rules, const char *adr,
                                  const char *fil, char *dest, size_t destsize) {
-  const char *p, *q;
+  const char *cur, *end, *q;
   const char *result = NULL;
+  hts_span all, line;
   /* holds a host and a path, each up to HTS_URLMAXSIZE * 2 */
   char BIGSTK url[HTS_URLMAXSIZE * 4];
 
@@ -3751,41 +4725,25 @@ const char *hts_query_strip_keys(const char *rules, const char *adr,
     strlncatbuff(url, fil, sizeof(url), fillen < room ? fillen : room);
   }
 
+  all = hts_span_of(rules);
+  end = all.p + all.len;
   /* Walk the '\n' entries; last match wins (like the +/- filter eval). Each is
      "pattern=keys"; no '=' is the bare form, pattern "*". */
-  for (p = rules; *p != '\0';) {
-    const char *const line = p;
-    const char *eol, *eq, *keys;
+  for (cur = all.p; hts_span_next(&cur, end, '\n', &line);) {
+    hts_span pattern, keys;
     char BIGSTK pat[HTS_URLMAXSIZE * 2];
 
-    while (*p != '\0' && *p != '\n')
-      p++;
-    eol = p;
-    if (*p == '\n')
-      p++;
-    if (eol == line)
+    if (line.len == 0)
       continue;
-    eq = memchr(line, '=', (size_t) (eol - line));
-    if (eq != NULL) {
-      size_t patlen = (size_t) (eq - line);
-
-      if (patlen >= sizeof(pat))
-        patlen = sizeof(pat) - 1;
-      memcpy(pat, line, patlen);
-      pat[patlen] = '\0';
-      keys = eq + 1;
+    if (hts_span_split(line, '=', &pattern, &keys)) {
+      /* Clip a too-long pattern, never skip it. */
+      (void) hts_span_copy(pattern, pat, sizeof(pat));
     } else {
-      pat[0] = '*';
-      pat[1] = '\0';
+      strcpybuff(pat, "*");
       keys = line;
     }
     if (strjoker(url, pat, NULL, NULL) != NULL) {
-      size_t klen = (size_t) (eol - keys);
-
-      if (klen >= destsize)
-        klen = destsize - 1;
-      memcpy(dest, keys, klen);
-      dest[klen] = '\0';
+      (void) hts_span_copy(keys, dest, destsize);
       result = dest;
     }
   }
@@ -3797,49 +4755,40 @@ const char *hts_host_alias_rules(httrackp *opt) {
   return StringNotEmpty(opt->host_alias) ? StringBuff(opt->host_alias) : NULL;
 }
 
-/* Last rule of RULES whose alias list matches HOST (strjoker, last wins as in
-   the +/- filter list): its canonical host, of length *CANONLEN, or NULL. FULL
-   is the scheme://host form a scheme-qualified pattern matches; NOWWW collapses
-   the www. prefix of both the pattern and the host. */
-static const char *hts_host_alias_match(const char *rules, const char *host,
-                                        const char *full,
-                                        hts_boolean collapse_www,
-                                        size_t *canonlen) {
-  const char *p;
-  const char *canon = NULL;
+/* Split RULE "alias[,alias...]=canonical" at its first '=', both sides
+   untrimmed. The matcher and the validator share it so they agree on what a
+   rule is. HTS_FALSE when either side is empty. */
+static hts_boolean hts_host_alias_split(hts_span rule, hts_span *aliases,
+                                        hts_span *canon) {
+  return hts_span_split(rule, '=', aliases, canon) && aliases->len != 0 &&
+         canon->len != 0;
+}
 
-  /* Walk the '\n' entries "alias[,alias...]=canonical" */
-  for (p = rules; *p != '\0';) {
-    const char *const line = p;
-    const char *eol, *eq, *pat;
+/* see htscore.h */
+const char *hts_host_alias_match(const char *rules, const char *host,
+                                 const char *full, hts_boolean collapse_www,
+                                 size_t *canonlen) {
+  const hts_span all = hts_span_of(rules);
+  const char *const rules_end = all.p + all.len;
+  const char *rest;
+  const char *found = NULL;
+  hts_span line;
 
-    while (*p != '\0' && *p != '\n')
-      p++;
-    eol = p;
-    if (*p == '\n')
-      p++;
-    eq = memchr(line, '=', (size_t) (eol - line));
-    if (eq == NULL || eq == line || eq + 1 == eol)
-      continue; /* not "alias=canonical" */
-    for (pat = line; pat < eq;) {
-      const char *const sep = memchr(pat, ',', (size_t) (eq - pat));
-      const char *const end = sep != NULL ? sep : eq;
-      const char *start = pat;
-      size_t len = (size_t) (end - pat);
+  for (rest = all.p; hts_span_next(&rest, rules_end, '\n', &line);) {
+    hts_span aliases, canon, alias;
+    const char *cur, *end;
+
+    if (!hts_host_alias_split(line, &aliases, &canon))
+      continue;
+    end = aliases.p + aliases.len;
+    for (cur = aliases.p; hts_span_next(&cur, end, ',', &alias);) {
       char BIGSTK glob[HTS_URLMAXSIZE * 2];
 
-      while (len > 0 && (*start == ' ' || *start == '\t')) {
-        start++; /* "a.com, b.com=c.com" */
-        len--;
-      }
-      while (len > 0 && (start[len - 1] == ' ' || start[len - 1] == '\t' ||
-                         start[len - 1] == '/'))
-        len--; /* a trailing slash is not a path */
-      if (len != 0 && len < sizeof(glob)) {
+      /* A trailing slash is not part of a path. */
+      alias = hts_span_trim(alias, " \t", " \t/");
+      if (alias.len != 0 && hts_span_copy(alias, glob, sizeof(glob))) {
         char *ghost;
 
-        memcpy(glob, start, len);
-        glob[len] = '\0';
         /* the collapse applies to the pattern too, so a rule may spell either
            www.example.com or example.com under -%u */
         ghost = glob + (jump_protocol_const(glob) - glob);
@@ -3853,25 +4802,18 @@ static const char *hts_host_alias_match(const char *rules, const char *host,
         if (strjoker(strstr(glob, "://") != NULL ? full : host,
                      strstr(glob, "://") != NULL ? glob : ghost, NULL,
                      NULL) != NULL) {
-          const char *end = eol;
-
-          canon = eq + 1;
           /* Trim here, where the canonical is produced: the resolver compares
              one match against the next to see a chain settle, and an untrimmed
              one never equals the trimmed bytes it emits. */
-          while (canon < end && (*canon == ' ' || *canon == '\t'))
-            canon++;
-          while (end > canon &&
-                 (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '/'))
-            end--;
-          *canonlen = (size_t) (end - canon);
+          canon = hts_span_trim(canon, " \t", " \t/");
+          found = canon.p;
+          *canonlen = canon.len;
           break;
         }
       }
-      pat = end + 1;
     }
   }
-  return canon;
+  return found;
 }
 
 /* Build "scheme://host" from URL's scheme and HOST, for the rules that name a
@@ -3900,12 +4842,10 @@ static hts_boolean hts_host_alias_subject(const char *url, const char *host,
    arbitrary hop, which would depend on how often a link is named. */
 enum { HTS_HOST_ALIAS_MAXHOPS = 8 };
 
-/* hts_host_alias(), reporting through SETTLED (may be NULL) whether the chain
-   ended within HTS_HOST_ALIAS_MAXHOPS. */
-static const char *hts_host_alias_resolve(const char *rules, const char *adr,
-                                          hts_boolean collapse_www, char *dest,
-                                          size_t destsize,
-                                          hts_boolean *settled) {
+/* see htscore.h */
+const char *hts_host_alias_resolve(const char *rules, const char *adr,
+                                   hts_boolean collapse_www, char *dest,
+                                   size_t destsize, hts_boolean *settled) {
   const char *proto, *host, *hostsubj, *canon;
   char BIGSTK fullsubj[HTS_URLMAXSIZE * 2];
   char schemebuf[32]; /* longest jump_protocol_const knows is "socks5h://" */
@@ -4042,24 +4982,18 @@ hts_boolean hts_host_same_alias(const char *rules, const char *adra,
              : HTS_FALSE;
 }
 
-/* HTS_TRUE if TOKEN[0..LEN) is a host, optionally behind the scheme it speaks
+/* HTS_TRUE if TOKEN is a host, optionally behind the scheme it speaks
    and with a trailing slash. GLOB keeps the filter metacharacters legal, which
    only the alias side of a rule may use. */
-static hts_boolean hts_host_alias_token_ok(const char *token, size_t len,
-                                           hts_boolean glob) {
+static hts_boolean hts_host_alias_token_ok(hts_span token, hts_boolean glob) {
   char BIGSTK buff[HTS_URLMAXSIZE * 2];
   const char *host;
+  size_t len;
 
-  while (len > 0 && (*token == ' ' || *token == '\t')) {
-    token++;
-    len--;
-  }
-  while (len > 0 && (token[len - 1] == ' ' || token[len - 1] == '\t'))
-    len--;
-  if (len == 0 || len >= sizeof(buff))
+  token = hts_span_trim(token, " \t", " \t");
+  if (token.len == 0 || !hts_span_copy(token, buff, sizeof(buff)))
     return HTS_FALSE;
-  memcpy(buff, token, len);
-  buff[len] = '\0';
+  len = token.len;
   while (len > 0 && buff[len - 1] == '/')
     buff[--len] = '\0'; /* the matcher strips the whole run */
   /* an alias may glob its scheme; an unknown canonical one lands in the host */
@@ -4084,20 +5018,16 @@ static hts_boolean hts_host_alias_token_ok(const char *token, size_t len,
 
 /* see httrack-library.h */
 HTSEXT_API hts_boolean hts_host_alias_rule_ok(const char *rule) {
-  const char *const eq = rule != NULL ? strchr(rule, '=') : NULL;
-  const char *pat;
+  hts_span aliases, canon, alias;
+  const char *cur, *end;
 
-  if (eq == NULL || eq == rule || eq[1] == '\0')
+  if (!hts_host_alias_split(hts_span_of(rule), &aliases, &canon) ||
+      !hts_host_alias_token_ok(canon, HTS_FALSE))
     return HTS_FALSE;
-  if (!hts_host_alias_token_ok(eq + 1, strlen(eq + 1), HTS_FALSE))
-    return HTS_FALSE;
-  for (pat = rule; pat < eq;) {
-    const char *const sep = memchr(pat, ',', (size_t) (eq - pat));
-    const char *const end = sep != NULL ? sep : eq;
-
-    if (!hts_host_alias_token_ok(pat, (size_t) (end - pat), HTS_TRUE))
+  end = aliases.p + aliases.len;
+  for (cur = aliases.p; hts_span_next(&cur, end, ',', &alias);) {
+    if (!hts_host_alias_token_ok(alias, HTS_TRUE))
       return HTS_FALSE;
-    pat = end + 1;
   }
   return HTS_TRUE;
 }
@@ -4105,39 +5035,26 @@ HTSEXT_API hts_boolean hts_host_alias_rule_ok(const char *rule) {
 /* see htscore.h */
 const char *hts_host_alias_looping(const char *rules, hts_boolean collapse_www,
                                    char *dest, size_t destsize) {
-  const char *p;
+  hts_span all, line, aliases, target;
+  const char *cur;
 
   if (rules == NULL || destsize == 0)
     return NULL;
-  for (p = rules; *p != '\0';) {
-    const char *const line = p;
-    const char *eol, *eq;
+  all = hts_span_of(rules);
+  for (cur = all.p; hts_span_next(&cur, all.p + all.len, '\n', &line);) {
+    char BIGSTK canon[HTS_URLMAXSIZE * 2], tmp[HTS_URLMAXSIZE * 2];
+    hts_boolean settled;
 
-    while (*p != '\0' && *p != '\n')
-      p++;
-    eol = p;
-    if (*p == '\n')
-      p++;
-    eq = memchr(line, '=', (size_t) (eol - line));
-    if (eq == NULL || eq + 1 == eol)
+    if (!hts_span_split(line, '=', &aliases, &target) || target.len == 0 ||
+        !hts_span_copy(target, canon, sizeof(canon)))
       continue;
-    {
-      const size_t len = (size_t) (eol - eq - 1);
-      char BIGSTK canon[HTS_URLMAXSIZE * 2], tmp[HTS_URLMAXSIZE * 2];
-      hts_boolean settled;
-
-      if (len >= sizeof(canon))
-        continue;
-      memcpy(canon, eq + 1, len);
-      canon[len] = '\0';
-      (void) hts_host_alias_resolve(rules, canon, collapse_www, tmp,
-                                    sizeof(tmp), &settled);
-      if (!settled) {
-        if (strlen(canon) >= destsize)
-          continue; /* cannot name it in full: keep looking */
-        strlcpybuff(dest, canon, destsize);
-        return dest;
-      }
+    (void) hts_host_alias_resolve(rules, canon, collapse_www, tmp, sizeof(tmp),
+                                  &settled);
+    if (!settled) {
+      if (strlen(canon) >= destsize)
+        continue; /* Skip a name that does not fit. */
+      strlcpybuff(dest, canon, destsize);
+      return dest;
     }
   }
   return NULL;
@@ -4245,6 +5162,10 @@ hts_boolean hts_host_is_ipv4(const char *host, size_t len) {
       return HTS_FALSE;
   }
   return dots > 0 ? HTS_TRUE : HTS_FALSE;
+}
+
+hts_boolean hts_host_is_address(const char *host, size_t len) {
+  return memchr(host, ':', len) != NULL || hts_host_is_ipv4(host, len);
 }
 
 hts_boolean hts_proxy_is_socks(const char *name) {
@@ -4386,7 +5307,7 @@ HTSEXT_API char *unescape_http(char *const catbuff, const size_t size, const cha
 
 // unescape in URL/URI ONLY what has to be escaped, to form a standard URL/URI
 // DOES NOT DECODE %25 (part of CHAR_DELIM)
-// no_high & 1: decode high chars
+// no_high & 1: keep high chars (>= 127) escaped
 // no_high & 2: decode space
 HTSEXT_API char *unescape_http_unharm(char *const catbuff, const size_t size,
                                       const char *s,
@@ -4532,8 +5453,11 @@ HTSEXT_API size_t make_content_id(const char *const adr, const char *const fil,
   size_t esc_size = escape_in_url(adr, dest, size);
   esc_size += escape_in_url(fil, dest + esc_size, size - esc_size);
   RUNTIME_TIME_CHECK_SIZE(size);
+  /* A '%' would be decoded again by whoever reads the cid: URL. The marker has
+     to be a character escape_in_url() itself escapes, or two URLs can share one
+     Content-ID and one part then serves both (#1925). */
   for(a = dest ; (a = strchr(a, '%')) != NULL ; a++) {
-    *a = 'X';
+    *a = '-';
   }
   return esc_size;
 }
@@ -5056,26 +5980,572 @@ int may_unknown2(httrackp * opt, const char *mime, const char *filename) {
 
 // -- Utils fichiers
 
-// pretty print for i/o
-void fprintfio(FILE * fp, const char *buff, const char *prefix) {
-  char nl = 1;
+/* The backstop: the passwords and tokens the engine has seen, hidden by value
+   in every log line, behind the per-site masking. */
+typedef struct hts_secret_set {
+  htsmutex lock;
+  int count;
+  hts_boolean full;    /* a secret was refused for want of room */
+  hts_boolean toolong; /* a secret was refused for its length */
+  char *item[HTS_SECRET_MAX];
+  size_t len[HTS_SECRET_MAX];
+  hts_secret_kind kind[HTS_SECRET_MAX];
+} hts_secret_set;
 
-  while(*buff) {
-    switch (*buff) {
-    case 13:
+void hts_secret_init(httrackp *opt) {
+  hts_secret_set *const set = calloct(1, sizeof(hts_secret_set));
+
+  if (set != NULL)
+    hts_mutexinit(&set->lock);
+  opt->secrets = set;
+}
+
+void hts_secret_free(httrackp *opt) {
+  hts_secret_set *set = (hts_secret_set *) opt->secrets;
+  int i;
+
+  if (set == NULL)
+    return;
+  for (i = 0; i < set->count; i++)
+    freet(set->item[i]);
+  hts_mutexfree(&set->lock);
+  freet(set);
+  opt->secrets = NULL;
+}
+
+void hts_secret_add(httrackp *opt, const char *s, size_t len,
+                    hts_secret_kind kind) {
+  hts_secret_set *const set =
+      opt != NULL ? (hts_secret_set *) opt->secrets : NULL;
+  hts_boolean warn = HTS_FALSE, warnlong = HTS_FALSE;
+  int i;
+
+  if (set == NULL || len == 0 ||
+      (kind == HTS_SECRET_HEADER && len < HTS_SECRET_TOKEN))
+    return;
+  hts_mutexlock(&set->lock);
+  for (i = 0; i < set->count; i++)
+    if (set->kind[i] == kind && set->len[i] == len &&
+        memcmp(set->item[i], s, len) == 0)
       break;
-    case 10:
-      fprintf(fp, "\r\n");
-      nl = 1;
-      break;
-    default:
+  if (len > HTS_SECRET_MAXLEN) {
+    warnlong = set->toolong ? HTS_FALSE : HTS_TRUE;
+    set->toolong = HTS_TRUE;
+  } else if (i == set->count) {
+    if (set->count < HTS_SECRET_MAX) {
+      char *const copy = malloct(len + 1);
+
+      if (copy != NULL) {
+        memcpy(copy, s, len);
+        copy[len] = '\0';
+        set->item[set->count] = copy;
+        set->len[set->count] = len;
+        set->kind[set->count] = kind;
+        set->count++;
+      }
+    } else if (!set->full) {
+      set->full = HTS_TRUE;
+      warn = HTS_TRUE;
+    }
+  }
+  hts_mutexrelease(&set->lock);
+  // the log line takes the lock again
+  if (warn)
+    hts_log_print(opt, LOG_WARNING,
+                  "more than %d passwords seen: the log hides the later ones"
+                  " only where they stand in a URL",
+                  HTS_SECRET_MAX);
+  if (warnlong)
+    hts_log_print(opt, LOG_WARNING,
+                  "a password or token is over %d bytes, so the log hides it"
+                  " only in a URL login or a known header",
+                  HTS_SECRET_MAXLEN);
+}
+
+void hts_secret_add_login(httrackp *opt, const char *url) {
+  const char *start, *host, *colon;
+
+  if (url == NULL)
+    return;
+  start = login_start(url);
+  host = login_end(url);
+  if (host <= start)
+    return;
+  colon = memchr(start, ':', (size_t) (host - 1 - start));
+  if (colon == NULL)
+    return;
+  hts_secret_add(opt, colon + 1, (size_t) (host - 1 - (colon + 1)),
+                 HTS_SECRET_LOGIN);
+  // the Basic login is sent unescaped
+  if (memchr(colon + 1, '%', (size_t) (host - 1 - (colon + 1))) != NULL &&
+      (size_t) (host - 1 - (colon + 1)) < HTS_SECRET_MAXLEN) {
+    char pass[HTS_SECRET_MAXLEN + 1];
+    char plain[HTS_SECRET_MAXLEN + 1];
+    const char *p;
+
+    pass[0] = '\0';
+    strncatbuff(pass, colon + 1, (size_t) (host - 1 - (colon + 1)));
+    p = unescape_http(plain, sizeof(plain), pass);
+    hts_secret_add(opt, p, strlen(p), HTS_SECRET_LOGIN);
+  }
+}
+
+/* Does a word start at s + i, after the line start, a blank, a quote, '(' or
+   '<', or right after "://"? */
+static hts_boolean word_start(const char *s, size_t i) {
+  return i == 0 || strchr(" \t\r\n\"'(<", s[i - 1]) != NULL ||
+                 (i >= 3 && strncmp(s + i - 3, "://", 3) == 0)
+             ? HTS_TRUE
+             : HTS_FALSE;
+}
+
+/* Does the n bytes at s + i stand as a login, as in "SECRET@" or
+   "user:SECRET@", whose userinfo starts a word? */
+static hts_boolean login_at(const char *s, size_t len, size_t i, size_t n) {
+  // schemes whose "name:local@host" is an address, not a login
+  static const char *const opaque[] = {"mailto", "news", "sip",
+                                       "sips",   "tel",  "xmpp"};
+  size_t u = i, k;
+
+  if (i + n >= len || s[i + n] != '@')
+    return HTS_FALSE;
+  if (i != 0 && s[i - 1] == ':') {
+    u = i - 1;
+    while (u != 0 && strchr("/ \t\r\n", s[u - 1]) == NULL)
+      u--;
+    for (k = 0; k < sizeof(opaque) / sizeof(opaque[0]); k++)
+      if (strlen(opaque[k]) == i - 1 - u && strfield(s + u, opaque[k]))
+        return HTS_FALSE;
+  }
+  return word_start(s, u);
+}
+
+/* Returns the length of the longest secret of set standing at s + i, or 0. A
+   URL password counts only as a login, a header token anywhere. */
+static size_t secret_at(const hts_secret_set *set, const char *s, size_t len,
+                        size_t i) {
+  size_t best = 0;
+  int k;
+
+  for (k = 0; k < set->count; k++) {
+    const size_t n = set->len[k];
+
+    if (n <= best || n > len - i || memcmp(s + i, set->item[k], n) != 0)
+      continue;
+    if (set->kind[k] == HTS_SECRET_HEADER || login_at(s, len, i, n))
+      best = n;
+  }
+  return best;
+}
+
+/* Copies the len bytes at s to out, if not NULL, with each secret of set
+   replaced. Returns the length written. */
+static size_t secret_scan(const hts_secret_set *set, const char *s, size_t len,
+                          char *out) {
+  size_t i = 0, o = 0;
+
+  while (i < len) {
+    const size_t n = secret_at(set, s, len, i);
+
+    if (n != 0) {
+      if (out != NULL)
+        memcpy(out + o, "***", 3);
+      o += 3;
+      i += n;
+    } else {
+      if (out != NULL)
+        out[o] = s[i];
+      o++;
+      i++;
+    }
+  }
+  return o;
+}
+
+/* Returns a copy of the len bytes at s with each secret of opt as ***,
+   allocated with malloct, its length in *outlen. NULL when no secret is
+   known, or *outlen set to 0 too when out of memory. */
+static char *secret_mask(httrackp *opt, const char *s, size_t len,
+                         size_t *outlen) {
+  hts_secret_set *const set =
+      opt != NULL ? (hts_secret_set *) opt->secrets : NULL;
+  char *out = NULL;
+
+  *outlen = 1;
+  if (set == NULL)
+    return NULL;
+  hts_mutexlock(&set->lock);
+  if (set->count != 0) {
+    *outlen = secret_scan(set, s, len, NULL);
+    out = malloct(*outlen + 1);
+    if (out != NULL) {
+      secret_scan(set, s, len, out);
+      out[*outlen] = '\0';
+    } else
+      *outlen = 0;
+  }
+  hts_mutexrelease(&set->lock);
+  return out;
+}
+
+void hts_secret_fwrite(httrackp *opt, FILE *fp, const char *s, size_t len) {
+  size_t n;
+  char *masked = secret_mask(opt, s, len, &n);
+
+  if (masked != NULL)
+    fwrite(masked, 1, n, fp);
+  else if (n == 0)
+    fputs("<out of memory>", fp);
+  else
+    fwrite(s, 1, len, fp);
+  freet(masked);
+}
+
+/* Does opt know a secret? */
+static hts_boolean secrets_known(httrackp *opt) {
+  hts_secret_set *const set =
+      opt != NULL ? (hts_secret_set *) opt->secrets : NULL;
+  hts_boolean known;
+
+  if (set == NULL)
+    return HTS_FALSE;
+  hts_mutexlock(&set->lock);
+  known = set->count != 0 ? HTS_TRUE : HTS_FALSE;
+  hts_mutexrelease(&set->lock);
+  return known;
+}
+
+/* vfprintf() to fp, with each secret of opt as ***. */
+static void secret_vfprintf(httrackp *opt, FILE *fp, const char *format,
+                            va_list args) HTS_PRINTF_FUN(3, 0);
+
+static void secret_vfprintf(httrackp *opt, FILE *fp, const char *format,
+                            va_list args) {
+  va_list args_copy;
+  int n;
+  char *line;
+
+  if (!secrets_known(opt)) {
+    (void) vfprintf(fp, format, args);
+    return;
+  }
+  va_copy(args_copy, args);
+  n = vsnprintf(NULL, 0, format, args_copy);
+  va_end(args_copy);
+  if (n < 0)
+    return;
+  line = malloct((size_t) n + 1);
+  if (line == NULL) {
+    fputs("<out of memory>", fp);
+    return;
+  }
+  (void) vsnprintf(line, (size_t) n + 1, format, args);
+  hts_secret_fwrite(opt, fp, line, (size_t) n);
+  freet(line);
+}
+
+void hts_secret_fprintf(httrackp *opt, FILE *fp, const char *format, ...) {
+  va_list args;
+
+  va_start(args, format);
+  secret_vfprintf(opt, fp, format, args);
+  va_end(args);
+}
+
+HTSEXT_API void hts_hide_secrets(httrackp *opt, char *s, size_t size) {
+  size_t n;
+  char *masked;
+
+  if (size == 0)
+    return;
+  masked = secret_mask(opt, s, strlen(s), &n);
+  if (masked != NULL) {
+    s[0] = '\0';
+    strlncatbuff(s, masked, size, size - 1);
+  } else if (n == 0)
+    s[0] = '\0';
+  freet(masked);
+}
+
+void fprint_redacted(FILE *fp, size_t len) {
+  fprintf(fp, "<redacted, %lu bytes>", (unsigned long) len);
+}
+
+/* The -%H log hides the value of these fields because they carry logins.
+   Unlike refused[] and single[], this list governs the log, not the wire. */
+static const char *const secret_fields[] = {
+    "Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie"};
+
+/* The -%H log hides the login of the URL these fields carry. */
+static const char *const url_fields[] = {"Location", "Content-Location",
+                                         "Referer"};
+
+/* Writes the line buff, len bytes long, with the login of its URL, from keep
+   up to end, masked. Returns HTS_FALSE, writing nothing, when out of memory. */
+static hts_boolean fprint_url_span(httrackp *opt, FILE *fp, const char *buff,
+                                   size_t len, size_t keep, size_t end) {
+  char *line = malloct(2 * end + 8);
+
+  if (line == NULL)
+    return HTS_FALSE;
+  memcpy(line, buff, end);
+  line[end] = '\0';
+  {
+    const char *const url = url_nologin_r(line + end + 1, end + 7, line + keep);
+
+    hts_secret_fwrite(opt, fp, line, keep);
+    hts_secret_fwrite(opt, fp, url, strlen(url));
+    hts_secret_fwrite(opt, fp, buff + end, len - end);
+  }
+  freet(line);
+  return HTS_TRUE;
+}
+
+/* Writes the header line buff, len bytes long, with the login of its URL
+   value masked. Returns HTS_FALSE, writing nothing, when out of memory. */
+static hts_boolean fprint_url_field(httrackp *opt, FILE *fp, const char *buff,
+                                    size_t len) {
+  const char *const colon = memchr(buff, ':', len);
+  size_t keep = colon != NULL ? (size_t) (colon - buff) + 1 : len;
+
+  while (keep < len && (buff[keep] == ' ' || buff[keep] == '\t'))
+    keep++;
+  return fprint_url_span(opt, fp, buff, len, keep, len);
+}
+
+/* Writes the request line buff, len bytes long, with the login of its target
+   masked, as a proxied ftp:// target carries one. Returns HTS_FALSE, writing
+   nothing, when buff is no "METHOD target HTTP/" line or out of memory. */
+static hts_boolean fprint_request_line(httrackp *opt, FILE *fp,
+                                       const char *buff, size_t len) {
+  const char *const sp = memchr(buff, ' ', len);
+  const char *version;
+
+  if (sp == NULL)
+    return HTS_FALSE;
+  version = memchr(sp + 1, ' ', len - (size_t) (sp + 1 - buff));
+  if (version == NULL || (size_t) (buff + len - version) < 6 ||
+      strncmp(version, " HTTP/", 6) != 0)
+    return HTS_FALSE;
+  return fprint_url_span(opt, fp, buff, len, (size_t) (sp + 1 - buff),
+                         (size_t) (version - buff));
+}
+
+/* Finds the secret of the userinfo at the authority a, which ends at the last
+   '@' before the first '/', the split jump_identification_const() makes: the
+   password after the first ':', or a user alone. A token also ends at a
+   blank. Returns HTS_FALSE when there is no userinfo. */
+static hts_boolean userinfo_password(const char *a, hts_boolean token,
+                                     const char **pass, const char **at) {
+  const char *end = a + strcspn(a, token ? "/ \t\r\n" : "/");
+  const char *colon;
+
+  while (end > a && end[-1] != '@')
+    end--;
+  if (end == a)
+    return HTS_FALSE;
+  colon = memchr(a, ':', (size_t) (end - 1 - a));
+  *pass = colon != NULL ? colon + 1 : a;
+  *at = end - 1;
+  return HTS_TRUE;
+}
+
+/* The masked copy: dst (NULL to only count) holds o bytes, and the source is
+   copied up to p. */
+typedef struct {
+  char *dst;
+  size_t o;
+  const char *p;
+} mask_out;
+
+static void mask_copy(mask_out *m, const char *src, size_t n) {
+  if (m->dst != NULL)
+    memcpy(m->dst + m->o, src, n);
+  m->o += n;
+}
+
+/* Masks the login secret of the address at a, if any, and moves *i past it. */
+static void mask_at(mask_out *m, const char *a, hts_boolean token,
+                    const char **i) {
+  const char *pass, *at;
+
+  if (!userinfo_password(jump_protocol_const(a), token, &pass, &at))
+    return;
+  mask_copy(m, m->p, (size_t) (pass - m->p));
+  mask_copy(m, "***", 3);
+  m->p = *i = at;
+}
+
+/* Copies s to dst, or only counts when dst is NULL, with the login secret of
+   each address written as ***. Returns the length. */
+static size_t mask_passwords(const char *s, char *dst, hts_mask_mode mode) {
+  mask_out m = {dst, 0, s};
+  const char *i = s;
+
+  if (mode == HTS_MASK_ADDR)
+    mask_at(&m, s, HTS_FALSE, &i);
+  else
+    for (; *i != '\0'; i++)
+      // a token that is no filter is a start URL
+      if ((i == s || strchr(" \t\r\n", i[-1]) != NULL) &&
+          strchr(" \t\r\n+-", *i) == NULL)
+        mask_at(&m, i, HTS_TRUE, &i);
+  mask_copy(&m, m.p, strlen(m.p) + 1);
+  return m.o - 1;
+}
+
+char *hts_mask_passwords(const char *s, hts_mask_mode mode) {
+  const size_t len = mask_passwords(s, NULL, mode);
+  char *const dst = (char *) malloct(len + 1);
+
+  if (dst != NULL)
+    mask_passwords(s, dst, mode);
+  return dst;
+}
+
+/* Returns the length of the secret field name opening line, a line len bytes
+   long, even with no colon behind it, or 0. */
+static size_t secret_name_len(const char *line, size_t len) {
+  size_t word, i;
+
+  if (header_name_in(line, secret_fields,
+                     sizeof(secret_fields) / sizeof(secret_fields[0])))
+    return header_name_len(line);
+  if (memchr(line, ':', len) != NULL)
+    return 0;
+  word = strcspn(line, " \t\r\n");
+  for (i = 0; i < sizeof(secret_fields) / sizeof(secret_fields[0]); i++)
+    if (header_name_is(line, word, secret_fields[i], strlen(secret_fields[i])))
+      return word;
+  return 0;
+}
+
+void hts_secret_add_headers(httrackp *opt, const char *headers) {
+  const char *line = headers;
+
+  while (line != NULL && *line != '\0') {
+    const size_t len = strcspn(line, "\r\n");
+    const size_t name = len != 0 ? secret_name_len(line, len) : 0;
+
+    if (name != 0) {
+      const char *const colon = memchr(line, ':', len);
+      const char *v = colon != NULL ? colon + 1 : line + name;
+      const char *end = line + len;
+
+      while (v < end && (*v == ' ' || *v == '\t'))
+        v++;
+      while (end > v && (end[-1] == ' ' || end[-1] == '\t'))
+        end--;
+      // a cookie value is often a plain word, and -%H hides the whole header
+      if (!header_name_is(line, name, "Cookie", 6) &&
+          !header_name_is(line, name, "Set-Cookie", 10)) {
+        // the whole value, then the credentials after the scheme ("Basic
+        // TOKEN")
+        const char *cred = v + strcspn(v, " \t");
+
+        hts_secret_add(opt, v, (size_t) (end - v), HTS_SECRET_HEADER);
+        while (cred < end && (*cred == ' ' || *cred == '\t'))
+          cred++;
+        if (cred < end)
+          hts_secret_add(opt, cred, (size_t) (end - cred), HTS_SECRET_HEADER);
+      }
+    }
+    line += len;
+    while (*line == '\r' || *line == '\n')
+      line++;
+  }
+}
+
+void fprintfio(FILE *fp, const char *buff, const char *prefix, httrackp *opt) {
+  const char *const start = buff;
+  hts_boolean nl = HTS_TRUE;
+  hts_boolean secret = HTS_FALSE;
+  size_t name = 0;
+
+  while (*buff != '\0') {
+    const size_t len = strcspn(buff, "\r\n");
+
+    if (len != 0) {
+      size_t keep = len;
+
+      /* a folded line continues the value above it */
+      if (*buff != ' ' && *buff != '\t') {
+        name = secret_name_len(buff, len);
+        secret = name != 0 ? HTS_TRUE : HTS_FALSE;
+      }
+      if (secret) {
+        const char *const colon = memchr(buff, ':', len);
+
+        /* a line with no colon is redacted after its name */
+        keep = *buff == ' ' || *buff == '\t' ? 0
+               : colon != NULL               ? (size_t) (colon - buff) + 1
+                                             : name;
+        while (keep < len && (buff[keep] == ' ' || buff[keep] == '\t'))
+          keep++;
+      }
       if (nl)
         fprintf(fp, "%s", prefix);
-      nl = 0;
-      fputc(*buff, fp);
+      nl = HTS_FALSE;
+      if (!(buff == start && fprint_request_line(opt, fp, buff, len)) &&
+          (secret || *buff == ' ' || *buff == '\t' ||
+           !header_name_in(buff, url_fields,
+                           sizeof(url_fields) / sizeof(url_fields[0])) ||
+           !fprint_url_field(opt, fp, buff, len))) {
+        hts_secret_fwrite(opt, fp, buff, keep);
+        if (keep < len)
+          fprint_redacted(fp, len - keep);
+      }
     }
-    buff++;
+    buff += len;
+    if (*buff == '\n') {
+      fprintf(fp, "\r\n");
+      nl = HTS_TRUE;
+    }
+    if (*buff != '\0')
+      buff++;
   }
+}
+
+/* See htslib.h. */
+const char *hts_header_shown(httrackp *opt, const char *line, char *dst,
+                             size_t size) {
+  const size_t len = strcspn(line, "\r\n");
+  const size_t name = len != 0 ? secret_name_len(line, len) : 0;
+  const char *const colon = memchr(line, ':', len);
+  size_t keep = colon != NULL ? (size_t) (colon - line) + 1 : len;
+  char value[HTS_URLMAXSIZE * 2];
+  size_t n;
+
+  if (name != 0 && colon == NULL)
+    keep = name;
+  while (keep < len && (line[keep] == ' ' || line[keep] == '\t'))
+    keep++;
+  n = keep < size ? keep : size - 1;
+  memcpy(dst, line, n);
+  dst[n] = '\0';
+  if (keep < len && name != 0) {
+    // a clipped marker still hides the value
+    if (!slprintfbuff(dst + n, size - n, "<redacted, %lu bytes>",
+                      (unsigned long) (len - keep)))
+      (void) strclipbuff(dst + n, size - n, "<redacted>");
+  } else if (keep < len) {
+    const size_t v =
+        len - keep < sizeof(value) ? len - keep : sizeof(value) - 1;
+
+    memcpy(value, line + keep, v);
+    value[v] = '\0';
+    if (header_name_in(line, url_fields,
+                       sizeof(url_fields) / sizeof(url_fields[0]))) {
+      char masked[HTS_URLMAXSIZE * 2];
+
+      (void) strclipbuff(dst + n, size - n,
+                         url_nologin_r(masked, sizeof(masked), value));
+    } else {
+      (void) strclipbuff(dst + n, size - n, value);
+    }
+  }
+  hts_hide_secrets(opt, dst, size);
+  return dst;
 }
 
 /* Le fichier existe-t-il? (ou est-il accessible?) */
@@ -5205,6 +6675,36 @@ HTSEXT_API const char *hts_rootdir(char *file) {
 
 HTSEXT_API hts_stat_struct HTS_STAT;
 
+/* Where the received-byte total lives (see htslib.h). Its lock guards this and
+   nothing else, so a worker counting bytes waits on nothing else either. */
+static LLint stat_recv_total = 0;
+static htsmutex stat_recv_lock = HTSMUTEX_INIT;
+
+void hts_stat_recv_add(LLint bytes) {
+  hts_mutexlock(&stat_recv_lock);
+  stat_recv_total += bytes;
+  hts_mutexrelease(&stat_recv_lock);
+}
+
+LLint hts_stat_recv_get(void) {
+  LLint bytes;
+
+  hts_mutexlock(&stat_recv_lock);
+  bytes = stat_recv_total;
+  hts_mutexrelease(&stat_recv_lock);
+  return bytes;
+}
+
+void hts_stat_recv_set(LLint bytes) {
+  hts_mutexlock(&stat_recv_lock);
+  stat_recv_total = bytes;
+  hts_mutexrelease(&stat_recv_lock);
+}
+
+void hts_stat_recv_publish(void) {
+  HTS_STAT.HTS_TOTAL_RECV = hts_stat_recv_get();
+}
+
 //
 // return  number of downloadable bytes, depending on rate limiter
 // see engine_stats() routine, too
@@ -5220,10 +6720,10 @@ LLint check_downloadable_bytes(int rate) {
     // get the older timer
     int id_timer = (HTS_STAT.istat_idlasttimer + 1) % 2;
 
-    time_now = mtime_local();
+    time_now = mtime_monotonic();
     elapsed_useconds = time_now - HTS_STAT.istat_timestart[id_timer];
     bytes_transferred_during_period =
-      (HTS_STAT.HTS_TOTAL_RECV - HTS_STAT.istat_bytes[id_timer]);
+        (hts_stat_recv_get() - HTS_STAT.istat_bytes[id_timer]);
 
     left = ((rate * elapsed_useconds) / 1000) - bytes_transferred_during_period;
     if (left <= 0)
@@ -5290,7 +6790,7 @@ int hts_read(htsblk * r, char *buff, int size) {
       }
     }
     if (retour > 0)             // compter flux entrant
-      HTS_STAT.HTS_TOTAL_RECV += retour;
+      hts_stat_recv_add(retour);
 #if HTS_USEOPENSSL
   }
 #endif
@@ -5428,18 +6928,30 @@ void hts_dns_set_resolver_backend(const hts_resolver_backend *backend) {
    its chain (its own freeaddrinfo), so a synthesized and a delegated result
    free the same way. */
 
-/* Deep-copy a libc addrinfo chain into our own allocations. */
+static void HTS_RESOLVER_CALL override_freeaddrinfo(struct addrinfo *res);
+
+/* Deep-copy a libc addrinfo chain into our own allocations, or NULL if one of
+   them failed: the caller cannot hand a half-copied chain back as success. */
 static struct addrinfo *resolver_dup_chain(const struct addrinfo *src) {
   struct addrinfo *head = NULL, *tail = NULL;
 
   for (; src != NULL; src = src->ai_next) {
-    struct addrinfo *const ai = calloct(1, sizeof(*ai));
+    struct addrinfo *ai = calloct(1, sizeof(*ai)); /* freet() needs an lvalue */
 
+    if (ai == NULL) {
+      override_freeaddrinfo(head);
+      return NULL;
+    }
     ai->ai_family = src->ai_family;
     ai->ai_socktype = src->ai_socktype;
     ai->ai_protocol = src->ai_protocol;
     ai->ai_addrlen = src->ai_addrlen;
     ai->ai_addr = malloct(src->ai_addrlen);
+    if (ai->ai_addr == NULL) {
+      freet(ai);
+      override_freeaddrinfo(head);
+      return NULL;
+    }
     memcpy(ai->ai_addr, src->ai_addr, src->ai_addrlen);
     if (head == NULL)
       head = ai;
@@ -5465,9 +6977,15 @@ static struct addrinfo *resolver_make_ai(const char *ip, int want_family) {
       return NULL;
     sa6.sin6_family = AF_INET6;
     ai = calloct(1, sizeof(*ai));
+    if (ai == NULL)
+      return NULL;
     ai->ai_family = AF_INET6;
     ai->ai_addrlen = sizeof(sa6);
     ai->ai_addr = malloct(sizeof(sa6));
+    if (ai->ai_addr == NULL) {
+      freet(ai);
+      return NULL;
+    }
     memcpy(ai->ai_addr, &sa6, sizeof(sa6));
   } else { // IPv4 literal
     struct sockaddr_in sa;
@@ -5479,9 +6997,15 @@ static struct addrinfo *resolver_make_ai(const char *ip, int want_family) {
       return NULL;
     sa.sin_family = AF_INET;
     ai = calloct(1, sizeof(*ai));
+    if (ai == NULL)
+      return NULL;
     ai->ai_family = AF_INET;
     ai->ai_addrlen = sizeof(sa);
     ai->ai_addr = malloct(sizeof(sa));
+    if (ai->ai_addr == NULL) {
+      freet(ai);
+      return NULL;
+    }
     memcpy(ai->ai_addr, &sa, sizeof(sa));
   }
   return ai;
@@ -5541,7 +7065,7 @@ static int HTS_RESOLVER_CALL override_getaddrinfo(const char *node,
       return gerr;
     *res = resolver_dup_chain(sys);
     freeaddrinfo(sys);
-    return 0;
+    return *res != NULL ? 0 : EAI_MEMORY;
   }
 }
 
@@ -5724,8 +7248,8 @@ static void dns_job_release(dns_resolve_job *job) {
   }
 }
 
-/* Outlives a timed-out resolve, so it writes only the job: never opt (freed
-   before the thread wait at exit) nor the DNS cache. */
+/* Outlives a timed-out resolve, so it writes only the job: never opt nor the
+   DNS cache, which the crawl keeps using without it. */
 static void dns_resolve_thread(void *arg) {
   dns_resolve_job *const job = (dns_resolve_job *) arg;
   SOCaddr resolved[HTS_MAXADDRNUM];
@@ -5787,7 +7311,7 @@ static int hts_dns_resolve_nocache_list_bounded(
   }
 
   /* timeout <= 0 got here only for a cancellable resolve: no deadline then */
-  deadline = timeout > 0 ? mtime_local() + (TStamp) timeout * 1000 : 0;
+  deadline = timeout > 0 ? mtime_monotonic() + (TStamp) timeout * 1000 : 0;
   for (;;) {
     hts_boolean done;
 
@@ -5802,8 +7326,8 @@ static int hts_dns_resolve_nocache_list_bounded(
         *permanent = job->permanent;
     }
     hts_mutexrelease(&job->lock);
-    if (done || (cancel != NULL && *cancel) ||
-        (deadline != 0 && mtime_local() >= deadline))
+    if (done || (cancel != NULL && hts_load_acquire_int(cancel)) ||
+        (deadline != 0 && mtime_monotonic() >= deadline))
       break;
     Sleep(poll_ms);
     if (poll_ms < 50) /* short first polls keep a fast resolve fast */
@@ -6306,6 +7830,10 @@ HTSEXT_API int hts_init(void) {
   /* Init threads (lazy init) */
   htsthread_init();
 
+  /* Before any thread reads the verdict */
+  hts_mptcp_probe();
+  hts_psl_init();
+
   /* Ensure external modules are loaded */
   hts_debug_log_print("calling htspe_init()");  /* debug */
   htspe_init();                 /* module load (lazy) */
@@ -6395,6 +7923,7 @@ int hts_uninit_module(void) {
     return 1;
   htsthread_uninit();
   htspe_uninit();
+  hts_psl_uninit();
   hts_init_ok = 0;
   return 1;
 }
@@ -6418,8 +7947,12 @@ HTSEXT_API void hts_set_log_vprint_callback(void (*callback)(httrackp * opt,
   hts_log_print_callback = callback;
 }
 
+char hts_log_quiet_tag;
+
 HTSEXT_API void hts_log_vprint(httrackp * opt, int type, const char *format, va_list args) {
   assertf(format != NULL);
+  if (opt == HTS_LOG_QUIET)
+    return;
   if (hts_log_print_callback != NULL) {
     va_list args_copy;
     va_copy(args_copy, args);
@@ -6433,7 +7966,7 @@ HTSEXT_API void hts_log_vprint(httrackp * opt, int type, const char *format, va_
     const int level = type & 0xff;
 
     // Check log level
-    if (opt->debug < level) {
+    if ((int) opt->debug < level) {
       return;
     }
 
@@ -6464,7 +7997,7 @@ HTSEXT_API void hts_log_vprint(httrackp * opt, int type, const char *format, va_
 
     if (opt->log != NULL) {
       fspc(opt, opt->log, s_type);
-      (void) vfprintf(opt->log, format, args);
+      secret_vfprintf(opt, opt->log, format, args);
       if ((type & LOG_ERRNO) != 0) {
         char errbuf[HTS_STRERROR_SIZE];
 
@@ -6599,6 +8132,7 @@ HTSEXT_API httrackp *hts_create_opt(void) {
 
   /* mutexes */
   hts_mutexinit(&opt->state.lock);
+  hts_secret_init(opt);
 
   /* custom wrappers */
   opt->libHandles.count = 0;
@@ -6685,18 +8219,27 @@ HTSEXT_API httrackp *hts_create_opt(void) {
   opt->links_unqueued = HTS_FALSE;
   opt->mirror_completed = HTS_DEFAULT;
   opt->transport_failures = 0;
+  opt->mptcp = HTS_DEFAULT;
+  opt->browser_headers = HTS_DEFAULT;
+  opt->mptcp_connections = 0;
+  opt->mptcp_fallbacks = 0;
   opt->upper_links_refused = 0;
   opt->abort_left_partial = HTS_FALSE;
   StringCopy(opt->why_url, "");
   opt->pause_min_ms = 0;
   opt->pause_max_ms = 0;
+  opt->max_retry_after = HTS_DEFAULT_MAX_RETRY_AFTER;
   opt->ftp_proxy = HTS_TRUE;
   opt->convert_utf8 = HTS_TRUE;
   opt->ssl_insecure = HTS_FALSE; /* verify https certificates */
   StringCopy(opt->filelist, "");
-  StringCopy(opt->lang_iso, "en, *");
-  StringCopy(opt->accept,
-    "text/html,image/png,image/jpeg,image/pjpeg,image/x-xbitmap,image/svg+xml,image/gif;q=0.9,*/*;q=0.1");
+  StringCopy(opt->lang_iso, HTS_ACCEPT_LANGUAGE_LEGACY);
+  StringCopy(opt->accept, HTS_ACCEPT_LEGACY);
+  StringCopy(opt->accept_kinds, "");
+  opt->accept_given = HTS_FALSE;
+  opt->lang_given = HTS_FALSE;
+  StringCopy(opt->bundle_dir, "");
+  opt->bundle_state = NULL;
   StringCopy(opt->headers, "");
   StringCopy(opt->mimedefs, "\n");      // aucun filtre mime (\n IMPORTANT)
   StringClear(opt->mod_blacklist);
@@ -6725,8 +8268,8 @@ HTSEXT_API httrackp *hts_create_opt(void) {
   opt->dir_topindex = HTS_FALSE;
   //
   opt->bypass_limits = HTS_FALSE;
-  opt->state.stop = 0;          // stopper
-  opt->state.exit_xh = 0;       // abort
+  hts_store_release_int(&opt->state.stop, 0);
+  hts_store_release_int(&opt->state.exit_xh, 0);
   //
   opt->state.is_ended = 0;
 
@@ -6768,6 +8311,7 @@ HTSEXT_API void hts_free_opt(httrackp * opt) {
     /* An FTP worker reads opt for its whole run, and not every caller drains
        its threads the way httrack.c does before getting here. */
     ftp_stop_workers();
+    hts_bundle_free(opt);
 
     /* Alocated callbacks */
 
@@ -6813,6 +8357,8 @@ HTSEXT_API void hts_free_opt(httrackp * opt) {
 
     /* URLs a front end queued but the engine never got to inject */
     hts_addurl_free(hts_addurl_take(opt));
+    hts_addurl_free(hts_addfilter_take(opt));
+    hts_addurl_free(hts_setfilters_take(opt));
 
     /* Cancel chain */
     if (opt->state.cancel != NULL) {
@@ -6841,6 +8387,8 @@ HTSEXT_API void hts_free_opt(httrackp * opt) {
     StringFree(opt->from);
     StringFree(opt->lang_iso);
     StringFree(opt->accept);
+    StringFree(opt->accept_kinds);
+    StringFree(opt->bundle_dir);
     StringFree(opt->headers);
     StringFree(opt->sys_com);
     StringFree(opt->mimedefs);
@@ -6866,6 +8414,7 @@ HTSEXT_API void hts_free_opt(httrackp * opt) {
     StringFree(opt->path_bin);
 
     /* mutexes */
+    hts_secret_free(opt);
     hts_mutexfree(&opt->state.lock);
 
     /* Free structure */
@@ -6879,11 +8428,14 @@ const hts_stat_struct* hts_get_stats(httrackp * opt) {
     return NULL;
   }
 
+  hts_stat_recv_publish();
   HTS_STAT.stat_nsocket = 0;
   HTS_STAT.stat_errors = fspc(opt, NULL, "error");
   HTS_STAT.stat_warnings = fspc(opt, NULL, "warning");
   HTS_STAT.stat_infos = fspc(opt, NULL, "info");
   HTS_STAT.stat_transport_failures = opt->transport_failures;
+  HTS_STAT.stat_mptcp_connections = opt->mptcp_connections;
+  HTS_STAT.stat_mptcp_fallbacks = opt->mptcp_fallbacks;
   HTS_STAT.nbk = 0;
   HTS_STAT.nb = 0;
 

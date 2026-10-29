@@ -84,21 +84,15 @@ refused "#152: over-cap -F not refused cleanly"
 run "$tmp/ov-l" --user-agent "$over"
 refused "#152: over-cap --user-agent not refused cleanly"
 
-# Quote handling on the sole URL (run_only, so the quoted arg is the only URL and
-# can't be masked by an implicit one). A fully "-quoted URL has its surrounding
-# quotes stripped in place and is mirrored; a dangling opening quote, and a lone
-# quote (empty after the opening "), are refused cleanly and never crash.
-# nativepath: the shim converts an argument that IS a URL, not one inside quotes.
-run_only "$tmp/q-ok" "\"file://$(nativepath "$tmp")/index.html\""
-accepted "$tmp/q-ok" "quoted URL not stripped/mirrored"
+# A dangling opening quote and a lone quote on the sole URL are data, and never
+# crash (561 covers a fully quoted one).
 run_only "$tmp/q-bad" '"foo'
-refused "dangling-quote argument not refused cleanly"
+test "$RC" -lt 128 || fail "dangling-quote argument crashed (exit $RC)"
 run_only "$tmp/q-lone" '"'
-refused "lone-quote argument not refused cleanly"
-# A dangling quote on an argument at the cap must not overflow the "Missing
-# quote in %s" panic buffer: the prefix plus a 1023-byte argument overran it.
+test "$RC" -lt 128 || fail "lone-quote argument crashed (exit $RC)"
+# A dangling quote on an argument at the cap must not overflow a buffer.
 run_only "$tmp/q-long" "\"$(repeat_chars 1022 A)"
-refused "near-cap dangling-quote argument overflowed the panic buffer"
+test "$RC" -lt 128 || fail "near-cap dangling-quote argument crashed (exit $RC)"
 
 # --pause (#185): valid MIN[:MAX] accepted; malformed, reversed, over-range and
 # non-finite values refused cleanly. NaN defeats naive `<`/`>` checks (it
@@ -111,6 +105,55 @@ for bad in nan nan:5 5:nan inf 10:5 99999; do
     run "$tmp/pause-bad" --pause "$bad"
     refused "#185: invalid --pause '$bad' not refused cleanly"
 done
+
+# --max-retry-after (#1738): the cap is what keeps a server from parking the
+# mirror, so a value it cannot parse must be refused rather than left at 0. An
+# over-limit value is clipped instead (#1776).
+for good in 0 5 3600 --max-retry-after=7; do
+    case $good in
+    --*) run "$tmp/mra-ok" "$good" ;;
+    *) run "$tmp/mra-ok" "-%J$good" ;;
+    esac
+    accepted "$tmp/mra-ok" "#1738: valid --max-retry-after '$good' rejected"
+done
+# Parsing predates the log file, so the notice lands on stdout. Grepping for it
+# is the real assertion, because storing 99999 unclipped passes acceptance alone.
+# 3600 is HTS_MAX_RETRY_AFTER_LIMIT, which the notice reports from the value it
+# stored: matching it is what tells a clip from a bare log line.
+clipped() {
+    grep -q -- "--max-retry-after $2s is above the limit, using 3600s" "$1/.log" ||
+        fail "$3"
+}
+not_clipped() {
+    ! grep -q 'is above the limit' "$1/.log" ||
+        fail "$2"
+}
+# 99999999999999 is the wrap probe: sscanf("%d") read it as 276447231, so the
+# notice naming the typed value is what proves strtoll sees the whole number.
+for over in 3601 99999 99999999999999; do
+    run "$tmp/mra-over" "-%J$over"
+    accepted "$tmp/mra-over" "#1776: over-limit --max-retry-after '$over' refused"
+    clipped "$tmp/mra-over" "$over" "#1776: --max-retry-after '$over' not clipped as typed"
+done
+# A value at the limit is left alone, so the notice must stay quiet there. The
+# accepted call is the floor: absence alone also holds on a run that never ran.
+run "$tmp/mra-lim" "-%J3600"
+accepted "$tmp/mra-lim" "#1776: --max-retry-after at the limit refused"
+not_clipped "$tmp/mra-lim" "#1776: a value at the limit was clipped"
+# The message matters: without it a value the generic option parser chokes on
+# passes this table while never reaching the range check.
+# A digit string too wide even for LLint is malformed rather than over-limit.
+for bad in "" x -3 999999999999999999999999; do
+    run "$tmp/mra-bad" "-%J$bad"
+    refused "#1738: invalid --max-retry-after '$bad' not refused cleanly"
+    grep -q 'Invalid --max-retry-after' "$tmp/mra-bad/.log" ||
+        fail "#1738: '$bad' was refused by something other than the range check"
+done
+# A fractional value takes its integer part and leaves the rest an unknown option
+run "$tmp/mra-bad" "-%J1.5"
+refused "#1738: fractional --max-retry-after not refused cleanly"
+! grep -q 'Invalid --max-retry-after' "$tmp/mra-bad/.log" ||
+    fail "#1738: 1.5 now reaches the range check, so it belongs in the table above"
 
 # An option is not -i (continue) merely because its name contains an 'i' (#615).
 # These used to wipe the URL given before them and exit on the usage screen.
