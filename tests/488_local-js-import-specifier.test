@@ -55,6 +55,9 @@ printf 'hw\n' >"$root/hello world"
 printf 'not-a-module\n' >"$root/jquery"
 printf 'not-a-module\n' >"$root/popper.js"
 
+# Fork-only: a rewritten path specifier keeps the "./" a module path needs
+# (see 485); upstream writes the bare "mod.js", which a browser reads as a
+# package name. The bare "jquery" and "popper.js" are never rewritten.
 bash "$top_srcdir/tests/local-crawl.sh" --root "$root" \
     --errors 0 \
     --found assets/mod.js \
@@ -71,7 +74,7 @@ bash "$top_srcdir/tests/local-crawl.sh" --root "$root" \
     --not-found js/c9.js \
     --log-not-found 'jquery' \
     --log-not-found 'popper' \
-    --file-matches 'assets/app.js' 'from "mod\.js"' \
+    --file-matches 'assets/app.js' 'from "\./mod\.js"' \
     --file-matches 'assets/app.js' 'from "\.\./top\.js"' \
     --file-matches 'assets/app.js' 'from "jquery"' \
     --file-matches 'assets/app.js' 'from "popper\.js"' \
