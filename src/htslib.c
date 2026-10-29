@@ -7888,13 +7888,14 @@ HTSEXT_API int hts_init(void) {
       abortLog("unable to initialize TLS: SSL_CTX_new()");
       assertf("unable to initialize TLS" == NULL);
     }
-    /* Load the system trust store so certificates can be verified at all.
-       Without it every certificate fails and -%V0 becomes mandatory rather
-       than a deliberate opt-out. Not fatal: the per-connection check reports
-       the actual failure. (Fork-only: upstream does not verify.) */
+    /* Use the system trust store so certificates can be verified at all.
+       This succeeds even when the default file and directory are missing or
+       empty, so it cannot tell whether any CA loaded; a refused certificate
+       says where the store was looked for instead (back_wait()). It fails
+       only on an internal error. (Fork-only: upstream does not verify.) */
     if (!SSL_CTX_set_default_verify_paths(openssl_ctx)) {
-      fprintf(stderr, "warning: unable to load the system certificate store;"
-                      " TLS certificates can not be verified\n");
+      fprintf(stderr, "warning: unable to set up the system certificate"
+                      " store; TLS certificates can not be verified\n");
     }
     /* Pin a TLS floor (no SSLv3/TLS1.0/1.1). */
 #if OPENSSL_VERSION_NUMBER >= 0x10100000L

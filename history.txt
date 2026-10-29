@@ -14,6 +14,13 @@ fork (sparktron/HTTrackClone)
   -#test=cookies and -#test=robots self-tests replace them.
 + Fork-only: https certificates are verified; upstream never verifies.
   -%V0 (--insecure, --no-check-certificate) turns that off.
++ Warning: before this sync the fork spelled that flag -%g / -%g0, which
+  upstream now uses for --strip-query (it takes the next argument). A mirror
+  made with it replays the old flag from hts-cache/doit.log, so --update or
+  --continue stops with "invalid option 0", or a bare -%g eats the next
+  argument. Fix such a project once, from its directory (GNU sed; only for
+  mirrors made before the sync, as it would also rewrite a real -%g):
+    sed -i 's/-%g0/-%V0/; s/-%g\b/-%V/' hts-cache/doit.log
 + Fixed (fork-only): ProxyTrack's WebDAV listing computed offsets as NULL + n,
   undefined behaviour that clang's UndefinedBehaviorSanitizer reports.
 + Fixed: thread safety. localtime()/gmtime()/strerror()/gethostbyname() all

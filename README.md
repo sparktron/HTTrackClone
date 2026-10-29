@@ -1,6 +1,6 @@
 # HTTrack Website Copier - Development Repository
 
-> **Private fork.** This is `sparktron/HTTrackClone`, a private fork of [xroche/httrack](https://github.com/xroche/httrack), currently synced to upstream 3.50.3. It adds https certificate verification and an opt-in imageboard catalog (`--enable-imageboard-catalog`), and is not the official HTTrack repository. Report issues and send changes here, not upstream. Upstream fixes are merged in periodically; see [AGENTS.md](AGENTS.md).
+> **Private fork.** This is `sparktron/HTTrackClone`, a private fork of [xroche/httrack](https://github.com/xroche/httrack), currently synced to upstream 3.50.3. It adds https certificate verification and an opt-in imageboard catalog (`--enable-imageboard-catalog`), and is not the official HTTrack repository. Mirrors made before that sync with `-%g0` need their `hts-cache/doit.log` fixed before `--update` (see [history.txt](history.txt)). Windows builds are not supported: they find no trusted certificates, so every https host is refused unless you pass `-%V0`. Report issues and send changes here, not upstream. Upstream fixes are merged in periodically; see [AGENTS.md](AGENTS.md).
 
 ## About
 _Copy websites to your computer (Offline browser)_

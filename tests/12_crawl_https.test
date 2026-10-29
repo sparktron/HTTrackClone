@@ -12,4 +12,10 @@ if test "${HTTPS_SUPPORT:-}" == "no"; then
     exit 77
 fi
 
+# Fork-only: the fork verifies certificates, and the suite points SSL_CERT_FILE
+# at the local test certificate (tests/Makefile.am). That replaces the system
+# CA bundle on distros that keep it in one file (Fedora, macOS), so this real
+# host has to see the system store.
+unset SSL_CERT_FILE
+
 bash "$testdir/crawl-test.sh" --errors 0 --files 5 httrack https://ut.httrack.com/simple/basic.html
