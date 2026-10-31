@@ -617,6 +617,25 @@ AS_IF([test x"$mptcp_platform" = x"no"],
 	[test x"$mptcp_want" = x"auto"], [AC_MSG_RESULT([$mptcp_have (auto)])],
 	[test x"$mptcp_asked" = x"no"], [AC_MSG_RESULT([$mptcp_have (auto-features off)])],
 	[AC_MSG_RESULT([$mptcp_have (requested)])])
+## Fork-only: the check below only finds the header, but htslib.c also needs
+## MPTCP_INFO from it (kernel headers 5.16+) and SOL_MPTCP from <sys/socket.h>
+## (glibc 2.36+). Ubuntu 22.04 ships the header without either, and the build
+## then failed in htslib.c. Answer upstream's check "no" in that case, as
+## ac_cv_header_linux_mptcp_h=no did by hand; a value passed in is kept.
+AS_IF([test x"${ac_cv_header_linux_mptcp_h+set}" != xset],
+	[AC_CACHE_CHECK([whether linux/mptcp.h has MPTCP_INFO and SOL_MPTCP],
+		[hts_cv_linux_mptcp_info],
+		[AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <linux/mptcp.h>
+]], [[struct mptcp_info info;
+int level = SOL_MPTCP, name = MPTCP_INFO;
+(void) info; (void) level; (void) name;]])],
+			[hts_cv_linux_mptcp_info=yes], [hts_cv_linux_mptcp_info=no])])
+	AS_IF([test x"$hts_cv_linux_mptcp_info" = x"no"],
+		[ac_cv_header_linux_mptcp_h=no])])
 # MPTCP_INFO tells a negotiated connection from one that fell back to plain TCP.
 AC_CHECK_HEADERS([linux/mptcp.h])
 
